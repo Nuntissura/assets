@@ -51,11 +51,13 @@
 //!   settled once, so its terminal Observe frame (codes and counters only) goes to the job sink.
 //! - Placed graphics (lane SMB-LAYOUT-PLACE-1, STU-ASSET-009): every graphic frame of the layout
 //!   records is drawn through the host resolver `view::layout_assets` (the frame layer's tiles,
-//!   fitted, clipped to the rectangle or ellipse, 16-bit ICCBased in the linear working profile).
-//!   Before lowering, a linked placement whose file is `modified`, `missing`, `unauthorized` or
-//!   `unsupported` refuses `placed_link_<state>` and nothing is written (a modified one: run
-//!   `asset.update_all_modified`); the result lists `placements` (layer, source, kind, uri, content
-//!   digest, link state at resolution time).
+//!   fitted, clipped to the rectangle or ellipse, 16-bit ICCBased in the tile's own profile, which
+//!   the tile carries: paint colours resolve no profile, so a layout without pictures writes the
+//!   same bytes as before). Right after preflight and before any shaping, a linked placement whose
+//!   file is `modified`, `missing`, `unauthorized` or `unsupported` refuses `placed_link_<state>`
+//!   and nothing is written (a modified one: run `asset.update_all_modified`; each source is
+//!   checked once per export, the token between frames: `canceled`); the result lists `placements`
+//!   (layer, source, kind, uri, content digest, link state at resolution time).
 //! - Not done here (declared gaps): vector paths of the layout and raster layers without a graphic
 //!   frame (the engine reports them as losses), path-shaped frames, tables (`table_not_exported`
 //!   per table), design records, outlines, tagged PDF, CMYK image numbers and CMYK conversion of
@@ -559,6 +561,10 @@ impl Viewer {
             return Err(LayoutExportRefusal::new("preflight_errors", report_json(&report, MAX_LISTED_FINDINGS).to_string()));
         }
         let (doc, rec) = (&live.doc, &live.rec);
+        // Placed graphics (module docs): the STU-ASSET-009 link gate before any shaping (nothing is written on a
+        // refusal); the placements are drawn after the stories are composed.
+        let frames = &rec.longdoc.graphic_frames;
+        let (graphics, placements) = self.layout_pdf_placements(&doc.document, frames).map_err(|(code, detail)| LayoutExportRefusal::new(code, detail))?;
         let cancel = self.cancel;
         let actor = self.run.actor().clone();
         let composition = if self.run.snapshot().is_some() { self.composition_token().map_err(|m| LayoutExportRefusal::new("text_composition_token", m))? } else { ty::COMPOSITION_VERSION };
@@ -679,10 +685,7 @@ impl Viewer {
         let options = ExportOptions { output_intent: intent, info_title: settings.title, subset_fonts: settings.subset_fonts, ..ExportOptions::default() }
             .with_pdfx_standard(settings.pdfx, identification)
             .map_err(|e| LayoutExportRefusal::new(e.code(), "pdfx"))?;
-        // Placed graphics (module docs): the link gate first (STU-ASSET-009, nothing written on a refusal),
-        // then the frames' placements and the resolver over the viewer's tile bodies, else the session's.
-        let frames = &rec.longdoc.graphic_frames;
-        let (graphics, placements) = self.layout_pdf_placements(&doc.document, frames).map_err(|(code, detail)| LayoutExportRefusal::new(code, detail))?;
+        // The placed graphics' resolver over the viewer's tile bodies, else the session's.
         let missing = super::layout_assets::needed(&doc.document, frames).iter().any(|d| !self.assets.contains_key(d));
         let stored = if missing { self.run.render_assets().map_err(|code| LayoutExportRefusal::new(code, "tile bodies"))? } else { BTreeMap::new() };
         let assets = super::layout_assets::LayoutAssets::new(&doc.document, frames, &[&self.assets, &stored]);
