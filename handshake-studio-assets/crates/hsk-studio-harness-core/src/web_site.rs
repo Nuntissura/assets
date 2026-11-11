@@ -12,8 +12,13 @@
 //!   and never followed, so nothing outside the root is read and a reference through it is `denied`. Every
 //!   `.html`/`.htm` file is a document and every `.css` file a style sheet; both are parsed under the engine's
 //!   `Limits` (8 MiB each) with at most 64 MiB of source in the whole site and 262144 references (the engine bounds
-//!   one document at 200000, `Limits::max_nodes`). A file that cannot be read or parsed is listed in `unparsed`
-//!   with its code and `graph_complete` is false. The open document contributes its live source, not its file.
+//!   one document at 200000, `Limits::max_nodes`). A style sheet is scanned as the body of a `style` element with
+//!   each `</style` read as `<_style` (same length, so every span is the file's own; the file is never changed by
+//!   it). A file that cannot be read or parsed (not UTF-8, over 8 MiB, an engine limit) is listed in `unparsed` with
+//!   its code and `graph_complete` is false. The open document contributes its live source, not its file.
+//! - **Declared limit (fail closed, lead Q4):** while any file of the site is unparsed, the site export and every
+//!   `web.move_file` refuse `document_unreadable`; `target` is `<file>: <reason>` and `detail` is `{file, reason}`.
+//!   Fix or remove that file (or convert it to UTF-8), then repeat the command.
 //! - **The graph.** One row per reference the engine's carrier table finds (`collect_assets`), resolved against
 //!   the referring file's folder (`/...` against the root): a file of the walk, a folder (navigation only), a
 //!   missing file (or one that exists only in another letter case: `case_mismatch`, because a published site on a
@@ -32,43 +37,68 @@
 //! - **Export of the set** (`web.export_recipe` `documents: site`): every document from its source (minified when
 //!   the recipe says so), every file a document or an exported style sheet references, the manifest listing every
 //!   document (`documents`, role `document`). The recipe's `file` must name a document of the set. A link to a page
-//!   that does not exist is a `link_broken` warning row (in the manifest and the result), in both modes; any other
-//!   missing or case-mismatched local reference refuses `asset_missing` before anything is written. The output must
-//!   lie outside the site (`output_inside_site`).
+//!   that does not exist is a `link_broken` warning row (in the manifest and the result), in both modes, at most 2000
+//!   rows with `link_broken_truncated` counting the rest; any other missing or case-mismatched local reference
+//!   refuses `asset_missing` before anything is written. The output must lie outside the site
+//!   (`output_inside_site`). A manifest over 1 MiB (what publish and verify read back) refuses
+//!   `export_manifest_too_large` before the first write, in both modes.
 //! - **`web.move_file`** `{from, to}` (root-relative paths of one file): one transaction with a receipt. Refused
 //!   while the open document has unsaved edits (`document_unsaved`) or its file changed on disk
-//!   (`document_changed_on_disk`). Every reference to `from` is rewritten, and the moved file's own relative
-//!   references are re-based, in the spelling `site_relative_link_base` names (`document`: relative to the
-//!   referring file; `site_root`: `/...`). A reference whose bytes are its decoded text is rewritten in its path
-//!   bytes only; one whose decoding moved offsets (character references) is rewritten through its whole attribute
-//!   value (`escape_attr`) when the value carries only that reference; otherwise `reference_not_rewritable` (with
-//!   the document and line). Every new source is parsed and its graph compared with the old one (every reference
-//!   must reach the same place, with `from` read as `to`) before the first write (`move_rewrite_unverified`). Then
+//!   (`document_changed_on_disk`). `to` is compared case-folded with the walk: a folder of `to` that is a link or
+//!   junction in any letter case refuses `move_outside_site`, a folder that exists in another letter case is used in
+//!   its on-disk spelling (the receipt's `to`, every rewritten reference), and the resolved folder of `to` must lie
+//!   under the resolved root. Every reference to `from` is rewritten in the spelling `site_relative_link_base` names
+//!   (`document`: relative to the referring file; `site_root`: `/...`). In the moved file every relative reference
+//!   (not `/...`, no scheme) is re-based by path arithmetic on its own bytes, whatever it reaches (a denied or missing
+//!   one too; percent-encoding, query and fragment kept); one that cannot be spelled from the new folder (`site_root`
+//!   above the root, an empty segment) refuses `reference_not_rewritable`. A reference whose bytes are its decoded
+//!   text is rewritten in its path bytes only; one whose decoding moved offsets (character references) is rewritten
+//!   through its whole attribute value (`escape_attr`, always quoted: an unquoted value gains `"`) when the value
+//!   carries only that reference; otherwise `reference_not_rewritable` (with the document and line). The engine
+//!   applies at most 1024 edits to one file (`Limits::max_edits`): a file needing more refuses with the engine's
+//!   code. Every new source is parsed and its graph compared with the old one before the first write
+//!   (`move_rewrite_unverified`): every reference must reach the same place (with `from` read as `to`; a denied one
+//!   by its folder-resolved path), each rewritten reference must read as planned and every other keeps its text.
+//!   Moving the recipe's `file` updates it (receipt `recipe_file`). Then
 //!   the referring files are written through the atomic writer, the moved file's new bytes, and the rename last; a
 //!   failed write restores every file already written from the in-memory originals and the refusal `move_failed`
 //!   carries the receipt (`restored`, `failed`, `restore_failed`). Receipt: `from`, `to`, and per changed file every
 //!   change's `before` and `after` byte range, references and line. Not a `web.undo` step: an open document that
 //!   was moved or rewritten is reopened from disk with a fresh history; a reverse move restores the bytes.
-//!   Refusals: `move_outside_site` (`..` past the root, or a path through a link), `path_invalid`,
+//!   Refusals: `move_outside_site` (`..` past the root, or a path through a link in any letter case), `path_invalid`,
 //!   `move_target_exists` (case-folded), `move_case_only` (a rename by letter case only), `move_source_missing` (not
 //!   a file of the walk), `move_reserved_file` (site record, manifest, receipt), `move_site_record` (a document with
 //!   a site record beside it), `move_kind_changes` (a document, style sheet or other file stays its kind),
-//!   `document_unreadable`. Cancellation is checked before the first write; once writing starts the transaction
-//!   completes or restores.
-//! - **Site lock** ([STU-WEB-131]): `web.site_report`, `web.export` with `documents: site`, `web.move_file` and
-//!   `web.publish` create `<local_root>/.studio-site.lock` exclusively with the caller's actor, client session and
-//!   command id, and remove it on every exit path. Contention refuses `site_locked` at once, never waits; `target`
-//!   names the holder and `detail.holder` is the file's record. There is no automatic stale-lock breaking: when the
-//!   holder's process is gone (check the session it names), delete the file by hand.
-//! - **Jobs** (R60 probe j3): `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted before
-//!   any work (no lock, no read, no file) through the bound job port (`Run::bind_web_jobs`; the Viewer binds its own),
-//!   with the run's open package document as the resource and its head as the bound revision, as the viewer's other
-//!   exports (`as_export_job`): `overloaded` (`target` `retry_after_ms=N`, `detail.retry_after_ms`), `canceled` and
-//!   `stale_revision` refuse; each settles `completed`, `canceled` or `failed` with its code. With no package open the
-//!   job is never resource-less (lead ruling 2026-11-08: a resource-less job would never reach the port): its resource
-//!   is the site's own id, `SDOC-` in the UUIDv7 shape from the SHA-256 of the site's folder (`local_root`, else the
-//!   open document's folder, canonical when it resolves), the same for every job on one site and in every process,
-//!   bound to the web source revision (`job_resource_invalid` if that id ever failed to parse).
+//!   `document_unreadable`, and before admission (no file read) `no_site`, `parameter_missing`, `path_invalid`,
+//!   `nothing_to_change`, `move_case_only`, `move_kind_changes`, `move_reserved_file`. Cancellation is checked per
+//!   folder and file of the walk and before the first write; once writing starts the transaction completes or
+//!   restores.
+//! - **Site lock** ([STU-WEB-131]): `web.site_report`, `web.export` with `documents: site`, `web.move_file`,
+//!   `web.publish` and `web.save` of a file inside `local_root` (lead Q2) create `<local_root>/.studio-site.lock`
+//!   exclusively with the caller's actor, client session, command id and a nonce of this acquisition, and remove it
+//!   on every exit path only while it still holds that nonce (a lock taken after a stale one was deleted by hand is
+//!   left to its holder). Contention refuses `site_locked` at once, never waits; `target` names the holder and
+//!   `detail.holder` is `{account_id, client_session, command_id}` from the file, never the whole file. There is no
+//!   automatic stale-lock breaking: when the holder's process is gone (check the session it names), delete the file
+//!   by hand.
+//! - **Jobs** (R60 probe j3): `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted after
+//!   their checks that need no file (typed parameter and state refusals, never `overloaded`) and before any work (no
+//!   lock, no read, no file) through the bound job port (`Run::bind_web_jobs`; the Viewer binds its own). A job is
+//!   never resource-less (lead ruling 2026-11-08). Resource rule (lead Q1, what the job reads or writes): the open
+//!   export and `web.publish` admit on the run's open package document at its head, as the viewer's other exports
+//!   (`as_export_job`), and on the site's id when no package is open; the site export, `web.site_report` and
+//!   `web.move_file` always admit on the site's id at the web source revision. The site's id is `SDOC-` in the
+//!   UUIDv7 shape from the SHA-256 of the site's folder (`local_root`, else the open document's folder) made
+//!   absolute and case-folded without touching the file system (`job_resource_invalid` if it ever failed to parse).
+//!   Actions: `export` for the exports, publish and `web.site_report` (the session's `Action` has no read class:
+//!   `edit`, `save`, `export`), `edit` for `web.move_file`. Refusals: `overloaded` (`target` `retry_after_ms=N`,
+//!   `detail.retry_after_ms`), `canceled` (a token canceled before the command is the lifecycle's
+//!   `refused_canceled`; the port is not asked), `stale_revision`. Each admitted job settles `completed`, `canceled`
+//!   or `failed` with its code, and an accepted command's result carries `job` (`outcome`, `ticket`,
+//!   `bound_revision`, `correlation`, `frame_correlation` when the frame was delivered). `web.publish` checks the
+//!   token before each file: a cancel refuses `canceled` with the receipt of the files already transferred.
+//!   Deadline: none by nature; ended by cancel (a site walk, export or publish produces the operator's requested
+//!   files; HBR-HOST-004).
 //! - **The opened package**: `web.move_file` refuses `move_open_package` when `from` or `to` is the file the run's
 //!   package was opened from, or a path inside it.
 #![deny(clippy::arithmetic_side_effects)]
@@ -77,7 +107,7 @@ use super::{
     join, minified, no, output_names, portable, read_bounded, resolved, web_no, write_atomic, write_new,
 };
 use hsk_studio_accord::{CancellationToken, CommandContext, CommandId, DomainId};
-use hsk_studio_session::{Action, AdmissionJobPort, Cost, JobAdmissionRefusal, JobKind, JobLifecycle, JobOutcome, JobPort, JobRequest};
+use hsk_studio_session::{Action, AdmissionJobPort, Cost, JobAdmissionRefusal, JobKind, JobLifecycle, JobOutcome, JobPort, JobRequest, JobSettlement, ReportStatus};
 use hsk_studio_web::{
     AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, Limits, Load, Loads, Namespace, NodeId, Quote, SourcePatch, TextEdit, WebDoc, apply, collect_assets, escape_attr, parse, sha256_hex,
 };
@@ -86,6 +116,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The commands admitted as jobs (module docs).
+pub(super) const ADMITTED: [&str; 4] = ["web.export", "web.publish", "web.site_report", "web.move_file"];
+/// `web.site_report`'s job action: the session's `Action` has no read class (`edit`, `save`, `export`).
+pub(super) const REPORT_ACTION: Action = Action::Export;
+
+/// What a job is admitted on (module docs, lead Q1).
+pub(super) enum JobOn {
+    /// The open package's document (the open export, publish), else the site.
+    Open,
+    /// The site's own id, package open or not (the site export, the report, a move).
+    Site,
+}
 
 /// The site-level advisory lock, in `local_root` ([STU-WEB-131]).
 pub const LOCK_FILE: &str = ".studio-site.lock";
@@ -149,6 +193,9 @@ struct Files {
     /// ASCII-lowercased id -> the first id of that spelling (sorted, so deterministic).
     folded: BTreeMap<String, String>,
     dirs: BTreeSet<String>,
+    /// ASCII-lowercased folder -> its walked spelling.
+    folded_dirs: BTreeMap<String, String>,
+    /// Links and junctions, ASCII-lowercased (never followed, in any letter case).
     links: BTreeSet<String>,
 }
 
@@ -158,23 +205,49 @@ impl Files {
         self.files.insert(id);
     }
 
+    fn insert_dir(&mut self, id: String) {
+        self.folded_dirs.entry(id.to_ascii_lowercase()).or_insert_with(|| id.clone());
+        self.dirs.insert(id);
+    }
+
     fn through_link(&self, segments: &[String]) -> bool {
-        (1..=segments.len()).any(|n| segments.get(..n).is_some_and(|s| self.links.contains(&s.join("/"))))
+        (1..=segments.len()).any(|n| segments.get(..n).is_some_and(|s| self.links.contains(&s.join("/").to_ascii_lowercase())))
     }
 
     /// The set after `from` became `to` (its folders added).
     fn moved(&self, from: &str, to: &str) -> Files {
-        let mut next = Files { dirs: self.dirs.clone(), links: self.links.clone(), ..Files::default() };
+        let mut next = Files { dirs: self.dirs.clone(), folded_dirs: self.folded_dirs.clone(), links: self.links.clone(), ..Files::default() };
         for id in &self.files {
             next.insert(if id == from { to.to_string() } else { id.clone() });
         }
         let segments: Vec<&str> = to.split('/').collect();
         for n in 1..segments.len() {
             if let Some(dir) = segments.get(..n) {
-                next.dirs.insert(dir.join("/"));
+                next.insert_dir(dir.join("/"));
             }
         }
         next
+    }
+
+    /// `to` in the walk's spelling (review F1): a folder that exists in another letter case takes its walked
+    /// spelling; a folder that is a link in any letter case refuses `move_outside_site`; a file or folder already
+    /// at `to`, or a file at one of its folders, refuses `move_target_exists`.
+    fn spelled(&self, to: &str) -> R<String> {
+        let requested = split_path(to);
+        let mut out: Vec<String> = Vec::with_capacity(requested.len());
+        for (i, segment) in requested.iter().enumerate() {
+            let prefix = requested.get(..=i).map(|s| s.join("/").to_ascii_lowercase()).unwrap_or_default();
+            let last = i.saturating_add(1) == requested.len();
+            if self.links.contains(&prefix) {
+                return no("move_outside_site", to);
+            }
+            if self.folded.contains_key(&prefix) || (last && self.folded_dirs.contains_key(&prefix)) {
+                return no("move_target_exists", to);
+            }
+            let walked = self.folded_dirs.get(&prefix).filter(|_| !last).and_then(|d| d.rsplit('/').next());
+            out.push(walked.unwrap_or(segment.as_str()).to_string());
+        }
+        Ok(out.join("/"))
     }
 }
 
@@ -202,12 +275,14 @@ enum Reach {
 impl Reach {
     /// The place reached, for the graph comparison of a move: a file path (whether it exists or not), a folder, or
     /// the reference's kind.
-    fn place(&self, rename: Option<(&str, &str)>, reference: &str, fragment: Option<&str>) -> (u8, String) {
+    fn place(&self, rename: Option<(&str, &str)>, reference: &str, fragment: Option<&str>, dir: &[String]) -> (u8, String) {
         match self {
             Reach::File(id) | Reach::Case { id, .. } | Reach::Missing(id) => (1, rename.filter(|(f, _)| f == id).map_or_else(|| id.clone(), |(_, t)| t.to_string())),
             Reach::Folder { path, .. } => (2, path.clone()),
             Reach::External => (3, reference.to_string()),
-            Reach::Denied(code) => (4, (*code).to_string()),
+            // A denied reference by the place its own bytes name from its folder (review F2), so a move that changes
+            // where it points is caught.
+            Reach::Denied(code) => (4, denied_place(dir, reference).unwrap_or_else(|| (*code).to_string())),
             Reach::Inline => (5, String::new()),
             Reach::SameDocument => (6, fragment.unwrap_or("").to_string()),
         }
@@ -414,12 +489,12 @@ fn walk(root: &Path, cancel: &CancellationToken) -> R<Walk> {
                 out.skipped.push((bounded(&id), "name_not_portable"));
             } else if kind.is_symlink() {
                 out.skipped.push((bounded(&id), "link"));
-                out.files.links.insert(id);
+                out.files.links.insert(id.to_ascii_lowercase());
             } else if kind.is_dir() {
                 if segments.len() >= MAX_SEGMENTS {
                     return no("site_too_deep", &id);
                 }
-                out.files.dirs.insert(id);
+                out.files.insert_dir(id);
                 stack.push((dir.join(name), segments));
             } else if kind.is_file() {
                 if out.files.files.len() >= MAX_EXPORT_FILES {
@@ -474,10 +549,8 @@ fn source(files: &Files, id: &str, role: Role, doc: Option<WebDoc>, text: &str, 
             Err(e) => return Ok(Err(e.code())),
         },
         (None, _) => {
-            if text.to_ascii_lowercase().contains("</style") {
-                return Ok(Err("stylesheet_unreadable"));
-            }
-            match parse(&format!("{SHEET_HEAD}{text}{SHEET_TAIL}"), 1, &Limits::default(), cancel) {
+            // Review F8: each `</style` read as `<_style` (same length: every span stays the file's own).
+            match parse(&format!("{SHEET_HEAD}{}{SHEET_TAIL}", masked_sheet(text)), 1, &Limits::default(), cancel) {
                 Ok(doc) => doc,
                 Err(e) if e.code() == "canceled" => return Err(canceled(&e)),
                 Err(e) => return Ok(Err(e.code())),
@@ -491,6 +564,26 @@ fn source(files: &Files, id: &str, role: Role, doc: Option<WebDoc>, text: &str, 
         Err(e) => return Ok(Err(e.code())),
     }
     Ok(Ok(src))
+}
+
+/// A style sheet's text with each `</style` (any letter case) read as `<_style`: the same length, so the scan's spans
+/// are the file's own; the file itself is never changed.
+fn masked_sheet(text: &str) -> String {
+    const END: &[u8] = b"</style";
+    let mut bytes = text.as_bytes().to_vec();
+    let mut at = 0usize;
+    while let Some(window) = bytes.get(at..at.saturating_add(END.len())) {
+        if window.eq_ignore_ascii_case(END) {
+            if let Some(slash) = bytes.get_mut(at.saturating_add(1)) {
+                *slash = b'_';
+            }
+            at = at.saturating_add(END.len());
+        } else {
+            at = at.saturating_add(1);
+        }
+    }
+    // Only an ASCII byte was replaced by an ASCII byte, so the text stays UTF-8.
+    String::from_utf8(bytes).unwrap_or_else(|_| text.to_string())
 }
 
 fn edges_of(files: &Files, src: &Source, cancel: &CancellationToken) -> Result<Vec<Edge>, hsk_studio_web::WebError> {
@@ -647,12 +740,58 @@ fn capped(mut rows: Vec<(String, usize, String, Value)>, truncated: &mut BTreeMa
     rows.into_iter().take(MAX_ROWS).map(|r| r.3).collect()
 }
 
-/// The site lock's guard: the file is removed on every exit path.
-pub(super) struct SiteLock(PathBuf);
+/// An export's `link_broken` rows, at most `MAX_ROWS` (review F4), and how many were left out.
+pub(super) fn capped_rows(mut rows: Vec<Value>) -> (Vec<Value>, usize) {
+    let truncated = rows.len().saturating_sub(MAX_ROWS);
+    rows.truncate(MAX_ROWS);
+    (rows, truncated)
+}
+
+/// An export manifest's bytes, refused `export_manifest_too_large` over what publish and verify read back
+/// (`MAX_RECORD_BYTES`), before the first write (review F4).
+pub(super) fn manifest_bytes(manifest: &Value) -> R<Vec<u8>> {
+    let bytes = serde_json::to_vec_pretty(manifest).map_err(|_| No("export_failed", String::new(), None))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECORD_BYTES {
+        return no("export_manifest_too_large", &bytes.len().to_string());
+    }
+    Ok(bytes)
+}
+
+/// The refusal while a file of the site is unparsed (lead Q4: fail closed, the file and its reason named).
+fn unreadable(set: &SiteSet) -> R<()> {
+    match set.unparsed.first() {
+        Some((id, reason)) => Err(No("document_unreadable", bounded(&format!("{id}: {reason}")), Some(json!({"file": id, "reason": reason})))),
+        None => Ok(()),
+    }
+}
+
+/// The settlement of an admitted job as JSON (the viewer's `settlement_json` shape).
+fn job_json(s: &JobSettlement) -> Value {
+    let mut v = json!({"outcome": s.outcome.code(), "ticket": s.ticket.map(|t| t.0), "bound_revision": s.bound_revision, "correlation": s.correlation_id});
+    if let ReportStatus::Delivered(receipt) = &s.report {
+        v["frame_correlation"] = json!(receipt.correlation_id);
+    }
+    if let JobOutcome::Failed(code) = s.outcome {
+        v["code"] = json!(code);
+    }
+    v
+}
+
+/// Lock acquisitions of this process (part of every nonce).
+static LOCKS: AtomicU64 = AtomicU64::new(0);
+
+/// The site lock's guard: the file is removed on every exit path, only while it holds this acquisition's nonce.
+pub(super) struct SiteLock {
+    path: PathBuf,
+    nonce: String,
+}
 
 impl Drop for SiteLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let held: Option<Value> = read_bounded(&self.path, MAX_RECORD_BYTES).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if held.is_some_and(|h| h["nonce"].as_str() == Some(self.nonce.as_str())) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -664,23 +803,27 @@ pub(super) fn site_lock(local_root: &str, ctx: &CommandContext) -> R<SiteLock> {
         return no("site_root_missing", local_root);
     }
     let path = root.join(LOCK_FILE);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let nonce = format!("{}-{}-{}-{nanos}", std::process::id(), LOCKS.fetch_add(1, Ordering::Relaxed), ctx.correlation().value());
     let holder = json!({
-        "schema": "hsk.studio.web.site_lock@1", "actor": actor_json(ctx.actor()), "client_session": ctx.client_session().as_str(), "command_id": ctx.command().map(CommandId::as_str),
+        "schema": "hsk.studio.web.site_lock@1", "actor": actor_json(ctx.actor()), "client_session": ctx.client_session().as_str(), "command_id": ctx.command().map(CommandId::as_str), "nonce": nonce,
     });
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(mut file) => {
-            let lock = SiteLock(path);
+            let lock = SiteLock { path, nonce };
             file.write_all(&serde_json::to_vec(&holder).unwrap_or_default()).map_err(|_| No("site_lock_failed", LOCK_FILE.into(), None))?;
             Ok(lock)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             let held: Value = read_bounded(&path, MAX_RECORD_BYTES).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
-            let field = |v: &Value| v.as_str().map_or_else(|| "?".to_string(), str::to_string);
+            // Three fields of the holder's record, each bounded; never the whole file (review F7).
+            let field = |v: &Value| super::row_text(v.as_str().unwrap_or("?"));
+            let holder = json!({"account_id": field(&held["actor"]["account_id"]), "client_session": field(&held["client_session"]), "command_id": field(&held["command_id"])});
             let target = format!("held by {} in session {} running {}", field(&held["actor"]["account_id"]), field(&held["client_session"]), field(&held["command_id"]));
             Err(No(
                 "site_locked",
                 bounded(&target),
-                Some(json!({"holder": held, "lock_file": LOCK_FILE, "manual_step": "when the holder's session is gone, delete the lock file by hand; Studio never breaks a lock"})),
+                Some(json!({"holder": holder, "lock_file": LOCK_FILE, "manual_step": "when the holder's session is gone, delete the lock file by hand; Studio never breaks a lock"})),
             ))
         }
         Err(_) => no("site_lock_failed", LOCK_FILE),
@@ -723,8 +866,96 @@ fn split_path(id: &str) -> Vec<String> {
     if id.is_empty() { Vec::new() } else { id.split('/').map(str::to_string).collect() }
 }
 
+/// Whether a reference's path starts with a URL scheme (`mailto:`, `data:`, a drive letter): not a site path.
+fn has_scheme(path: &str) -> bool {
+    path.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// A relative path's bytes resolved against `dir` without decoding them: the levels above the root, the segments
+/// below and whether it names a folder; `None` for an empty segment inside the path.
+fn lexical(dir: &[String], path: &str) -> Option<(usize, Vec<String>, bool)> {
+    let (mut at, rest) = match path.strip_prefix('/') {
+        Some(rest) => (Vec::new(), rest),
+        None => (dir.to_vec(), path),
+    };
+    let mut up = 0usize;
+    let mut folder = false;
+    let parts: Vec<&str> = rest.split('/').collect();
+    for (i, part) in parts.iter().enumerate() {
+        let last = i.saturating_add(1) == parts.len();
+        match *part {
+            "." => folder = last,
+            ".." => {
+                if at.pop().is_none() {
+                    up = up.saturating_add(1);
+                }
+                folder = last;
+            }
+            "" if last => folder = true,
+            "" => return None,
+            name => {
+                at.push(name.to_string());
+                folder = false;
+            }
+        }
+    }
+    Some((up, at, folder))
+}
+
+/// Where a denied reference's own bytes point from `dir` (review F2): `up:segments[/]`, or `None` for a scheme or a
+/// path that cannot be resolved.
+fn denied_place(dir: &[String], reference: &str) -> Option<String> {
+    let path = reference.split(['?', '#']).next().unwrap_or("");
+    if path.is_empty() || has_scheme(path) || path.starts_with("//") {
+        return None;
+    }
+    let (up, at, folder) = lexical(dir, path)?;
+    Some(format!("{up}:{}{}", at.join("/"), if folder { "/" } else { "" }))
+}
+
+/// A relative reference path of the moved file, re-based by path arithmetic on its own bytes (review F2): the place
+/// it names from `old_dir`, spelled from `new_dir` (`from` read as `to`); `None` when that cannot be spelled.
+fn rebased(link_base: &str, old_dir: &[String], new_dir: &[String], path: &str, from: &str, to: &str) -> Option<String> {
+    let (up, mut at, folder) = lexical(old_dir, path)?;
+    if up == 0 && !folder && at.join("/") == from {
+        at = split_path(to);
+    }
+    if up == 0 {
+        return Some(spell(link_base, new_dir, &at, folder));
+    }
+    if link_base == "site_root" {
+        return None;
+    }
+    let mut parts: Vec<&str> = vec![".."; new_dir.len().saturating_add(up)];
+    parts.extend(at.iter().map(String::as_str));
+    let mut out = parts.join("/");
+    if folder {
+        out.push('/');
+    }
+    Some(out)
+}
+
+/// `original` with the edits applied (spans in the scanned source, `head` bytes before the file's own text).
+fn applied_text(original: &str, changes: &[Change], head: usize) -> Option<String> {
+    let mut out = String::with_capacity(original.len());
+    let mut at = 0usize;
+    for c in changes {
+        let start = c.edit.span.start.checked_sub(head)?;
+        let end = c.edit.span.end.checked_sub(head)?;
+        out.push_str(original.get(at..start)?);
+        out.push_str(&c.edit.replacement);
+        at = end;
+    }
+    out.push_str(original.get(at..)?);
+    Some(out)
+}
+
 /// One planned change of a move.
 struct Change {
+    /// The changed reference's position among its file's edges.
+    index: usize,
     edit: TextEdit,
     line: usize,
     before: String,
@@ -732,39 +963,47 @@ struct Change {
 }
 
 impl WebHost {
-    /// Admits `work` as one job (module docs) and settles it with the work's outcome.
-    pub(super) fn admitted(&mut self, action: Action, ctx: &CommandContext, cancel: &CancellationToken, work: impl FnOnce(&mut Self) -> R<Value>) -> R<Value> {
-        // The open package addresses the job, as the viewer's other exports do; with none open the site does. Never
-        // resource-less: a resource-less job never reaches the port (lead ruling 2026-11-08, R60 probe j3).
-        let (resource, head) = match self.job_resource.clone() {
-            Some(id) => (id, self.job_head),
-            None => (self.site_resource()?, self.revision()),
+    /// Admits `work` as one job (module docs) and settles it with the work's outcome; an accepted result carries the
+    /// settlement as `job`.
+    pub(super) fn admitted(&mut self, action: Action, on: JobOn, ctx: &CommandContext, cancel: &CancellationToken, work: impl FnOnce(&mut Self) -> R<Value>) -> R<Value> {
+        // Never resource-less (lead ruling 2026-11-08, R60 probe j3); the resource is what the job reads or writes
+        // (lead Q1): the open package for the open export and publish, else the site.
+        let (resource, head) = match (on, self.job_resource.clone()) {
+            (JobOn::Open, Some(id)) => (id, self.job_head),
+            _ => (self.site_resource()?, self.revision()),
         };
         let request = JobRequest { resource: Some(resource), action, actor: ctx.actor().clone(), cost: Cost { jobs: 1, bytes: 0 }, bound_revision: head, correlation_id: ctx.correlation().value(), kind: JobKind::Committed };
         let job = self.jobs.lifecycle.admit(&self.jobs.port, request, head, cancel).map_err(|refusal| match refusal {
             JobAdmissionRefusal::Overloaded { retry_after_ms } => No("overloaded", format!("retry_after_ms={retry_after_ms}"), Some(json!({"retry_after_ms": retry_after_ms}))),
             other => No(other.code(), String::new(), None),
         })?;
-        let result = work(self);
-        let _ = job.settle(match &result {
+        let mut result = work(self);
+        let settled = job.settle(match &result {
             Ok(_) => JobOutcome::Completed,
             Err(No("canceled", ..)) => JobOutcome::Canceled,
             Err(No(code, ..)) => JobOutcome::Failed(code),
         });
+        if let Ok(value) = &mut result
+            && value.is_object()
+        {
+            value["job"] = job_json(&settled);
+        }
         result
     }
 
-    /// The job resource with no package open (module docs): an `SDOC` id in the UUIDv7 shape whose digits are the
-    /// SHA-256 of the site's folder (`local_root`, else the open document's folder; canonical when it resolves), so
-    /// every job on one site addresses one resource, the same in every process.
+    /// The site's job resource (module docs): an `SDOC` id in the UUIDv7 shape whose digits are the SHA-256 of the
+    /// site's folder (`local_root`, else the open document's folder), made absolute and ASCII case-folded without
+    /// touching the file system (review F5: nothing is read before the port is asked), so every job on one site
+    /// addresses one resource, the same in every process.
     fn site_resource(&self) -> R<DomainId> {
         let folder = match (&self.site, &self.path) {
             (Some(site), _) => PathBuf::from(&site.local_root),
             (None, Some(path)) => path.parent().map_or_else(PathBuf::new, Path::to_path_buf),
             (None, None) => PathBuf::new(),
         };
-        let key = std::fs::canonicalize(&folder).unwrap_or(folder);
-        let hex = sha256_hex(format!("hsk.studio.web.site\0{}", key.to_string_lossy()).as_bytes());
+        let absolute = std::path::absolute(&folder).unwrap_or(folder);
+        let key = absolute.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
+        let hex = sha256_hex(format!("hsk.studio.web.site\0{key}").as_bytes());
         let g = |r: Range<usize>| hex.get(r).unwrap_or("0");
         let variant = match g(16..17) {
             "0" | "4" | "8" | "c" => "8",
@@ -776,7 +1015,7 @@ impl WebHost {
         DomainId::parse(&id).map_err(|_| No("job_resource_invalid", id, None))
     }
 
-    fn site_root(&self) -> R<(super::Site, PathBuf)> {
+    pub(super) fn site_root(&self) -> R<(super::Site, PathBuf)> {
         let site = self.site.clone().ok_or(No("no_site", String::new(), None))?;
         let root = PathBuf::from(checked_path(&site.local_root)?);
         Ok((site, root))
@@ -866,9 +1105,7 @@ impl WebHost {
         }
         let _lock = site_lock(&site.local_root, ctx)?;
         let set = SiteSet::load(&root, self.open_view(), cancel)?;
-        if let Some((id, _)) = set.unparsed.first() {
-            return no("document_unreadable", id);
-        }
+        unreadable(&set)?;
         if set.page(&recipe.file).is_none() {
             return no("entry_document_missing", &recipe.file);
         }
@@ -937,23 +1174,31 @@ impl WebHost {
         if std::fs::read_dir(&out).is_ok_and(|mut d| d.next().is_some()) {
             return no("output_not_empty", &recipe.output_root);
         }
-        let link_broken: Vec<Value> = broken.iter().map(|(d, line, r)| json!({"document": d, "line": line, "reference": super::row_text(r)})).collect();
+        let (link_broken, truncated) = capped_rows(broken.iter().map(|(d, line, r)| json!({"document": d, "line": line, "reference": super::row_text(r)})).collect());
         let listed: Vec<Value> = files.iter().map(|(path, bytes, role)| json!({"path": path, "role": role, "bytes": bytes.len(), "sha256": sha256_hex(bytes)})).collect();
-        let manifest = json!({
+        let mut manifest = json!({
             "schema": "hsk.studio.web.export_manifest@1", "document": recipe.file, "documents": documents,
             "recipe": {"file": recipe.file, "documents": "site", "minify": recipe.minify, "asset_rewriting": "keep", "link_base": recipe.link_base},
             "files": listed, "external": external.iter().collect::<Vec<_>>(), "links": links.iter().collect::<Vec<_>>(), "link_broken": link_broken,
         });
+        if truncated > 0 {
+            manifest["link_broken_truncated"] = json!(truncated);
+        }
+        let manifest_bytes = manifest_bytes(&manifest)?;
         for (path, bytes, _) in &files {
             write_new(&join(&out, path), bytes)?;
         }
-        write_new(&out.join(MANIFEST_FILE), &serde_json::to_vec_pretty(&manifest).map_err(|_| No("export_failed", String::new(), None))?)?;
-        Ok(json!({"output_root": recipe.output_root, "manifest": manifest, "link_broken": link_broken}))
+        write_new(&out.join(MANIFEST_FILE), &manifest_bytes)?;
+        let mut result = json!({"output_root": recipe.output_root, "manifest": manifest, "link_broken": link_broken});
+        if truncated > 0 {
+            result["link_broken_truncated"] = json!(truncated);
+        }
+        Ok(result)
     }
 
-    /// `web.move_file` (module docs).
-    pub(super) fn move_file(&mut self, p: &P<'_>, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
-        let (site, root) = self.site_root()?;
+    /// `web.move_file`'s checks before admission (no I/O, review F5): `from` and `to` as root-relative ids.
+    pub(super) fn move_checks(&self, p: &P<'_>) -> R<(String, String)> {
+        self.site_root()?;
         let from = site_path(p.text("from")?)?;
         let to = site_path(p.text("to")?)?;
         if reserved(&from) || reserved(&to) {
@@ -968,6 +1213,13 @@ impl WebHost {
         if role(&from) != role(&to) {
             return no("move_kind_changes", &to);
         }
+        Ok((from, to))
+    }
+
+    /// `web.move_file` (module docs), after [`Self::move_checks`].
+    pub(super) fn move_file(&mut self, from: &str, to: &str, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
+        let (site, root) = self.site_root()?;
+        let (from, to) = (from.to_string(), to.to_string());
         if let Some(package) = self.package.as_deref().map(resolved)
             && let Some(id) = [&from, &to].into_iter().find(|id| {
                 let at = resolved(&join(&root, id));
@@ -993,23 +1245,16 @@ impl WebHost {
         if !set.files.files.contains(&from) {
             return no("move_source_missing", &from);
         }
-        let to_segments = split_path(&to);
-        if set.files.through_link(&to_segments) {
+        // Review F1: `to` in the walk's spelling, never through a link in any letter case, and its resolved folder
+        // under the resolved root (a second guard before anything is written).
+        let to = set.files.spelled(&to)?;
+        if !resolved(&join(&root, &to)).starts_with(resolved(&root)) {
             return no("move_outside_site", &to);
-        }
-        let taken = (1..=to_segments.len()).any(|n| {
-            let prefix = to_segments.get(..n).map(|s| s.join("/").to_ascii_lowercase()).unwrap_or_default();
-            set.files.folded.contains_key(&prefix) || (n == to_segments.len() && set.files.dirs.iter().any(|d| d.eq_ignore_ascii_case(&prefix)))
-        });
-        if taken {
-            return no("move_target_exists", &to);
         }
         if role(&from) == Role::Page && set.files.files.contains(&format!("{from}{SIDECAR_SUFFIX}")) {
             return no("move_site_record", &from);
         }
-        if let Some((id, _)) = set.unparsed.first() {
-            return no("document_unreadable", id);
-        }
+        unreadable(&set)?;
         // Plan every change, parse every result and compare the graphs before the first write.
         let moved_files = set.files.moved(&from, &to);
         let mut planned: Vec<(String, String, Vec<Change>, WebDoc)> = Vec::new();
@@ -1025,10 +1270,17 @@ impl WebHost {
             let after = Source { id: new_id.clone(), role: src.role, doc: next, edges: Vec::new() };
             let edges = edges_of(&moved_files, &after, cancel).map_err(|e| web_no(&e))?;
             let rename = Some((from.as_str(), to.as_str()));
-            let same = edges.len() == src.edges.len() && edges.iter().zip(&src.edges).all(|(n, o)| n.reach.place(None, &n.reference, n.fragment.as_deref()) == o.reach.place(rename, &o.reference, o.fragment.as_deref()));
-            if !same {
-                let line = edges.iter().zip(&src.edges).find(|(n, o)| n.reach.place(None, &n.reference, n.fragment.as_deref()) != o.reach.place(rename, &o.reference, o.fragment.as_deref())).map_or(0, |(n, _)| n.line);
-                return no("move_rewrite_unverified", &format!("{new_id}:{line}"));
+            let (old_dir, new_dir) = (dir_of(&src.id), dir_of(&new_id));
+            // Every reference reaches the same place; a rewritten one reads as planned, every other keeps its text.
+            let differs = |i: usize, n: &Edge, o: &Edge| {
+                let expected = changes.iter().find(|c| c.index == i).map_or(o.reference.as_str(), |c| c.after.as_str());
+                n.reach.place(None, &n.reference, n.fragment.as_deref(), &new_dir) != o.reach.place(rename, &o.reference, o.fragment.as_deref(), &old_dir) || n.reference != expected
+            };
+            if edges.len() != src.edges.len() {
+                return no("move_rewrite_unverified", &format!("{new_id}:0"));
+            }
+            if let Some((n, _)) = edges.iter().zip(&src.edges).enumerate().find(|(i, (n, o))| differs(*i, *n, *o)).map(|(_, pair)| pair) {
+                return no("move_rewrite_unverified", &format!("{new_id}:{}", n.line));
             }
             if !changes.is_empty() {
                 planned.push((src.id.clone(), new_id, changes, after.doc));
@@ -1039,12 +1291,11 @@ impl WebHost {
         let mut changed = Vec::new();
         let mut writes: Vec<(String, String)> = Vec::new();
         let mut moved_text = None;
-        for (old_id, new_id, changes, doc) in &planned {
+        for (old_id, new_id, changes, _) in &planned {
             let head = if role(old_id) == Role::Sheet { SHEET_HEAD.len() } else { 0 };
-            let text = {
-                let src = doc.source();
-                src.get(head..src.len().saturating_sub(if head > 0 { SHEET_TAIL.len() } else { 0 })).unwrap_or("").to_string()
-            };
+            // The file's own bytes with the edits applied (a style sheet was scanned masked, review F8).
+            let original = set.disk.get(old_id).map_or("", String::as_str);
+            let text = applied_text(original, changes, head).ok_or(No("move_rewrite_unverified", bounded(old_id), None))?;
             let mut shift = 0isize;
             let rows: Vec<Value> = changes
                 .iter()
@@ -1064,10 +1315,12 @@ impl WebHost {
         }
         changed.sort_by(|a, b| a.0.cmp(&b.0));
         let changed: Vec<Value> = changed.into_iter().map(|c| c.1).collect();
+        // Lead Q3: moving the recipe's entry document moves `recipe.file` with it.
+        let recipe_file = self.recipe.as_ref().filter(|r| r.file == from).map(|_| to.clone());
         let receipt = |complete: bool, restored: &[String], failed: Option<&str>, restore_failed: &[String]| {
             json!({
                 "schema": "hsk.studio.web.move_receipt@1", "site_id": site.site_id, "from": from, "to": to, "site_relative_link_base": site.link_base,
-                "changed": changed, "complete": complete, "restored": restored, "failed": failed, "restore_failed": restore_failed,
+                "changed": changed, "complete": complete, "restored": restored, "failed": failed, "restore_failed": restore_failed, "recipe_file": recipe_file,
             })
         };
         // Writes: referring files, the moved file's new bytes, then the rename; a failure restores what was written.
@@ -1131,6 +1384,9 @@ impl WebHost {
             self.undo.clear();
             self.redo.clear();
         }
+        if let (Some(file), Some(recipe)) = (&recipe_file, self.recipe.as_mut()) {
+            recipe.file = file.clone();
+        }
         Ok(json!({"receipt": receipt(true, &[], None, &[]), "web": self.state_json()}))
     }
 }
@@ -1139,29 +1395,32 @@ impl WebHost {
 /// reference re-based from its new folder.
 fn plan(src: &Source, from: &str, to: &str, link_base: &str) -> R<Vec<Change>> {
     let moving = src.id == from;
+    let old_dir = dir_of(&src.id);
     let dir = dir_of(if moving { to } else { &src.id });
     let text = src.text();
     let head = src.head();
     let mut out = Vec::new();
-    for e in &src.edges {
+    for (index, e) in src.edges.iter().enumerate() {
         let path_len = e.reference.find(['?', '#']).unwrap_or(e.reference.len());
-        let (target, folder) = match &e.reach {
-            Reach::File(id) if id == from => (to.to_string(), false),
-            Reach::File(id) | Reach::Missing(id) | Reach::Case { id, .. } if moving && !e.rooted && path_len > 0 => (id.clone(), false),
-            Reach::Folder { path, .. } if moving && !e.rooted && path_len > 0 => (path.clone(), true),
-            _ => continue,
-        };
         if path_len == 0 {
             continue;
         }
-        let new_path = spell(link_base, &dir, &split_path(&target), folder);
+        let not = || No("reference_not_rewritable", bounded(&format!("{}:{}", src.id, e.line)), None);
+        let path = e.reference.get(..path_len).unwrap_or("");
+        let new_path = match &e.reach {
+            Reach::File(id) if id == from && !moving => spell(link_base, &dir, &split_path(to), false),
+            Reach::External | Reach::Inline | Reach::SameDocument => continue,
+            // Review F2: in the moved file, every relative reference by path arithmetic on its own bytes.
+            _ if moving && !e.rooted && !has_scheme(path) => rebased(link_base, &old_dir, &dir, path, from, to).ok_or_else(not)?,
+            Reach::File(id) if id == from => spell(link_base, &dir, &split_path(to), false),
+            _ => continue,
+        };
         let new_ref = format!("{new_path}{}", e.reference.get(path_len..).unwrap_or(""));
         if new_ref == e.reference {
             continue;
         }
         let raw = text.get(e.span.clone()).unwrap_or("");
         let at = |r: Range<usize>| r.start.saturating_add(head)..r.end.saturating_add(head);
-        let not = || No("reference_not_rewritable", bounded(&format!("{}:{}", src.id, e.line)), None);
         let edit = if raw == e.reference {
             TextEdit { span: at(e.span.start..e.span.start.saturating_add(path_len)), replacement: new_path }
         } else {
@@ -1176,10 +1435,15 @@ fn plan(src: &Source, from: &str, to: &str, link_base: &str) -> R<Vec<Change>> {
                 return Err(not());
             }
             let value = format!("{}{new_ref}{}", decoded.get(..lead).unwrap_or(""), decoded.get(lead.saturating_add(e.reference.len())..).unwrap_or(""));
-            let quote = if attr.quote == Quote::Single { '\'' } else { '"' };
-            TextEdit { span: at(e.span.clone()), replacement: escape_attr(&value, quote) }
+            // Review F3: an unquoted value is written double-quoted, so decoded whitespace or `>` cannot end it.
+            let replacement = match attr.quote {
+                Quote::Single => escape_attr(&value, '\''),
+                Quote::Double => escape_attr(&value, '"'),
+                Quote::Unquoted | Quote::Absent => format!("\"{}\"", escape_attr(&value, '"')),
+            };
+            TextEdit { span: at(e.span.clone()), replacement }
         };
-        out.push(Change { edit, line: e.line, before: e.reference.clone(), after: new_ref });
+        out.push(Change { index, edit, line: e.line, before: e.reference.clone(), after: new_ref });
     }
     out.sort_by_key(|c| c.edit.span.start);
     Ok(out)
