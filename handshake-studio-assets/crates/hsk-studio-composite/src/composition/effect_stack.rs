@@ -985,3 +985,166 @@ pub(super) fn adjusted_surface(
     exactness.record(EFFECT_STACK_OPERATOR, Exactness::Approximate);
     Ok(b)
 }
+
+/// [`super::SceneContent::AdjustmentEffects`] for a frame scaled from `from` to `to` pixels
+/// (`super::scale_scene`; review F4): the layer stays at the identity, so its stack's pixel
+/// parameters scale with the frame (points per axis, lengths by the geometric mean of the two
+/// scales, blur and glow kernels resampled to the scaled radius and renormalised), and its coverage
+/// and entry masks are box-averaged onto the scaled frame. A Studio reading (the stack evaluated on
+/// the scaled frame, not the full frame scaled: `Approximate`, as the effect stack already is).
+pub(super) fn scaled_adjustment(a: &super::AdjustmentEffectsContent, from: (u32, u32), to: (u32, u32)) -> Result<super::AdjustmentEffectsContent, CompositeError> {
+    if from.0 == 0 || from.1 == 0 || to.0 == 0 || to.1 == 0 {
+        return Err(CompositeError::Overflow);
+    }
+    let scale = Scale { sx: f64::from(to.0) / f64::from(from.0), sy: f64::from(to.1) / f64::from(from.1), from, to };
+    let effects = a
+        .effects
+        .iter()
+        .map(|x| Ok(SceneEffectEntry { effect_id: x.effect_id.clone(), effect: scale.effect(&x.effect)?, mix: x.mix }))
+        .collect::<Result<Vec<_>, CompositeError>>()?;
+    let coverage = a.coverage.as_ref().map(|c| box_plane(c, from, to)).transpose()?;
+    Ok(super::AdjustmentEffectsContent { effects, coverage })
+}
+
+/// The frame scale of [`scaled_adjustment`].
+struct Scale {
+    sx: f64,
+    sy: f64,
+    from: (u32, u32),
+    to: (u32, u32),
+}
+
+impl Scale {
+    /// Lengths without an axis: the geometric mean of the two scales.
+    fn length(&self) -> f64 {
+        (self.sx * self.sy).sqrt()
+    }
+    fn point(&self, p: &[f64; 2]) -> [f64; 2] {
+        [p[0] * self.sx, p[1] * self.sy]
+    }
+    fn axis(&self, axis: Option<BlurAxis>) -> f64 {
+        match axis {
+            Some(BlurAxis::Horizontal) => self.sx,
+            Some(BlurAxis::Vertical) => self.sy,
+            None => self.length(),
+        }
+    }
+    fn effect(&self, e: &SceneEffect) -> Result<SceneEffect, CompositeError> {
+        let s = self.length();
+        Ok(match e {
+            SceneEffect::Twirl { angle_deg, radius_px, centre } => SceneEffect::Twirl { angle_deg: *angle_deg, radius_px: radius_px * s, centre: self.point(centre) },
+            SceneEffect::Spherize { radius_px, centre } => SceneEffect::Spherize { radius_px: radius_px * s, centre: self.point(centre) },
+            SceneEffect::Offset { shift, blend } => SceneEffect::Offset { shift: self.point(shift), blend: *blend },
+            SceneEffect::GradientRamp { start, start_colour, end, end_colour, radial, blend } => SceneEffect::GradientRamp {
+                start: self.point(start),
+                start_colour: *start_colour,
+                end: self.point(end),
+                end_colour: *end_colour,
+                radial: *radial,
+                blend: *blend,
+            },
+            SceneEffect::Circle { centre, radius_px, feather_px, colour, opacity, composite } => SceneEffect::Circle {
+                centre: self.point(centre),
+                radius_px: radius_px * s,
+                feather_px: feather_px * s,
+                colour: *colour,
+                opacity: *opacity,
+                composite: *composite,
+            },
+            SceneEffect::Checkerboard { anchor, cell, colour, opacity, composite } => {
+                SceneEffect::Checkerboard { anchor: self.point(anchor), cell: self.point(cell), colour: *colour, opacity: *opacity, composite: *composite }
+            }
+            SceneEffect::Blur { taps, axis, repeat_edges } => SceneEffect::Blur { taps: scaled_taps(taps, self.axis(*axis)), axis: *axis, repeat_edges: *repeat_edges },
+            SceneEffect::DirectionalBlur { angle_deg, length_px } => {
+                // The segment (angle from +x towards screen-up) maps through the axis scales.
+                let (dx, dy) = (angle_deg.to_radians().cos() * length_px * self.sx, angle_deg.to_radians().sin() * length_px * self.sy);
+                let angle = if *length_px > 0.0 { dy.atan2(dx).to_degrees() } else { *angle_deg };
+                SceneEffect::DirectionalBlur { angle_deg: angle, length_px: dx.hypot(dy) }
+            }
+            SceneEffect::RadialBlur { centre, amount, kind } => SceneEffect::RadialBlur { centre: self.point(centre), amount: *amount, kind: *kind },
+            SceneEffect::Glow(g) => SceneEffect::Glow(Box::new(GlowEffect { taps: scaled_taps(&g.taps, self.axis(g.axis)), ..(**g).clone() })),
+            SceneEffect::Composite(c) => SceneEffect::Composite(Box::new(EntryComposite {
+                effect: self.effect(&c.effect)?,
+                mode: c.mode,
+                mask: c.mask.as_ref().map(|m| box_plane(m, self.from, self.to)).transpose()?,
+            })),
+            // Relative to the frame, or colour only.
+            SceneEffect::PolarCoordinates { .. } | SceneEffect::FindEdges { .. } | SceneEffect::Colour(_) => e.clone(),
+        })
+    }
+}
+
+/// A 1-D kernel (odd length, centre tap in the middle) resampled to `scale` times its radius
+/// (linear interpolation between taps) and renormalised to the same sum; `scale >= 1` keeps it.
+fn scaled_taps(taps: &[f32], scale: f64) -> Vec<f32> {
+    if !(scale.is_finite() && scale > 0.0 && scale < 1.0) || taps.len() < 3 {
+        return taps.to_vec();
+    }
+    let r = taps.len() / 2;
+    #[allow(clippy::cast_precision_loss)]
+    let rf = r as f64;
+    // In range: 0 <= r * scale < r.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let nr = (rf * scale).round() as usize;
+    let sum: f64 = taps.iter().map(|t| f64::from(*t)).sum();
+    // The old kernel at `x` old taps from the centre (zero outside).
+    let at = |x: f64| -> f64 {
+        let u = x + rf;
+        if !(0.0..=2.0 * rf).contains(&u) {
+            return 0.0;
+        }
+        let i = u.floor();
+        let t = u - i;
+        // In range: 0 <= i <= 2r.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let i = i as usize;
+        let a = taps.get(i).map_or(0.0, |v| f64::from(*v));
+        let b = i.checked_add(1).and_then(|j| taps.get(j)).map_or(0.0, |v| f64::from(*v));
+        a + (b - a) * t
+    };
+    let len = nr.saturating_mul(2).saturating_add(1);
+    #[allow(clippy::cast_precision_loss)]
+    let raw: Vec<f64> = (0..len).map(|j| at((j as f64 - nr as f64) / scale)).collect();
+    let total: f64 = raw.iter().sum();
+    if total > 0.0 {
+        #[allow(clippy::cast_possible_truncation)]
+        raw.iter().map(|v| (v / total * sum) as f32).collect()
+    } else {
+        taps.to_vec()
+    }
+}
+
+/// A row-major `0..=1` plane over `from` box-averaged onto `to` (every destination texel the mean
+/// of the source texels its area covers).
+fn box_plane(plane: &[f32], from: (u32, u32), to: (u32, u32)) -> Result<Vec<f32>, CompositeError> {
+    let (fw, fh, tw, th) = (u64::from(from.0), u64::from(from.1), u64::from(to.0), u64::from(to.1));
+    let n = usize::try_from(tw.checked_mul(th).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
+    if u64::try_from(plane.len()).ok() != fw.checked_mul(fh) {
+        return Err(CompositeError::Overflow);
+    }
+    // The source span `[a, b)` of destination index `d` along an axis of `f` source and `t`
+    // destination texels (at least one texel).
+    let span = |d: u64, f: u64, t: u64| -> Option<(u64, u64)> {
+        let a = d.checked_mul(f)?.checked_div(t)?;
+        let b = d.checked_add(1)?.checked_mul(f)?.checked_add(t.checked_sub(1)?)?.checked_div(t)?;
+        Some((a, b.max(a.checked_add(1)?).min(f)))
+    };
+    let mut out = Vec::with_capacity(n);
+    for y in 0..th {
+        let (y0, y1) = span(y, fh, th).ok_or(CompositeError::Overflow)?;
+        for x in 0..tw {
+            let (x0, x1) = span(x, fw, tw).ok_or(CompositeError::Overflow)?;
+            let (mut acc, mut count) = (0.0f64, 0u32);
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = sy.checked_mul(fw).and_then(|r| r.checked_add(sx)).and_then(|i| usize::try_from(i).ok()).ok_or(CompositeError::Overflow)?;
+                    acc += plane.get(i).map_or(0.0, |v| f64::from(*v));
+                    count = count.saturating_add(1);
+                }
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            out.push(if count > 0 { (acc / f64::from(count)) as f32 } else { 0.0 });
+        }
+    }
+    Ok(out)
+}

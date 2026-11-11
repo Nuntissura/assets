@@ -16,7 +16,7 @@
 //! STU-CMP-015) lowers to [`crate::composition::SceneContent::AdjustmentEffects`]: its layer space
 //! is the composition rect (a transform that moves it is refused by the scene lowering), every
 //! `point_2d` is a fraction of the composition, and its masks fold into its composition-space
-//! coverage.
+//! coverage (masks that contribute nothing leave it unmasked).
 //!
 //! At a tick ([`CompositionTemporalSource::effected`]) every value is sampled (an absent value is
 //! its row default), checked against its declared hard bounds again (a Bezier keyframe may
@@ -733,13 +733,11 @@ impl CompositionTemporalSource {
     pub(super) fn adjustment_effects(comp: &super::Comp, l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<SceneContent, TemporalError> {
         let id = l.layer_id.as_str();
         let rect = Rect { x: 0, y: 0, width: comp.width, height: comp.height };
+        // No contributing mask (every mask mode none, or open paths) leaves the layer unmasked, as
+        // every other layer path reads it (review F2).
         let coverage = match &l.masks {
             None => None,
-            Some(lm) => match lm.coverage(id, tick, cancel, &Affine2::IDENTITY, rect, super::mask_plane_bound(rect.area()))? {
-                Some(c) => Some(c),
-                // An open path covers nothing.
-                None => Some(vec![0.0; usize::try_from(rect.area()).map_err(|_| CompositeError::Overflow)?]),
-            },
+            Some(lm) => lm.coverage(id, tick, cancel, &Affine2::IDENTITY, rect, super::mask_plane_bound(rect.area()))?,
         };
         let effects = Self::entries(l, rect, rect, tick, cancel)?;
         Ok(SceneContent::AdjustmentEffects(Box::new(AdjustmentEffectsContent { effects, coverage })))

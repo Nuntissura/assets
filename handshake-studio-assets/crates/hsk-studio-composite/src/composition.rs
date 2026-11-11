@@ -1775,26 +1775,38 @@ pub fn render_scene_with_output(
 /// STU-MOT-121 `resolution`): every layer matrix (and matte layer matrix) is followed by the scale
 /// `width / scene.width, height / scene.height`, so the layers resample into the smaller frame with
 /// the scene's declared filter; nested precompositions keep their own raster and are transformed
-/// like any layer. Sizes outside `1..=scene size` per side are refused.
+/// like any layer. A composition adjustment layer at the identity keeps it and its stack scales
+/// with the frame (effect_stack `scaled_adjustment`, lane SMB-MOTION-COMMANDS-2 review F4).
+/// Sizes outside `1..=scene size` per side are refused.
 pub fn scale_scene(scene: &SceneComposition, width: u32, height: u32) -> Result<SceneComposition, CompositeError> {
     if width == 0 || height == 0 || width > scene.width || height > scene.height || scene.width == 0 || scene.height == 0 {
         return Err(CompositeError::Unavailable("scale_scene_size".to_owned()));
     }
     let scale = Affine2 { m: [f64::from(width) / f64::from(scene.width), 0.0, 0.0, 0.0, f64::from(height) / f64::from(scene.height), 0.0] };
-    fn layer(l: &SceneLayer, scale: Affine2) -> SceneLayer {
+    let sizes = ((scene.width, scene.height), (width, height));
+    fn layer(l: &SceneLayer, scale: Affine2, sizes: ((u32, u32), (u32, u32))) -> Result<SceneLayer, CompositeError> {
         let mut out = l.clone();
+        // A composition adjustment layer's space is the frame (review F4): it stays at the
+        // identity and its stack scales with the frame; one the user moved keeps the matrix, so
+        // the lowering still refuses it `ADJUSTMENT_TRANSFORM`.
+        if let SceneContent::AdjustmentEffects(a) = &l.content
+            && l.matrix.is_identity()
+        {
+            out.content = SceneContent::AdjustmentEffects(Box::new(effect_stack::scaled_adjustment(a, sizes.0, sizes.1)?));
+            return Ok(out);
+        }
         out.matrix = l.matrix.then(scale);
         if let Some(m) = &mut out.matte
             && let Some(inner) = m.layer.as_mut()
         {
-            **inner = layer(inner, scale);
+            **inner = layer(inner, scale, sizes)?;
         }
-        out
+        Ok(out)
     }
     let mut out = scene.clone();
     out.width = width;
     out.height = height;
-    out.layers = scene.layers.iter().map(|l| layer(l, scale)).collect();
+    out.layers = scene.layers.iter().map(|l| layer(l, scale, sizes)).collect::<Result<_, _>>()?;
     Ok(out)
 }
 
