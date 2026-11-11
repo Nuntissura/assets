@@ -20,9 +20,9 @@
 //! from the right after breaking, with one bounded re-break when the narrowed last line does not
 //! fit (positive values, Latin paragraphs outside split columns, a narrowed width that holds the
 //! line's widest box; else the breaks stand and the line is overfull; fit counts what an Adobe
-//! composer's spaces may compress; the Adobe paragraph composer re-breaks only its last
-//! `PARA_TAIL_LINES + 1` lines and narrows the line that ends the paragraph, the other composers
-//! narrow the old last line by number); a negative value widens the last line at the set stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
+//! composer's spaces may compress; every composer narrows the line that ends the paragraph,
+//! whatever its number, and the Adobe paragraph composer re-breaks only its last
+//! `PARA_TAIL_LINES + 1` lines); a negative value widens the last line at the set stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
 //! paragraph at a column top takes none (a push past the bottom lands at the next column's top);
 //! `space_between_same_style` zeroes the gap between paragraphs of one style; span and split
 //! paragraphs take the larger of the flow record's and the attribute space; a break sentinel drops
@@ -73,8 +73,8 @@
 //! no target oversets from the break byte; a column break stops balancing of its frame. A flush
 //! space on the last line of a `JustifiedAll` paragraph takes the rest of the slot and the line
 //! keeps its natural spacing. InDesign parity UNVERIFIED (D5).
-use crate::adobe_composer::{AdobeContext, ParaStats, compress_line, justify_line, last_line_rebreak, paragraph as adobe_paragraph, single_line};
-use crate::breaker::{Composer, HyphenRules, LineBreak, Sums, first_fit, knuth_plass, line_start};
+use crate::adobe_composer::{AdobeContext, ParaStats, compress_line, justify_line, last_line_rebreak, paragraph as adobe_paragraph, single_line, single_line_last};
+use crate::breaker::{Composer, HyphenRules, LineBreak, Sums, first_fit, first_fit_last, knuth_plass, knuth_plass_last, line_start};
 use crate::hyphenate::Hyphenator;
 use crate::styles::{Alignment, ParagraphStyling};
 use crate::typeset::{Justification, TypesetOptions, justify_metrics, paragraph_params};
@@ -1330,10 +1330,10 @@ fn compose_flow(
                 // hyphenation fragment): a narrower width cannot be met by any break, and re-breaking
                 // there moved the Adobe paragraph composer's refusal point and cost Knuth-Plass
                 // hundreds of times its pass (lead ruling 2026-11-08, lane notes). Otherwise the
-                // breaks stand and the set stage marks the line overfull. The Adobe paragraph
-                // composer re-breaks only its last `PARA_TAIL_LINES + 1` lines, composed for the
-                // line that ends the paragraph (`adobe_composer::last_line_rebreak`, lead ruling
-                // 2026-11-11); the other composers narrow line `l` by number.
+                // breaks stand and the set stage marks the line overfull. Every composer narrows
+                // the line that ENDS the paragraph, whatever its number (lead ruling 2026-11-11);
+                // the Adobe paragraph composer re-breaks only its last `PARA_TAIL_LINES + 1` lines
+                // (`adobe_composer::last_line_rebreak`).
                 if g.last_line_indent_pt > 0.0
                     && cjk_items.is_none()
                     && let Some(l) = b.len().checked_sub(1)
@@ -1342,12 +1342,19 @@ fn compose_flow(
                 {
                     let narrowed = sum(slots[l].width_pt, -g.last_line_indent_pt)?;
                     if narrowed > EPS && tightest_width(p, &items, &b, l, adobe, &jp) > narrowed + EPS && widest_box(&items, &b, l) <= narrowed + EPS {
-                        b = if let Composer::AdobeParagraph(params) = composer {
-                            let ctx = AdobeContext { params, justify: &jp, justified, justify_last: para_alignment == Alignment::JustifiedAll };
-                            last_line_rebreak(&items, &sums, &width, &rules, &ctx, cancel, b, g.last_line_indent_pt, &mut ParaStats::default())?
-                        } else {
-                            let width = |line: usize| if line == l { narrowed } else { width(line) };
-                            break_lines(composer, &items, &sums, &width, &rules, &jp, justified, para_alignment == Alignment::JustifiedAll, cancel)?
+                        let indent = g.last_line_indent_pt;
+                        let justify_last = para_alignment == Alignment::JustifiedAll;
+                        b = match composer {
+                            Composer::FirstFit => first_fit_last(&items, &sums, &width, &rules, cancel, indent)?,
+                            Composer::KnuthPlass(params) => knuth_plass_last(&items, &sums, &width, &params, &rules, cancel, indent)?,
+                            Composer::AdobeSingleLine(params) => {
+                                let ctx = AdobeContext { params, justify: &jp, justified, justify_last };
+                                single_line_last(&items, &sums, &width, &rules, &ctx, cancel, indent)?
+                            }
+                            Composer::AdobeParagraph(params) => {
+                                let ctx = AdobeContext { params, justify: &jp, justified, justify_last };
+                                last_line_rebreak(&items, &sums, &width, &rules, &ctx, cancel, b, indent, &mut ParaStats::default())?
+                            }
                         };
                     }
                 }

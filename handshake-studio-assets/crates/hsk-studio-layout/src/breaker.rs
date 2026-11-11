@@ -196,6 +196,26 @@ pub(crate) fn first_fit(
     rules: &HyphenRules,
     cancel: &CancellationToken,
 ) -> Result<Vec<LineBreak>, LayoutError> {
+    first_fit_last(items, sums, width, rules, cancel, 0.0)
+}
+
+/// Whether item `i` is the paragraph's last break and the line it ends is `last_indent` narrower
+/// (STU-TYP-185 last-line re-break, lead ruling 2026-11-11: the line that ENDS the paragraph,
+/// whatever its number).
+fn ends_narrowed(items: &[Item], i: usize, last_indent: f64) -> bool {
+    last_indent != 0.0 && i + 1 >= items.len() && forced(&items[i])
+}
+
+/// `first_fit` with the line that ends the paragraph `last_indent` narrower: a last line that does
+/// not fit that width at natural spacing breaks at its best earlier break; with none it is overfull.
+pub(crate) fn first_fit_last(
+    items: &[Item],
+    sums: &Sums,
+    width: &dyn Fn(usize) -> f64,
+    rules: &HyphenRules,
+    cancel: &CancellationToken,
+    last_indent: f64,
+) -> Result<Vec<LineBreak>, LayoutError> {
     let (mut breaks, mut start, mut best, mut work) = (Vec::new(), 0usize, None::<usize>, 0u32);
     let mut run = 0u8;
     let mut i = 0;
@@ -206,7 +226,8 @@ pub(crate) fn first_fit(
             continue;
         }
         let (w, ..) = sums.measure(items, start, i);
-        if w <= width(breaks.len()) + EPS {
+        let room = if ends_narrowed(items, i, last_indent) { width(breaks.len()) - last_indent } else { width(breaks.len()) };
+        if w <= room + EPS {
             if forced(&items[i]) {
                 breaks.push(LineBreak {
                     item: i,
@@ -290,6 +311,7 @@ fn knuth_plass_pass(
     budget: u32,
     work: &mut u32,
     cancel: &CancellationToken,
+    last_indent: f64,
 ) -> Result<Option<Vec<LineBreak>>, LayoutError> {
     let mut arena = vec![Node {
         pos: NONE,
@@ -309,6 +331,7 @@ fn knuth_plass_pass(
         }
         check(cancel, work)?;
         let is_forced = forced(&items[i]);
+        let end_narrowed = ends_narrowed(items, i, last_indent);
         let penalty = if items[i].kind == Kind::Penalty {
             items[i].p
         } else {
@@ -331,7 +354,7 @@ fn knuth_plass_pass(
                 continue;
             }
             let line = arena[ai].line;
-            let l = width(line);
+            let l = if end_narrowed { width(line) - last_indent } else { width(line) };
             let (w, y, z, inf) = sums.measure(items, s, i);
             let r = if w < l - EPS {
                 if inf {
@@ -342,7 +365,8 @@ fn knuth_plass_pass(
                     f64::INFINITY
                 }
             } else if w > l + EPS {
-                if z > 0.0 {
+                // A narrowed last line is set at natural spacing (never shrunk): wider is overfull.
+                if z > 0.0 && !end_narrowed {
                     (l - w) / z
                 } else {
                     f64::NEG_INFINITY
@@ -459,6 +483,21 @@ pub(crate) fn knuth_plass(
     rules: &HyphenRules,
     cancel: &CancellationToken,
 ) -> Result<Vec<LineBreak>, LayoutError> {
+    knuth_plass_last(items, sums, width, params, rules, cancel, 0.0)
+}
+
+/// `knuth_plass` with the line that ends the paragraph `last_indent` narrower (`first_fit_last`):
+/// that line is measured against the narrowed width and may not shrink into it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn knuth_plass_last(
+    items: &[Item],
+    sums: &Sums,
+    width: &dyn Fn(usize) -> f64,
+    params: &KnuthPlassParams,
+    rules: &HyphenRules,
+    cancel: &CancellationToken,
+    last_indent: f64,
+) -> Result<Vec<LineBreak>, LayoutError> {
     let budget = kp_work_budget((0..items.len()).filter(|i| legal(items, *i)).count());
     let mut work = 0u32;
     for (tolerance, overfull) in [
@@ -466,9 +505,9 @@ pub(crate) fn knuth_plass(
         (params.second_pass_tolerance, false),
         (params.second_pass_tolerance, true),
     ] {
-        if let Some(b) = knuth_plass_pass(items, sums, width, params, rules, tolerance, overfull, budget, &mut work, cancel)? {
+        if let Some(b) = knuth_plass_pass(items, sums, width, params, rules, tolerance, overfull, budget, &mut work, cancel, last_indent)? {
             return Ok(b);
         }
     }
-    first_fit(items, sums, width, rules, cancel)
+    first_fit_last(items, sums, width, rules, cancel, last_indent)
 }

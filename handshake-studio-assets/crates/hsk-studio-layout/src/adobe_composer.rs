@@ -121,6 +121,25 @@ pub(crate) fn single_line(
     ctx: &AdobeContext<'_>,
     cancel: &CancellationToken,
 ) -> Result<Vec<LineBreak>, LayoutError> {
+    single_line_last(items, sums, width, rules, ctx, cancel, 0.0)
+}
+
+/// `single_line` with the line that ENDS the paragraph `last_indent` narrower (STU-TYP-185
+/// last-line re-break, lead ruling 2026-11-11): the paragraph's last candidate is taken only when
+/// it fits that width with its word spaces at their minimum (as the set stage compresses it);
+/// otherwise the line picks among its earlier candidates at the full width, and the next line is
+/// judged the same way. A last line that is the only candidate is taken and judged overfull
+/// against the narrowed width.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn single_line_last(
+    items: &[Item],
+    sums: &Sums,
+    width: &dyn Fn(usize) -> f64,
+    rules: &HyphenRules,
+    ctx: &AdobeContext<'_>,
+    cancel: &CancellationToken,
+    last_indent: f64,
+) -> Result<Vec<LineBreak>, LayoutError> {
     let (mut breaks, mut start, mut run, mut work) = (Vec::new(), 0usize, 0u8, 0u32);
     let n = items.len();
     while start < n {
@@ -168,13 +187,26 @@ pub(crate) fn single_line(
         let Some(last) = cands.last().copied() else {
             break;
         };
-        let pick = if last.end && last.w <= w_line + EPS {
+        let narrowed_end = last_indent != 0.0 && last.end && last.item + 1 >= n;
+        let ws = ctx.justify.word_spacing;
+        let pick = if narrowed_end {
+            let fits = last.w - last.spaces * (ws.desired - ws.min).max(0.0) <= w_line - last_indent + EPS;
+            let pool = &cands[..cands.len() - 1];
+            if fits || pool.is_empty() {
+                last
+            } else if ctx.justified {
+                justified_pick(pool, w_line)
+            } else {
+                ragged_pick(pool, w_line, ctx.params.hyphenation_zone_pt)
+            }
+        } else if last.end && last.w <= w_line + EPS {
             last
         } else if ctx.justified {
             justified_pick(&cands, w_line)
         } else {
             ragged_pick(&cands, w_line, ctx.params.hyphenation_zone_pt)
         };
+        let w_line = if narrowed_end && pick.item == last.item { w_line - last_indent } else { w_line };
         // Overfull: past the shrink limits (words, letters, glyphs) and the spaces cannot close it.
         let overfull = pick.w > w_line + pick.shrink + EPS
             && pick.scale(w_line).is_none_or(|s| s <= 0.0);
