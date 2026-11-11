@@ -382,7 +382,7 @@ fn adjustment_layer_refusals_are_typed() {
     let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"three_d":{}})), under.clone()], None);
     assert_eq!(refusal(source(&rec, &pixels).map(|_| ())), (id3.clone(), "composition_3d_content"));
     // A track matte on it.
-    let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"track_matte":{"source_layer_id":identity("SLYR",2),"mode":"alpha"}})), under.clone()], None);
+    let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"track_matte":{"source_layer_id":identity("SLYR",2),"mode":"alpha","inverted":false}})), under.clone()], None);
     assert_eq!(refusal(source(&rec, &pixels).and_then(|s| s.scene_at(0, &cancel))), (id3.clone(), "composition_adjustment_matte"));
     // A transform that moves it (its layer space is the composition).
     let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"streams":[{"property":"position","static_value":[3.0,0.0]}]})), under.clone()], None);

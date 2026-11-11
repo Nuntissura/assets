@@ -6,9 +6,17 @@
 //! only the enabled soloed entries run (Folio `solo`, Studio reading). Each value becomes a motion
 //! `Property` through the transform-stream keyframe conversion ([STU-FX-011b] "an effect parameter
 //! exposed to motion is the same typed field, sampled per frame"). A stack on a layer without a
-//! content rect of its own (a null layer, an adjustment layer, a collapsed precomposition) is
-//! refused [`COMPOSITION_EFFECT_CONTENT`] (adjustment-layer effects, STU-CMP-015, are not part of
-//! this lane).
+//! content rect of its own (a null layer, a pigment adjustment layer, a collapsed precomposition)
+//! is refused [`COMPOSITION_EFFECT_CONTENT`].
+//!
+//! Lane SMB-MOTION-COMMANDS-2: a stack on an empty raster layer waits for its motion record: a
+//! solid gives it the solid's rect (`MotionLayers::solid_rect`); any other such layer is refused
+//! [`COMPOSITION_EFFECT_CONTENT`] when the motion records are attached, or at the frame without
+//! them. A stack on a composition adjustment layer (kind `adjustment`, payload `group`;
+//! STU-CMP-015) lowers to [`crate::composition::SceneContent::AdjustmentEffects`]: its layer space
+//! is the composition rect (a transform that moves it is refused by the scene lowering), every
+//! `point_2d` is a fraction of the composition, and its masks fold into its composition-space
+//! coverage.
 //!
 //! At a tick ([`CompositionTemporalSource::effected`]) every value is sampled (an absent value is
 //! its row default), checked against its declared hard bounds again (a Bezier keyframe may
@@ -84,7 +92,7 @@
 use super::{CompLayer, CompositionInput, CompositionTemporalSource, Content, keyed_property, unsupported};
 use crate::CompositeError;
 use crate::composition::{
-    ChannelAdjustment, ColourEffect, EffectedContent, EntryComposite, GeneratorComposite, GlowColours, GlowEffect, GlowLooping,
+    AdjustmentEffectsContent, ChannelAdjustment, ColourEffect, EffectedContent, EntryComposite, GeneratorComposite, GlowColours, GlowEffect, GlowLooping,
     GlowOriginal, SceneContent, SceneEffect, SceneEffectEntry,
 };
 use crate::temporal::TemporalError;
@@ -241,6 +249,7 @@ pub(super) fn read_effects(
     effects: &[StudioCompositionEffect],
     content: &Content,
     input: &CompositionInput<'_>,
+    deferred: bool,
 ) -> Result<Vec<EffectStream>, TemporalError> {
     let doc = input.snapshot.document();
     let solo = effects.iter().any(|e| e.enabled && e.solo);
@@ -248,7 +257,8 @@ pub(super) fn read_effects(
     if running.is_empty() {
         return Ok(Vec::new());
     }
-    if matches!(content, Content::None | Content::Adjustment(_) | Content::Precomp { collapse: true, .. }) {
+    let waits = deferred && matches!(content, Content::None);
+    if !waits && matches!(content, Content::None | Content::Adjustment(_) | Content::AdjustmentStack | Content::Precomp { collapse: true, .. }) {
         return Err(unsupported(id, COMPOSITION_EFFECT_CONTENT));
     }
     running
@@ -694,20 +704,19 @@ impl CompositionTemporalSource {
     }
 
     /// `content` under layer `l`'s effect stack at `tick` (module docs); the flag says whether the
-    /// layer's masks were folded into it.
-    pub(super) fn effected(l: &CompLayer, content: SceneContent, tick: i64, cancel: &CancellationToken) -> Result<(SceneContent, bool), TemporalError> {
+    /// layer's masks were folded into it. `solid` is the layer-space rect of a solid record.
+    pub(super) fn effected(l: &CompLayer, content: SceneContent, tick: i64, cancel: &CancellationToken, solid: Option<Rect>) -> Result<(SceneContent, bool), TemporalError> {
         if l.effects.is_empty() {
             return Ok((content, false));
         }
         let id = l.layer_id.as_str();
-        let bounds = l.content.bounds().ok_or_else(|| unsupported(id, COMPOSITION_EFFECT_CONTENT))?;
-        let rect = match &l.content {
-            Content::Static { content, .. } => content.rect,
+        let bounds = l.content.bounds().or(solid).ok_or_else(|| unsupported(id, COMPOSITION_EFFECT_CONTENT))?;
+        let rect = match (&l.content, &content) {
+            (Content::Static { content, .. }, _) => content.rect,
+            // A solid's surface is its rectangle (the static plan's extent may add support).
+            (Content::None, SceneContent::Static(c)) if solid.is_some() => c.rect,
             _ => bounds,
         };
-        #[allow(clippy::cast_precision_loss)]
-        let origin = [bounds.x as f64 - rect.x as f64, bounds.y as f64 - rect.y as f64];
-        let size = [f64::from(bounds.width), f64::from(bounds.height)];
         let mask = match &l.masks {
             None => None,
             Some(lm) => {
@@ -715,6 +724,33 @@ impl CompositionTemporalSource {
                 lm.coverage(id, tick, cancel, &Affine2::translate(o[0], o[1]), rect, super::mask_plane_bound(rect.area()))?
             }
         };
+        let effects = Self::entries(l, bounds, rect, tick, cancel)?;
+        Ok((SceneContent::Effected(Box::new(EffectedContent { content, rect, mask, effects })), l.masks.is_some()))
+    }
+
+    /// A composition adjustment layer's stack at `tick` over the composition rect of `comp` (module
+    /// docs; STU-CMP-015).
+    pub(super) fn adjustment_effects(comp: &super::Comp, l: &CompLayer, tick: i64, cancel: &CancellationToken) -> Result<SceneContent, TemporalError> {
+        let id = l.layer_id.as_str();
+        let rect = Rect { x: 0, y: 0, width: comp.width, height: comp.height };
+        let coverage = match &l.masks {
+            None => None,
+            Some(lm) => match lm.coverage(id, tick, cancel, &Affine2::IDENTITY, rect, super::mask_plane_bound(rect.area()))? {
+                Some(c) => Some(c),
+                // An open path covers nothing.
+                None => Some(vec![0.0; usize::try_from(rect.area()).map_err(|_| CompositeError::Overflow)?]),
+            },
+        };
+        let effects = Self::entries(l, rect, rect, tick, cancel)?;
+        Ok(SceneContent::AdjustmentEffects(Box::new(AdjustmentEffectsContent { effects, coverage })))
+    }
+
+    /// The running entries of layer `l` at `tick` over `rect`, whose layer content is `bounds`.
+    fn entries(l: &CompLayer, bounds: Rect, rect: Rect, tick: i64, cancel: &CancellationToken) -> Result<Vec<SceneEffectEntry>, TemporalError> {
+        let id = l.layer_id.as_str();
+        #[allow(clippy::cast_precision_loss)]
+        let origin = [bounds.x as f64 - rect.x as f64, bounds.y as f64 - rect.y as f64];
+        let size = [f64::from(bounds.width), f64::from(bounds.height)];
         let mut effects = Vec::with_capacity(l.effects.len());
         for e in &l.effects {
             cancel.check().map_err(|_| TemporalError::Composite(CompositeError::Canceled))?;
@@ -726,6 +762,6 @@ impl CompositionTemporalSource {
             }
             effects.push(SceneEffectEntry { effect_id: e.effect_id.clone(), effect, mix: e.mix });
         }
-        Ok((SceneContent::Effected(Box::new(EffectedContent { content, rect, mask, effects })), l.masks.is_some()))
+        Ok(effects)
     }
 }

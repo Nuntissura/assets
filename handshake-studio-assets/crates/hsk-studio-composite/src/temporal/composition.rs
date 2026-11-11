@@ -184,6 +184,10 @@ enum Content {
     Static { content: Box<StaticContent>, bounds: Rect, unlinked: Option<Box<SceneMatte>> },
     /// An adjustment layer.
     Adjustment(AdjustmentOp),
+    /// A composition adjustment layer with an effect stack (STU-CMP-015; lane
+    /// SMB-MOTION-COMMANDS-2): kind `adjustment`, payload `group`; its stack runs over everything
+    /// beneath it ([`crate::composition::SceneContent::AdjustmentEffects`]).
+    AdjustmentStack,
     /// A nested composition; `bounds` = `(0, 0, width, height)` of it.
     Precomp {
         composition_id: String,
@@ -196,7 +200,7 @@ enum Content {
 impl Content {
     fn bounds(&self) -> Option<Rect> {
         match self {
-            Self::None | Self::Adjustment(_) => None,
+            Self::None | Self::Adjustment(_) | Self::AdjustmentStack => None,
             Self::Tiles { bounds, .. } | Self::Precomp { bounds, .. } | Self::Static { bounds, .. } => {
                 Some(*bounds)
             }
@@ -930,6 +934,11 @@ impl CompositionTemporalSource {
                 .iter()
                 .find(|d| d.layer_id == l.layer_id)
                 .ok_or_else(|| CompositeError::DanglingInput(l.layer_id.clone()))?;
+            // Lane SMB-MOTION-COMMANDS-2: a composition adjustment layer, and an empty raster
+            // layer that a motion record may make procedural (a solid carries an effect stack;
+            // the stack waits for `with_motion_records`, module `effects`).
+            let group_adjustment = l.precomp.is_none() && dl.kind == "adjustment" && matches!(dl.payload, Payload::Group);
+            let procedural_host = l.precomp.is_none() && matches!(&dl.payload, Payload::Raster { tiles } if tiles.is_empty());
             let content = match (&l.precomp, &dl.payload) {
                 (Some(p), Payload::Group) => {
                     let nested = input
@@ -948,6 +957,9 @@ impl CompositionTemporalSource {
                     }
                 }
                 (Some(_), _) => return Err(unsupported(id, COMPOSITION_PRECOMP_PAYLOAD)),
+                // The composition adjustment layer (STU-CMP-015): no content of its own; its
+                // effect stack, if any, makes it `AdjustmentStack` below.
+                (None, Payload::Group) if group_adjustment => Content::None,
                 // Masks, raster records (effects, blur, mask parameters, Blend-If), vector and text
                 // layers and live boolean groups: the static subtree.
                 (None, Payload::Raster { .. } | Payload::Vector { .. } | Payload::Text { .. } | Payload::Group)
@@ -1016,7 +1028,21 @@ impl CompositionTemporalSource {
                 l.stream(p).map(|s| property(id, s)).transpose()
             };
             let (source, remap) = Self::read_time(l, &content, input)?;
-            let effects = effects::read_effects(id, &l.effects, &content, input)?;
+            let effects = effects::read_effects(id, &l.effects, &content, input, group_adjustment || procedural_host)?;
+            if group_adjustment {
+                // Only the normal reading of the mix is established (STU-CMP-015 is silent on
+                // blend modes); a matte or a 3D switch has no surface of the layer's own to act on.
+                if mode != StudioBlendMode::Normal {
+                    return Err(unsupported(id, crate::composition::ADJUSTMENT_BLEND));
+                }
+                if l.track_matte.is_some() {
+                    return Err(unsupported(id, crate::composition::ADJUSTMENT_MATTE));
+                }
+                if l.three_d.is_some() {
+                    return Err(unsupported(id, crate::three_d::COMPOSITION_3D_CONTENT));
+                }
+            }
+            let content = if group_adjustment && !effects.is_empty() { Content::AdjustmentStack } else { content };
             layers.push(CompLayer {
                 layer_id: l.layer_id.clone(),
                 timing: l.timing,
@@ -1048,7 +1074,9 @@ impl CompositionTemporalSource {
                 masks: if l.masks.is_empty() {
                     None
                 } else {
-                    if !matches!(content, Content::Tiles { .. } | Content::Static { .. } | Content::Precomp { collapse: false, .. }) {
+                    // A composition adjustment layer's masks scope where its stack applies
+                    // (STU-CMP-015), as composition-space coverage.
+                    if !group_adjustment && !matches!(content, Content::Tiles { .. } | Content::Static { .. } | Content::Precomp { collapse: false, .. }) {
                         return Err(unsupported(id, crate::mask_paths::COMPOSITION_MASK_PATH_CONTENT));
                     }
                     let shape = |v: &Option<hsk_studio_folio::StudioKeyedValue>| v.as_ref().map(|v| keyed_property(id, v)).transpose();
@@ -1077,7 +1105,7 @@ impl CompositionTemporalSource {
                         if matches!(content, Content::Static { unlinked: Some(_), .. }) || (collapsed && a.clipped) {
                             return Err(unsupported(id, crate::three_d::COMPOSITION_3D_LAYER_OPTION));
                         }
-                        if matches!(content, Content::Adjustment(_)) {
+                        if matches!(content, Content::Adjustment(_) | Content::AdjustmentStack) {
                             return Err(unsupported(id, crate::three_d::COMPOSITION_3D_CONTENT));
                         }
                         let opt = |v: &Option<hsk_studio_folio::StudioKeyedValue>| v.as_ref().map(|v| keyed_property(id, v)).transpose();
@@ -1188,6 +1216,21 @@ impl CompositionTemporalSource {
         self.comps
             .get(&self.root)
             .ok_or_else(|| CompositeError::DanglingInput(self.root.clone()).into())
+    }
+
+    /// Lane SMB-MOTION-COMMANDS-2: an effect stack on an empty raster layer waits for the motion
+    /// record that makes the layer content (module `effects`); one that no solid record makes
+    /// content is refused [`COMPOSITION_EFFECT_CONTENT`] when the records are attached.
+    pub(super) fn deferred_stacks_have_content(&self) -> Result<(), TemporalError> {
+        for c in self.comps.values() {
+            for l in &c.layers {
+                let solid = self.motion.as_deref().is_some_and(|m| m.solid_rect(&l.layer_id).is_some());
+                if !l.effects.is_empty() && matches!(l.content, Content::None) && !solid {
+                    return Err(unsupported(&l.layer_id, COMPOSITION_EFFECT_CONTENT));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Declare another resampling filter for the composition's transformed layers.
@@ -1534,7 +1577,7 @@ impl CompositionTemporalSource {
                 }
             } else if !matches!(l.content, Content::None) {
                 base = Some(match l.content {
-                    Content::Adjustment(_) => ClipBase::Adjustment,
+                    Content::Adjustment(_) | Content::AdjustmentStack => ClipBase::Adjustment,
                     _ => ClipBase::Layer { source: l, layer: Box::new(layer.clone()) },
                 });
                 three_d_since_base = false;
@@ -1553,6 +1596,12 @@ impl CompositionTemporalSource {
                         return Err(unsupported(&layer.layer_id, COMPOSITION_COLLAPSE_MATTE));
                     }
                     for nl in nested.layers {
+                        // An adjustment stack's beneath is its own composition's stack: collapsed
+                        // into this one it would adjust layers it does not hold (lane
+                        // SMB-MOTION-COMMANDS-2).
+                        if matches!(nl.content, SceneContent::AdjustmentEffects(_)) {
+                            return Err(unsupported(&nl.layer_id, crate::composition::ADJUSTMENT_COLLAPSED));
+                        }
                         layers.push(collapse_into(nl, &layer.matrix, layer.opacity));
                     }
                 }
@@ -1813,7 +1862,7 @@ impl CompositionTemporalSource {
             if sources.contains(n.layer_id.as_str())
                 || n.matte.is_some()
                 || n.clipped
-                || matches!(n.content, Content::Adjustment(_) | Content::Static { unlinked: Some(_), .. })
+                || matches!(n.content, Content::Adjustment(_) | Content::AdjustmentStack | Content::Static { unlinked: Some(_), .. })
             {
                 return Err(refuse(n));
             }
@@ -2228,7 +2277,7 @@ impl CompositionTemporalSource {
             .filter(|(i, l)| *i > first && *i < last && l.visible && l.three_d.is_none() && !matches!(l.content, Content::None))
             .map(|(_, l)| crate::three_d::RunBreak {
                 layer_id: l.layer_id.clone(),
-                reason: if matches!(l.content, Content::Adjustment(_)) {
+                reason: if matches!(l.content, Content::Adjustment(_) | Content::AdjustmentStack) {
                     crate::three_d::RUN_BREAK_ADJUSTMENT
                 } else {
                     crate::three_d::RUN_BREAK_2D_LAYER
@@ -2258,6 +2307,7 @@ impl CompositionTemporalSource {
             Content::Tiles { tiles, .. } => SceneContent::Tiles(tiles.clone()),
             Content::Static { content, .. } => SceneContent::Static(content.clone()),
             Content::Adjustment(op) => SceneContent::Adjustment(op.clone()),
+            Content::AdjustmentStack => SceneContent::None,
             Content::Precomp { composition_id, .. } => {
                 let nested = self
                     .comps
@@ -2318,8 +2368,14 @@ impl CompositionTemporalSource {
             None => content,
         };
         // Effect stack (lane SMB-AE-EFFECT-STACK-1; STU-CMP-010 steps 2-3): masks then effects in
-        // layer space, before the corner pin and the transform.
-        let (content, masks_folded) = Self::effected(l, content, tick, cancel)?;
+        // layer space, before the corner pin and the transform. A composition adjustment layer's
+        // stack runs over the composite beneath it; its masks fold into its coverage (STU-CMP-015).
+        let (content, masks_folded) = if matches!(l.content, Content::AdjustmentStack) {
+            (Self::adjustment_effects(comp, l, tick, cancel)?, true)
+        } else {
+            let solid = self.motion.as_deref().and_then(|m| m.solid_rect(&l.layer_id));
+            Self::effected(l, content, tick, cancel, solid)?
+        };
         let unlinked = match &l.content {
             Content::Static { unlinked: Some(u), .. } => Some(u),
             _ => None,

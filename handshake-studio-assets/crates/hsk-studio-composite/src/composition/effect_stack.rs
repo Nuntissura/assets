@@ -906,3 +906,82 @@ pub(super) fn effected_surface(
     exactness.record(EFFECT_STACK_OPERATOR, Exactness::Approximate);
     Ok(surface)
 }
+
+/// Validates a composition adjustment layer's stack over `rect` and charges E's working buffers
+/// (as [`effected_surface`] does) BEFORE B renders (`super::lower_inner`; lane
+/// SMB-MOTION-COMMANDS-2), so a stack that cannot be held allocates nothing.
+pub(super) fn charge_adjustment(id: &str, a: &super::AdjustmentEffectsContent, rect: Rect, ctx: &SceneContext<'_>, charges: &mut Charges) -> Result<(), TemporalError> {
+    let n = usize::try_from(rect.area()).map_err(|_| CompositeError::Overflow)?;
+    let work = u64::try_from(a.effects.len()).map_err(|_| CompositeError::Overflow)?.checked_mul(rect.area()).ok_or(CompositeError::Overflow)?;
+    if a.effects.len() > MAX_SCENE_EFFECTS || work > MAX_EFFECT_WORK {
+        return Err(CompositeError::BudgetExceeded.into());
+    }
+    if a.effects.iter().any(|x| !entry_ok(x) || !mask_ok(x, n)) {
+        return Err(invalid(id, "effect_parameter"));
+    }
+    // The working buffer and the pre-stack copy; a blur, glow or colour entry also holds a
+    // straight copy and its result.
+    charges.surface(ctx, rect.width, rect.height)?;
+    charges.surface(ctx, rect.width, rect.height)?;
+    if a.effects.iter().any(|x| whole_buffer_kind(&x.effect)) {
+        charges.surface(ctx, rect.width, rect.height)?;
+        charges.surface(ctx, rect.width, rect.height)?;
+    }
+    Ok(())
+}
+
+/// [`super::SceneContent::AdjustmentEffects`] over the rendered composite beneath, `b` (straight,
+/// composition-sized): the entries run on B in stack order to E, then `L = B + k (E - B)`
+/// premultiplied, `k = opacity * coverage`, written back into `b` (module docs of
+/// `super`; charged by [`charge_adjustment`]).
+pub(super) fn adjusted_surface(
+    id: &str,
+    a: &super::AdjustmentEffectsContent,
+    opacity: f64,
+    mut b: Surface,
+    cancel: &CancellationToken,
+    exactness: &mut ExactnessLedger,
+) -> Result<Surface, TemporalError> {
+    let n = usize::try_from(u64::from(b.width).checked_mul(u64::from(b.height)).ok_or(CompositeError::Overflow)?).map_err(|_| CompositeError::Overflow)?;
+    let mut pre: Vec<[f32; 4]> = Vec::with_capacity(n);
+    for i in 0..n {
+        if i.is_multiple_of(4096) {
+            cancel.check().map_err(|_| canceled())?;
+        }
+        let base = i.checked_mul(3).ok_or(CompositeError::Overflow)?;
+        let alpha = f64::from(f32_at(&b.alpha, i));
+        let rgb = [0usize, 1, 2].map(|k| base.checked_add(k).map_or(0.0, |o| f64::from(f32_at(&b.colour, o))));
+        #[allow(clippy::cast_possible_truncation)]
+        pre.push([(rgb[0] * alpha) as f32, (rgb[1] * alpha) as f32, (rgb[2] * alpha) as f32, alpha as f32]);
+    }
+    let mut e = pre.clone();
+    apply_effects(b.width, b.height, &mut e, &a.effects, cancel).map_err(|x| effect_err(id, x))?;
+    for (i, (p, q)) in pre.iter().zip(&e).enumerate() {
+        if i.is_multiple_of(4096) {
+            cancel.check().map_err(|_| canceled())?;
+        }
+        let k = opacity * a.coverage.as_ref().and_then(|c| c.get(i)).map_or(1.0, |c| f64::from(*c));
+        let l = lerp4(widen(*p), widen(*q), k);
+        let alpha = l[3].clamp(0.0, 1.0);
+        let straight = if alpha > 0.0 { [l[0] / alpha, l[1] / alpha, l[2] / alpha] } else { [0.0; 3] };
+        let base = i.checked_mul(12).ok_or(CompositeError::Overflow)?;
+        for (c, v) in straight.iter().enumerate() {
+            let o = base.checked_add(c.checked_mul(4).ok_or(CompositeError::Overflow)?).ok_or(CompositeError::Overflow)?;
+            #[allow(clippy::cast_possible_truncation)]
+            let v = *v as f32;
+            if let Some(slot) = b.colour.get_mut(o..o.checked_add(4).ok_or(CompositeError::Overflow)?) {
+                slot.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        let o = i.checked_mul(4).ok_or(CompositeError::Overflow)?;
+        #[allow(clippy::cast_possible_truncation)]
+        let alpha = alpha as f32;
+        if let Some(slot) = b.alpha.get_mut(o..o.checked_add(4).ok_or(CompositeError::Overflow)?) {
+            slot.copy_from_slice(&alpha.to_le_bytes());
+        }
+    }
+    b.colour_sha256 = hsk_studio_prism::profile_hash(&b.colour);
+    b.alpha_sha256 = hsk_studio_prism::profile_hash(&b.alpha);
+    exactness.record(EFFECT_STACK_OPERATOR, Exactness::Approximate);
+    Ok(b)
+}

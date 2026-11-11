@@ -36,6 +36,23 @@
 //! layer absent at the tick is coverage 0: the matted layer renders nothing, or everything when
 //! inverted.
 //!
+//! Composition adjustment layers ([`SceneContent::AdjustmentEffects`], lane SMB-MOTION-COMMANDS-2,
+//! STU-CMP-015 "An adjustment layer's effects apply to the composited result of everything beneath
+//! it in the stack ... its opacity scales HOW MUCH they apply"): the scene splits at each one. The
+//! layers beneath it (with the background, or the previous adjustment's result) are rendered by the
+//! same backend into one composition-sized straight surface B; its entries run over B in stack
+//! order with the effect-stack CPU kernels to E; the frame then holds `L = B + k (E - B)` in
+//! premultiplied colour, `k` = the layer's opacity times its coverage at the pixel, and L replaces
+//! those layers as one tile. A layer above it is therefore never adjusted, and an adjustment
+//! layer beneath another is part of the upper one's B (they nest by construction); every split is
+//! rendered once (linear in the layer count). E's working buffers are charged before B renders,
+//! so a stack that cannot be held allocates nothing. The mix is a Studio reading of "scales HOW
+//! MUCH" (After Effects UNVERIFIED, D5). Refused typed: a blend mode other than normal
+//! ([`ADJUSTMENT_BLEND`]), a track matte ([`ADJUSTMENT_MATTE`]), a matrix other than the identity
+//! (its layer space is the composition, [`ADJUSTMENT_TRANSFORM`]), a clipped one
+//! ([`ADJUSTMENT_CLIPPED`]); inside a collapsed precomposition the adapter refuses it
+//! ([`ADJUSTMENT_COLLAPSED`]).
+//!
 //! Everything a scene carries arrives from a caller and is bounded before use: layer count
 //! ([`SceneLimits::max_layers`]), nesting depth, surface count and bytes, non-finite or
 //! out-of-range opacities (`InvalidState`), cancellation between layers. Integer arithmetic is
@@ -86,6 +103,11 @@ pub const MATTE_BYTES_PER_PIXEL: u64 = 2;
 /// Refusal keys of composition layers composite cannot lower.
 pub const ADJUSTMENT_TRANSFORM: &str = "composition_adjustment_transform";
 pub const ADJUSTMENT_MATTE: &str = "composition_adjustment_matte";
+/// A composition adjustment layer (STU-CMP-015) with a blend mode other than normal, clipped, or
+/// inside a collapsed precomposition (module docs).
+pub const ADJUSTMENT_BLEND: &str = "composition_adjustment_blend";
+pub const ADJUSTMENT_CLIPPED: &str = "composition_adjustment_clipped";
+pub const ADJUSTMENT_COLLAPSED: &str = "composition_adjustment_collapsed";
 pub const CLIP_WITHOUT_BASE: &str = "composition_clip_without_base";
 pub const CLIP_BASE_ADJUSTMENT: &str = "composition_clip_base_adjustment";
 pub const CLIPPED_MATTE: &str = "composition_clipped_matte";
@@ -165,6 +187,19 @@ pub enum SceneContent {
     /// layer-space masks multiply its alpha, the entries run in stack order on the host (the
     /// distort and generate CPU kernels of `effect_stack`), then it is placed like a tile.
     Effected(Box<EffectedContent>),
+    /// A composition adjustment layer's effect stack (lane SMB-MOTION-COMMANDS-2; STU-CMP-015,
+    /// [`AdjustmentEffectsContent`]): it applies to everything beneath it in the scene (module
+    /// docs); it has no content of its own and its matrix must be the identity.
+    AdjustmentEffects(Box<AdjustmentEffectsContent>),
+}
+
+/// The stack and coverage of [`SceneContent::AdjustmentEffects`]. Every coordinate of the entries
+/// is in composition pixels; `coverage` (row-major over the composition rect, `0..=1`; `None` =
+/// everywhere) scopes where the stack applies (the layer's masks, STU-CMP-015).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdjustmentEffectsContent {
+    pub effects: Vec<SceneEffectEntry>,
+    pub coverage: Option<Vec<f32>>,
 }
 
 /// The sample scenes of [`SceneContent::Accumulated`]: one size, at least one, at most
@@ -842,6 +877,122 @@ fn lower_inner(
     if scene.width == 0 || scene.height == 0 {
         return Err(invalid(&scene.composition_id, "composition_size"));
     }
+    let surfaces_before = charges.surfaces;
+    let mut exactness = ExactnessLedger::default();
+    let (mut rendered, mut skipped) = (Vec::new(), Vec::new());
+    // Split at every running adjustment stack (module docs): `under` is the result so far.
+    let mut under: Option<Surface> = None;
+    let mut start = 0usize;
+    for (j, layer) in scene.layers.iter().enumerate() {
+        let SceneContent::AdjustmentEffects(a) = &layer.content else { continue };
+        if !adjustment_runs(scene, layer, a)? {
+            continue;
+        }
+        cancel.check().map_err(|_| canceled())?;
+        let id = layer.layer_id.as_str();
+        effect_stack::charge_adjustment(id, a, scene.rect(), ctx, charges)?;
+        let background = if start == 0 { scene.background } else { None };
+        let seg = scene.layers.get(start..j).ok_or(CompositeError::Overflow)?;
+        let b = segment_surface(scene, seg, background, under.take(), ctx, cancel, depth, charges, &mut exactness, &mut rendered, &mut skipped)?;
+        under = Some(effect_stack::adjusted_surface(id, a, layer.opacity, b, cancel, &mut exactness)?);
+        rendered.push(id.to_owned());
+        start = j.checked_add(1).ok_or(CompositeError::Overflow)?;
+    }
+    let background = if start == 0 { scene.background } else { None };
+    let rest = scene.layers.get(start..).ok_or(CompositeError::Overflow)?;
+    let mut out = lower_segment(scene, rest, background, under, ctx, cancel, depth, charges)?;
+    for op in &exactness.operators {
+        out.exactness.record(op.key, op.exactness);
+    }
+    rendered.append(&mut out.rendered);
+    skipped.append(&mut out.skipped);
+    out.rendered = rendered;
+    out.skipped = skipped;
+    out.surfaces_rendered = charges.surfaces.saturating_sub(surfaces_before);
+    Ok(out)
+}
+
+/// Whether an adjustment stack changes the frame (refusing what the lowering cannot place).
+fn adjustment_runs(scene: &SceneComposition, layer: &SceneLayer, a: &AdjustmentEffectsContent) -> Result<bool, TemporalError> {
+    let id = layer.layer_id.as_str();
+    if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {
+        return Err(invalid(id, "opacity"));
+    }
+    let unsupported = |feature| TemporalError::Unsupported { layer_id: id.to_owned(), feature };
+    if layer.matte.is_some() {
+        return Err(unsupported(ADJUSTMENT_MATTE));
+    }
+    if layer.mode != StudioBlendMode::Normal {
+        return Err(unsupported(ADJUSTMENT_BLEND));
+    }
+    if layer.clipped {
+        return Err(unsupported(ADJUSTMENT_CLIPPED));
+    }
+    if !layer.matrix.is_identity() {
+        return Err(unsupported(ADJUSTMENT_TRANSFORM));
+    }
+    let n = usize::try_from(scene.rect().area()).map_err(|_| CompositeError::Overflow)?;
+    if a.coverage.as_ref().is_some_and(|c| c.len() != n || c.iter().any(|v| !(0.0..=1.0).contains(v))) {
+        return Err(invalid(id, "adjustment_coverage"));
+    }
+    Ok(layer.opacity > 0.0 && !a.effects.is_empty())
+}
+
+/// The layers `layers` of `scene` over `background` or `under`, rendered into one composition-sized
+/// straight surface (charged before allocation; the output stage applies as to a frame).
+#[allow(clippy::too_many_arguments)]
+fn segment_surface(
+    scene: &SceneComposition,
+    layers: &[SceneLayer],
+    background: Option<[f32; 4]>,
+    under: Option<Surface>,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+    exactness: &mut ExactnessLedger,
+    rendered: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<Surface, TemporalError> {
+    charges.surface(ctx, scene.width, scene.height)?;
+    let mut lowering = lower_segment(scene, layers, background, under, ctx, cancel, depth, charges)?;
+    if let Some(output) = charges.output {
+        lowering.extensions.output = output;
+    }
+    let mut sink = FrameSink::new(scene.width, scene.height)?;
+    let sources = lowering.sources.bind(ctx.pixels);
+    let receipt = ctx
+        .backend
+        .execute_extended(&lowering.plan, &lowering.extensions, &ctx.request, &sources, cancel, &mut sink)
+        .map_err(|e| TemporalError::Render { composition_id: scene.composition_id.clone(), code: e.code() })?;
+    for op in lowering.exactness.operators.iter().chain(&receipt.exactness.operators) {
+        exactness.record(op.key, op.exactness);
+    }
+    rendered.append(&mut lowering.rendered);
+    skipped.append(&mut lowering.skipped);
+    Ok(Surface {
+        colour_sha256: hsk_studio_prism::profile_hash(&sink.colour),
+        alpha_sha256: hsk_studio_prism::profile_hash(&sink.alpha),
+        width: sink.width,
+        height: sink.height,
+        colour: sink.colour,
+        alpha: sink.alpha,
+    })
+}
+
+/// One run of `layers` between adjustment splits (`lower_inner`): the background or the result
+/// beneath (`under`, one tile over the composition rect), then the layers.
+#[allow(clippy::too_many_arguments)]
+fn lower_segment(
+    scene: &SceneComposition,
+    layers: &[SceneLayer],
+    background: Option<[f32; 4]>,
+    under: Option<Surface>,
+    ctx: &SceneContext<'_>,
+    cancel: &CancellationToken,
+    depth: usize,
+    charges: &mut Charges,
+) -> Result<SceneLowering, TemporalError> {
     let mut out = Builder {
         nodes: Vec::new(),
         sources: SceneSources::new(ctx.space),
@@ -859,7 +1010,7 @@ fn lower_inner(
     let mut rendered = Vec::new();
     let mut skipped = Vec::new();
     let surfaces_before = charges.surfaces;
-    if let Some(rgba) = scene.background {
+    if let Some(rgba) = background {
         if !rgba.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)) {
             return Err(invalid(&scene.composition_id, "background"));
         }
@@ -875,7 +1026,22 @@ fn lower_inner(
             mask: None,
         });
     }
-    for layer in &scene.layers {
+    if let Some(surface) = under {
+        // The adjusted result beneath (module docs): a clip base for nothing above it.
+        let key = out.key()?;
+        let tile = out.push(PlanNode::Tile(TileInput {
+            key,
+            placement: scene.rect(),
+            format: SampleFormat::RgbF32Le,
+            alpha: AlphaConvention::Straight,
+            colour_sha256: surface.colour_sha256,
+            alpha_sha256: surface.alpha_sha256,
+        }))?;
+        out.sources.surfaces.insert(key, surface);
+        root_layers.push(Layer { input: tile, mode: StudioBlendMode::Normal, opacity: 1.0, fill_opacity: 1.0, mask: None });
+        base = Some(Base::Adjustment);
+    }
+    for layer in layers {
         cancel.check().map_err(|_| canceled())?;
         let id = layer.layer_id.as_str();
         for (field, v) in [("opacity", layer.opacity), ("fill_opacity", layer.fill_opacity)] {
@@ -939,7 +1105,8 @@ fn lower_inner(
             | SceneContent::FrameBlended(_)
             | SceneContent::Rotoscoped(_)
             | SceneContent::Effected(_) => true,
-            SceneContent::None | SceneContent::Pinned(_) => false,
+            // A stack that changes nothing (opacity 0, no entry): the splits handle running ones.
+            SceneContent::None | SceneContent::Pinned(_) | SceneContent::AdjustmentEffects(_) => false,
         };
         let matte_empty = layer
             .matte
@@ -1145,7 +1312,7 @@ fn lower_inner(
                 out.sources.surfaces.insert(key, surface);
                 inputs.push((key, e.rect, tile));
             }
-            SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) => {}
+            SceneContent::None | SceneContent::Adjustment(_) | SceneContent::Pinned(_) | SceneContent::AdjustmentEffects(_) => {}
         }
         let shift = match placement {
             Placement::Integer(dx, dy) => (dx, dy),

@@ -11,6 +11,13 @@
 //! cannot carry is refused as `TemporalError::Source { code }` with a stable code. Glyphs of a text
 //! layer come from the caller (shaping is Type's, layout's and the caller's: Folio stores the story,
 //! not shaped runs); a text-animator layer without glyphs is refused (`text_animator_glyphs`).
+//! A solid-layer record (lane SMB-MOTION-COMMANDS-2, STU-MOT-005 `solid`) draws one `width x height`
+//! rectangle at layer-space `(0, 0)` with one non-zero fill of its colour: the Folio shape group of
+//! that rectangle through [`shape_group`] and the same `shape_layer_content`, so a solid is the
+//! equivalent shape layer byte for byte (test `composition_adjustment_effects.rs`
+//! `a_solid_is_the_equivalent_rectangle_shape_byte_for_byte_and_carries_effects`), never a second
+//! rasteriser; its rect is the content rect of its effect stack. A layer with two procedural
+//! records is refused (`procedural_layer_twice`).
 //! The expression selector needs an expression engine: it is refused (`text_expression_selector`)
 //! unless the caller provides one ([`ExpressionSelectorEngine`]).
 #![deny(clippy::arithmetic_side_effects)]
@@ -26,7 +33,7 @@ use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND};
 use hsk_studio_folio::{
     StudioLineCap, StudioLineJoin, StudioMergeMode, StudioMotionRecords, StudioRangeShape, StudioShapeField,
     StudioShapeFillRule, StudioShapeGradient, StudioShapeGroup, StudioShapeItem, StudioShapePathCommand,
-    StudioShapeStrokeStyle, StudioTextAnimators, StudioTextBasedOn, StudioTextParam, StudioTextSelector, StudioTrimMode,
+    StudioShapeStrokeStyle, StudioSolidLayer, StudioTextAnimators, StudioTextBasedOn, StudioTextParam, StudioTextSelector, StudioTrimMode,
 };
 use hsk_studio_motion::{
     Animator, AnimatorParam, AnimatorProperties, AnimatorTrack, BasedOn, EvalTick, RangeSelector, RangeShape, RangeUnits,
@@ -267,6 +274,8 @@ pub(crate) struct TextAnimatorRec {
 #[derive(Clone)]
 pub(crate) enum ProceduralLayer {
     Shape(ShapeLayerTrack),
+    /// A solid: its one-rectangle shape group and its size (module docs).
+    Solid { root: ShapeGroup, width: u32, height: u32 },
     Text { animators: Vec<TextAnimatorRec>, glyphs: Vec<AnimatedGlyph>, fill: [f32; 4] },
 }
 
@@ -274,6 +283,7 @@ impl std::fmt::Debug for ProceduralLayer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Shape(_) => "ProceduralLayer::Shape",
+            Self::Solid { .. } => "ProceduralLayer::Solid",
             Self::Text { .. } => "ProceduralLayer::Text",
         })
     }
@@ -385,6 +395,12 @@ pub(crate) fn procedural_layers(
         }
         out.insert(s.layer_id.clone(), ProceduralLayer::Shape(ShapeLayerTrack { base: shape_group(&s.root), streams }));
     }
+    for s in &records.solid_layers {
+        if out.contains_key(&s.layer_id) {
+            return Err(refuse(&s.layer_id, "procedural_layer_twice"));
+        }
+        out.insert(s.layer_id.clone(), ProceduralLayer::Solid { root: shape_group(&solid_group(s)), width: s.width, height: s.height });
+    }
     for t in &records.text_animators {
         let Some((g, fill)) = glyphs.get(&t.layer_id) else {
             return Err(refuse(&t.layer_id, "text_animator_glyphs"));
@@ -395,6 +411,18 @@ pub(crate) fn procedural_layers(
         out.insert(t.layer_id.clone(), ProceduralLayer::Text { animators: text_animators(t)?, glyphs: g.clone(), fill: *fill });
     }
     Ok(out)
+}
+
+/// The Folio shape group a solid draws (module docs).
+fn solid_group(s: &StudioSolidLayer) -> StudioShapeGroup {
+    let (w, h) = (f64::from(s.width), f64::from(s.height));
+    StudioShapeGroup {
+        items: vec![
+            StudioShapeItem::Rect { position: [w / 2.0, h / 2.0], size: [w, h], roundness: 0.0, reversed: false },
+            StudioShapeItem::Fill { rgba: s.colour, opacity: 100.0, rule: StudioShapeFillRule::NonZero },
+        ],
+        transform: hsk_studio_folio::StudioShapeTransform::default(),
+    }
 }
 
 fn units_total(chars: &[TextChar], b: BasedOn) -> (Vec<Option<usize>>, usize) {
@@ -419,6 +447,7 @@ impl ProceduralLayer {
                 let root = track.at(EvalTick::new(tick), cancel).map_err(motion)?;
                 shape_layer_content(layer_id, &root, seconds, space, revision, &RasterOptions::default(), cancel)?
             }
+            ProceduralLayer::Solid { root, .. } => shape_layer_content(layer_id, root, seconds, space, revision, &RasterOptions::default(), cancel)?,
             ProceduralLayer::Text { animators, glyphs, fill } => {
                 let chars = text_chars(glyphs);
                 let mut resolved = Vec::with_capacity(animators.len());
@@ -570,6 +599,13 @@ impl MotionLayers {
             Some(p) => p.content_at(layer_id, tick, self.space, self.revision, self.engine.as_deref(), cancel).map(Some),
         }
     }
+    /// The layer-space rect of a solid (`None` = not a solid): its effect stack's content rect.
+    pub(super) fn solid_rect(&self, layer_id: &str) -> Option<hsk_studio_pigment::Rect> {
+        match self.layers.get(layer_id) {
+            Some(ProceduralLayer::Solid { width, height, .. }) => Some(hsk_studio_pigment::Rect { x: 0, y: 0, width: *width, height: *height }),
+            _ => None,
+        }
+    }
 }
 
 impl super::composition::CompositionTemporalSource {
@@ -587,6 +623,7 @@ impl super::composition::CompositionTemporalSource {
     ) -> Result<Self, TemporalError> {
         let layers = procedural_layers(records, glyphs)?;
         self.motion = Some(Box::new(MotionLayers { layers, space, revision, engine }));
+        self.deferred_stacks_have_content()?;
         Ok(self)
     }
 }
