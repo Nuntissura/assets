@@ -249,6 +249,94 @@ fn binary_data_streams_are_not_scanned_as_syntax() {
     assert!(render(&inline_icc_profile()).is_ok());
 }
 
+/// Lead ruling 2026-11-08 (SMB-PARSER-HOSTILE-1 entry): a CIDFont's `/CIDSet` stream and a
+/// halftone stream (`/HT` of an `/ExtGState`, HalftoneType 6) are data, never scanned as syntax.
+fn cid_set() -> Vec<u8> {
+    let deep = vec![b'['; 100_000];
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F0 6 0 R >> >> >>".to_vec()),
+        (4, flate_body("", b"BT /F0 12 Tf 20 100 Td <0001> Tj ET")),
+        (6, b"<< /Type /Font /Subtype /Type0 /BaseFont /Sub /Encoding /Identity-H /DescendantFonts [7 0 R] >>".to_vec()),
+        (7, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sub /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 9 0 R >>".to_vec()),
+        (8, stream_body("", &deep)),
+        (9, b"<< /Type /FontDescriptor /FontName /Sub /Flags 4 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /CIDSet 8 0 R >>".to_vec()),
+    ])
+}
+
+fn halftone() -> Vec<u8> {
+    let deep = b"<<".repeat(100_000);
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /ExtGState << /GS0 << /Type /ExtGState /HT 8 0 R >> >> >> >>".to_vec()),
+        (4, flate_body("", b"q /GS0 gs 0 0 1 rg 100 100 50 50 re f Q")),
+        (8, stream_body("/Type /Halftone /HalftoneType 6 /Width 4 /Height 4", &deep)),
+    ])
+}
+
+#[test]
+fn cid_set_and_halftone_streams_are_data() {
+    for (name, pdf) in [("CIDSet", cid_set()), ("halftone", halftone())] {
+        assert_eq!(pages(&pdf), Ok(1), "{name} read_vector_pages");
+        assert_eq!(document(&pdf), Ok(1), "{name} read_vector_document");
+        assert!(render(&pdf).is_ok(), "{name} render_page: {:?}", render(&pdf));
+    }
+}
+
+/// Lead ruling required pass: a 300 dpi A2 RGB photo as JPEG (4961 x 7016 = 34.8 Mpx) renders. The
+/// codec header declares the full size; the bound reads it and never decodes the image whole.
+#[test]
+fn a2_rgb_jpeg_renders() {
+    let (w, h) = (4961u16, 7016u16);
+    // SOI, SOF0 (8-bit, height, width, 3 components), EOI: the header the bound sizes the image from.
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08];
+    jpeg.extend_from_slice(&h.to_be_bytes());
+    jpeg.extend_from_slice(&w.to_be_bytes());
+    jpeg.extend_from_slice(&[3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 0xFF, 0xD9]);
+    let pdf = image_page(u32::from(w), u32::from(h), "DeviceRGB", 8, "DCTDecode", &jpeg);
+    assert!(render(&pdf).is_ok(), "4961x7016 DeviceRGB JPEG render: {:?}", render(&pdf));
+    assert_eq!(pages(&pdf), Ok(1));
+}
+
+/// Lead ruling required refusal: a stream of at most 1 KiB that inflates past 256 MiB is a typed
+/// decompression-bomb refusal on every route (two Flate stages: one deflate pass cannot exceed a
+/// ratio of about 1032).
+fn flate_bomb_1k() -> Vec<u8> {
+    let zeros = vec![0u8; 260 << 20];
+    let inner = miniz_oxide::deflate::compress_to_vec_zlib(&zeros, 1);
+    drop(zeros);
+    let outer = miniz_oxide::deflate::compress_to_vec_zlib(&inner, 10);
+    assert!(outer.len() <= 1024, "the bomb stream is {} bytes, not at most 1 KiB", outer.len());
+    build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>".to_vec()),
+        (4, stream_body("/Filter [/FlateDecode /FlateDecode]", &outer)),
+    ])
+}
+routes!(flate_bomb_1k, Err(RATIO), Err(ExportError::Press(RATIO)));
+
+/// Lead ruling: a bad Flate tail keeps base behaviour WITH A WARNING. The page still reads and
+/// renders (the `bad_flate_tail` rows); every route also says so: the vector routes note
+/// `pdf_stream_tail_damaged` on the pages, `render_page` notes `stream_tail_damaged`. An undamaged
+/// file carries neither.
+#[test]
+fn bad_flate_tail_reads_with_a_warning() {
+    let damaged = bad_flate_tail();
+    let has = |notes: &[hsk_studio_press::VectorNote]| notes.iter().any(|n| n.code() == "pdf_stream_tail_damaged");
+    let p = read_vector_pages(&damaged, 64 << 20, &token()).expect("pages");
+    assert!(p.iter().all(|pg| has(&pg.notes)), "read_vector_pages notes: {:?}", p.iter().map(|pg| &pg.notes).collect::<Vec<_>>());
+    let d = read_vector_document(&damaged, 64 << 20, &token()).expect("document");
+    assert!(d.pages.iter().all(|pg| has(&pg.notes)), "read_vector_document notes: {:?}", d.pages.iter().map(|pg| &pg.notes).collect::<Vec<_>>());
+    let r = render_page(&damaged, 0, 0.25, &Limits::default(), &token()).expect("render");
+    assert!(r.notes.contains(&"stream_tail_damaged"), "render_page notes: {:?}", r.notes);
+    let clean = within_bound();
+    assert!(!read_vector_pages(&clean, 64 << 20, &token()).expect("clean pages").iter().any(|pg| has(&pg.notes)));
+    assert!(!render_page(&clean, 0, 0.25, &Limits::default(), &token()).expect("clean render").notes.contains(&"stream_tail_damaged"));
+}
+
 /// F7: a damaged Flate tail keeps the prefix decoded so far and is not a document refusal.
 fn bad_flate_tail() -> Vec<u8> {
     let mut deflated = miniz_oxide::deflate::compress_to_vec_zlib(BOX, 6);
