@@ -915,18 +915,22 @@ struct CaptionPlan {
 impl CaptionPlan {
     /// Checked before the first frame, and the sidecar path again right before the renames (`execute`): a
     /// directory there is `export-sidecar-path`, an existing file without `overwrite` `export-sidecar-exists`.
-    /// An output named `*.vtt` (any case: the file system may ignore case) is `export-sidecar-path` too,
-    /// because the sidecar path would be the output path and replace the media.
+    /// An output named `*.vtt` is `export-sidecar-path` too, because the sidecar path would be the output path
+    /// and replace the media. Names compare as Windows resolves them (lane SMB-R60-FOLLOWUPS-1 item 5): trailing
+    /// dots and spaces stripped and any case (`x.vtt `, `x.VTT.` are `x.vtt`), and an output whose resolved
+    /// name is the sidecar's is refused the same way.
     fn new(c: &crate::captions::ExportCaptions, span_ticks: u64, output: &Path, overwrite: bool) -> Result<Self, ReelError> {
         let (samples, exact) = crate::captions::text_samples(c, span_ticks)?;
         let lang = c.language.as_bytes();
         let language = [lang[0], lang[1], lang[2]];
         let sidecar = if c.sidecar {
             let vtt = crate::captions::webvtt(c, span_ticks)?;
-            if output.extension().is_some_and(|e| e.eq_ignore_ascii_case("vtt")) {
+            let path = output.with_extension("vtt");
+            let resolved = resolved_name(output);
+            let output_is_vtt = resolved.as_deref().is_some_and(|n| Path::new(n).extension().is_some_and(|e| e == "vtt"));
+            if output_is_vtt || (resolved.is_some() && resolved == resolved_name(&path)) {
                 return Err(unsupported("export-sidecar-path"));
             }
-            let path = output.with_extension("vtt");
             check_sidecar_path(&path, overwrite)?;
             Some((vtt, path))
         } else {
@@ -945,6 +949,11 @@ impl CaptionPlan {
         };
         Ok(Self { samples: c.embed.then_some(samples), language, sidecar, receipt })
     }
+}
+
+/// A path's file name as Windows resolves it, for comparison: trailing dots and spaces stripped, lower case.
+fn resolved_name(path: &Path) -> Option<String> {
+    path.file_name().map(|n| n.to_string_lossy().trim_end_matches(['.', ' ']).to_lowercase())
 }
 
 fn check_sidecar_path(path: &Path, overwrite: bool) -> Result<(), ReelError> {
