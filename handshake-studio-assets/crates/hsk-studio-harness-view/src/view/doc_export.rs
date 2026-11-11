@@ -738,6 +738,9 @@ fn emit(
         cancel.check().map_err(|_| refuse("canceled", "psd"))?;
         let Some(layer) = src.doc.layers.iter().find(|l| l.layer_id == id) else { continue };
         match &layer.payload {
+            // A composition adjustment layer (kind adjustment, group payload; STU-CMP-015) has no
+            // PSD form here: a typed loss, never an empty group (lane SMB-MOTION-COMMANDS-2, F7).
+            Payload::Group if layer.kind == "adjustment" => loss.push(json!({"layer_id": layer.layer_id, "code": "psd_layer_kind_not_exported", "kind": layer.kind})),
             Payload::Group => {
                 out.push(psd::ComposeRecord::GroupEnd);
                 emit(src, Some(id.as_str()), origin, depth, limits, level.saturating_add(1), out, total, loss, cancel)?;
