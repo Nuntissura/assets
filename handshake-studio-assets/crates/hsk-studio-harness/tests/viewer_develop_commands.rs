@@ -208,7 +208,7 @@ fn group_enables_and_point_curves_are_state_one_undo_step_each_and_reopen() {
     let mut v = open(&source);
     ok_row(&mut v, "photo.develop.set", json!({"control":"develop.calibration.red_hue","value":40}));
     let on = digests(&v);
-    assert_eq!(v.develop_recipe().unwrap().enables.enable_calibration, true);
+    assert!(v.develop_recipe().unwrap().enables.enable_calibration);
     let steps = undo_len(&v);
     ok_row(&mut v, "photo.develop.set_enable", json!({"group":"calibration","on":false}));
     assert_eq!(undo_len(&v), steps + 1, "set_enable is one undo step");

@@ -258,7 +258,6 @@ fn decode_extras(o: &Map<String, Value>, nested: bool) -> Result<DevelopExtras, 
     Ok(x)
 }
 
-
 // ---- decoding ----------------------------------------------------------------------------------------
 
 fn field(path: &str) -> Refusal {
