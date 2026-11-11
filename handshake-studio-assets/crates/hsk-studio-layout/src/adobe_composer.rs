@@ -542,6 +542,9 @@ struct Para<'a> {
     /// Set once no path exists without it: a line start whose scan stops on a break the ladder limit
     /// skips goes on to the next break the limit allows, for the emergency line (`next_line`).
     rescue: bool,
+    /// STU-TYP-185 `last_line_indent` of a re-break (`last_line_rebreak`; 0 otherwise): the line
+    /// that ends the paragraph, whatever its number, is composed this much narrower.
+    last_indent: f64,
 }
 
 impl Para<'_> {
@@ -555,9 +558,14 @@ impl Para<'_> {
             letters * (l.desired - l.min) + w * (g.desired - g.min),
         )
     }
+    /// Width line `line` is composed for: the line that ends the paragraph loses `last_indent`.
+    fn line_width(&self, line: usize, last: bool) -> f64 {
+        let w = (self.width)(line);
+        if last && self.last_indent != 0.0 { w - self.last_indent } else { w }
+    }
     fn line_cost(&self, line: usize, s: usize, i: usize, last: bool) -> Option<f64> {
         let m = self.model;
-        let wl = (self.width)(line);
+        let wl = self.line_width(line, last);
         let (w, ..) = self.sums.measure(self.items, s, i);
         let spaces = self.sums.spaces(s, i);
         if !self.justified {
@@ -791,7 +799,6 @@ pub(crate) fn paragraph_from(
     last_indent: f64,
     stats: &mut ParaStats,
 ) -> Result<Vec<LineBreak>, LayoutError> {
-    let _ = last_indent;
     let ws = ctx.justify.word_spacing;
     let model = &PARA_MODEL;
     let n = items.len();
@@ -817,6 +824,7 @@ pub(crate) fn paragraph_from(
         flat_from,
         budget: para_work_budget(n),
         rescue: false,
+        last_indent,
     };
     let window = if ctx.justified {
         model.depth
@@ -842,7 +850,7 @@ pub(crate) fn paragraph_from(
             memo.clear();
             continue;
         };
-        let wl = width(line);
+        let wl = p.line_width(line, b.end && b.item + 1 >= n);
         let (w, ..) = sums.measure(items, s, b.item);
         let spaces = sums.spaces(s, b.item);
         let scale = (spaces > EPS).then(|| 1.0 + (wl - w) / spaces);
@@ -902,8 +910,13 @@ pub(crate) fn resume_at(items: &[Item], breaks: &[LineBreak], t: usize) -> Resum
 }
 
 /// STU-TYP-185 `last_line_indent` re-break of the paragraph composer (`threaded_reflow`, after its
-/// gate): `first` is the first pass at `width`; the result composes the paragraph again with its
-/// last line narrowed by `last_indent`.
+/// gate; lead ruling 2026-11-11). `first` is the first pass at `width`. The breaks of `first` before
+/// line `t = l - PARA_TAIL_LINES` stand (`l` its last line); the paragraph is composed again from
+/// line `t`, with the hyphen run of `first` at `t`, and the line that ENDS the paragraph narrowed by
+/// `last_indent` whatever its number (`Para::line_width`). The tail holds a bounded number of line
+/// classes, so its work does not grow with the paragraph; on justified (windowed) text it equals the
+/// whole paragraph's re-break. A tail with no line, or `InvalidGeometry` under rescue, keeps `first`
+/// (the set stage then marks a last line that does not fit overfull); other refusals are returned.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn last_line_rebreak(
     items: &[Item],
@@ -919,9 +932,18 @@ pub(crate) fn last_line_rebreak(
     let Some(l) = first.len().checked_sub(1) else {
         return Ok(first);
     };
-    let narrowed = width(l) - last_indent;
-    let narrow = |line: usize| if line == l { narrowed } else { width(line) };
-    paragraph_from(items, sums, &narrow, rules, ctx, cancel, Resume::START, 0.0, stats)
+    let t = l.saturating_sub(PARA_TAIL_LINES);
+    let from = resume_at(items, &first, t);
+    match paragraph_from(items, sums, width, rules, ctx, cancel, from, last_indent, stats) {
+        Ok(tail) if !tail.is_empty() => {
+            let mut b = first;
+            b.truncate(t);
+            b.extend(tail);
+            Ok(b)
+        }
+        Ok(_) | Err(LayoutError::InvalidGeometry) => Ok(first),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

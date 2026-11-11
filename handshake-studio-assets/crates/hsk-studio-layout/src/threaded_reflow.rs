@@ -20,7 +20,9 @@
 //! from the right after breaking, with one bounded re-break when the narrowed last line does not
 //! fit (positive values, Latin paragraphs outside split columns, a narrowed width that holds the
 //! line's widest box; else the breaks stand and the line is overfull; fit counts what an Adobe
-//! composer's spaces may compress); a negative value widens the last line at the set stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
+//! composer's spaces may compress; the Adobe paragraph composer re-breaks only its last
+//! `PARA_TAIL_LINES + 1` lines and narrows the line that ends the paragraph, the other composers
+//! narrow the old last line by number); a negative value widens the last line at the set stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
 //! paragraph at a column top takes none (a push past the bottom lands at the next column's top);
 //! `space_between_same_style` zeroes the gap between paragraphs of one style; span and split
 //! paragraphs take the larger of the flow record's and the attribute space; a break sentinel drops
@@ -1328,7 +1330,10 @@ fn compose_flow(
                 // hyphenation fragment): a narrower width cannot be met by any break, and re-breaking
                 // there moved the Adobe paragraph composer's refusal point and cost Knuth-Plass
                 // hundreds of times its pass (lead ruling 2026-11-08, lane notes). Otherwise the
-                // breaks stand and the set stage marks the line overfull.
+                // breaks stand and the set stage marks the line overfull. The Adobe paragraph
+                // composer re-breaks only its last `PARA_TAIL_LINES + 1` lines, composed for the
+                // line that ends the paragraph (`adobe_composer::last_line_rebreak`, lead ruling
+                // 2026-11-11); the other composers narrow line `l` by number.
                 if g.last_line_indent_pt > 0.0
                     && cjk_items.is_none()
                     && let Some(l) = b.len().checked_sub(1)
