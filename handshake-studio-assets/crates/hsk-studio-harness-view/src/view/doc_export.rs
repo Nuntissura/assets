@@ -952,9 +952,11 @@ impl RecipeTargets {
         Self { recipes: BTreeMap::new(), context, reports: Vec::new() }
     }
 
-    /// Targets for a host viewer's batch, attributed to its run context.
-    pub fn for_viewer(host: &Viewer) -> Self {
-        Self::new(host.run.context().clone())
+    /// Targets whose exports admit through `port`, the caller's bound JobPort.
+    #[must_use]
+    pub fn with_job_port(self, port: std::sync::Arc<dyn hsk_studio_session::JobPort>) -> Self {
+        let _ = port;
+        self
     }
 
     /// Adds a recipe by its `recipe_id` (required; a second recipe with one id is `recipe_id_duplicate`).

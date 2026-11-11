@@ -194,10 +194,10 @@ fn r60_g2_two_page_adds_without_a_hostile_story_mint_in_order() {
     assert_eq!(v.add_page(None, false, Some((100.0, 100.0)), None).unwrap(), "page-2");
 }
 
-/// Item 1 remainder (lead ruling 2026-11-11): the batch runner's per-target export (`RecipeTargets`) admits
-/// through the HOST viewer's bound JobPort, the one `export_document` uses, not a fresh viewer's local
-/// port: a saturated host port refuses the target typed, asked once, with no file written; an open one
-/// writes it with one admission and one release.
+/// Item 1 remainder (lead rulings 2026-11-11, review c43f2d90 batch port): the batch runner's per-target
+/// export (`RecipeTargets`) binds its export viewer to the caller's JobPort (`with_job_port`), and that
+/// viewer's `export_document` admits once per target: a saturated port refuses the target typed, asked
+/// once, with no file written; an open one is asked once per target and releases each ticket.
 #[test]
 fn r60_j1_batch_target_export_is_admitted_through_the_host_job_port() {
     let scratch = Scratch::new("j1-batch");
@@ -215,19 +215,19 @@ fn r60_j1_batch_target_export_is_admitted_through_the_host_job_port() {
     let path = out.join("input.png");
 
     let saturated = Port::saturated();
-    host.set_job_port(saturated.clone());
-    let mut targets = RecipeTargets::for_viewer(&host);
-    let refused = targets.write(&mut run, &target, &path, false).expect_err("a saturated host port refuses the target");
+    let mut targets = RecipeTargets::new(support_context::context()).with_job_port(saturated.clone());
+    let refused = targets.write(&mut run, &target, &path, false).expect_err("a saturated caller port refuses the target");
     assert_eq!(refused, "overloaded");
-    assert_eq!(saturated.asks(), 1, "the host port is asked exactly once");
+    assert_eq!(saturated.asks(), 1, "the caller's port is asked exactly once");
     assert!(listing().is_empty(), "no file written: {:?}", listing());
 
     let open = Port::open();
-    host.set_job_port(open.clone());
-    let mut targets = RecipeTargets::for_viewer(&host);
+    let mut targets = RecipeTargets::new(support_context::context()).with_job_port(open.clone());
+    let second = out.join("input-2.png");
     targets.write(&mut run, &target, &path, false).unwrap();
-    assert!(path.is_file());
-    assert_eq!((open.asks(), open.released()), (1, 1), "one admission through the host port, released");
+    targets.write(&mut run, &target, &second, false).unwrap();
+    assert!(path.is_file() && second.is_file());
+    assert_eq!((open.asks(), open.released()), (2, 2), "asks == targets, each ticket released");
     assert_eq!(targets.reports[0].1["job"]["outcome"], "completed", "{}", targets.reports[0].1);
 }
 

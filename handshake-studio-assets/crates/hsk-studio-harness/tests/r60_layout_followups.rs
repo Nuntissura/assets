@@ -18,6 +18,8 @@ use hsk_studio_package::{Extras, Limits, MemoryAssetSource, WriteOptions, write_
 use std::path::{Path, PathBuf};
 
 const DOC: &str = "SDOC-019abcde-0000-7000-8000-00000000c060";
+const SPREAD_A: &str = "SPGS-019abcde-0000-7000-8000-00000000c060";
+const SPREAD_B: &str = "SPGS-019abcde-0000-7000-8000-00000000c061";
 
 fn len(v: f64) -> Length {
     Length { value: v, unit: GeometryUnit::Pt }
@@ -28,6 +30,11 @@ fn page(key: &str) -> StudioPage {
 }
 /// One spread of three 200 x 200 pages, no layers.
 fn document() -> StudioDocument {
+    document_of(&[(SPREAD_A, &["page-1", "page-2", "page-3"])])
+}
+
+/// `spreads` of 200 x 200 pages side by side, no layers.
+fn document_of(spreads: &[(&str, &[&str])]) -> StudioDocument {
     let unassigned = || ProfileBinding::Unassigned(());
     StudioDocument {
         schema_id: DocumentSchema::V1,
@@ -42,14 +49,18 @@ fn document() -> StudioDocument {
         working_space_spot: unassigned(),
         blending_space: unassigned(),
         artboards: vec![],
-        page_spreads: vec![StudioPageSpread {
-            schema_id: PageSpreadSchema::V1,
-            page_spread_id: "SPGS-019abcde-0000-7000-8000-00000000c060".into(),
-            name: "spread".into(),
-            parent: Parent::Root(()),
-            bounds: Bounds { x: len(0.0), y: len(0.0), width: len(600.0), height: len(200.0) },
-            pages: vec![page("page-1"), page("page-2"), page("page-3")],
-        }],
+        page_spreads: spreads
+            .iter()
+            .enumerate()
+            .map(|(i, (id, keys))| StudioPageSpread {
+                schema_id: PageSpreadSchema::V1,
+                page_spread_id: (*id).into(),
+                name: format!("spread {i}"),
+                parent: Parent::Root(()),
+                bounds: Bounds { x: len(0.0), y: len(250.0 * f64::from(u32::try_from(i).unwrap())), width: len(200.0 * f64::from(u32::try_from(keys.len()).unwrap())), height: len(200.0) },
+                pages: keys.iter().map(|k| page(k)).collect(),
+            })
+            .collect(),
         layers: vec![],
         graph: StudioLayerGraph { schema_id: GraphSchema::V1, operations: vec![], edges: vec![], outputs: vec![] },
         sequences: vec![],
@@ -57,8 +68,12 @@ fn document() -> StudioDocument {
 }
 
 fn package(dir: &Path, name: &str) -> PathBuf {
+    package_of(dir, name, &document())
+}
+
+fn package_of(dir: &Path, name: &str, document: &StudioDocument) -> PathBuf {
     let token = CancellationToken::default();
-    let snapshot = match inspect_bytes(&serde_json::to_vec(&document()).unwrap(), Budget::default(), &token, &Unresolved).unwrap() {
+    let snapshot = match inspect_bytes(&serde_json::to_vec(document).unwrap(), Budget::default(), &token, &Unresolved).unwrap() {
         Inspection::Editable(s) => s,
         Inspection::ReadOnly(_) => panic!("read-only fixture"),
     };
@@ -154,6 +169,43 @@ fn r60_b9_a_page_delete_never_leaves_the_layout_locked() {
     back.layout_apply(frame_on_page_1()).expect("editable after reopen");
 }
 
+/// Ruling 12 (review c43f2d90): a parent-bound page alone on its spread. The delete removes the spread with
+/// the page and the binding in one step; undo restores the spread (same id), the page and the binding; the
+/// layout reopens editable.
+#[test]
+fn r60_b9_a_parented_page_alone_on_its_spread_deletes_and_undoes_with_its_spread() {
+    let scratch = Scratch::new("r60-b9-spread");
+    let mut v = open(&package_of(&scratch.0, "spreads.handshake", &document_of(&[(SPREAD_A, &["page-1"]), (SPREAD_B, &["page-2"])])));
+    v.layout_apply(LayoutEdit::Page(PageEdit::NewParent { name: "A-Feature".into(), based_on: None })).unwrap();
+    let parent = v.layout_editor().unwrap().records().parents.parents[0].parent_id.clone();
+    v.layout_apply(LayoutEdit::Page(PageEdit::ApplyParent { pages: vec!["page-2".into()], parent: Some(parent) })).unwrap();
+    let spreads = |v: &Viewer| v.run().snapshot().unwrap().document().page_spreads.iter().map(|s| s.page_spread_id.clone()).collect::<Vec<_>>();
+    v.delete_page("page-2").unwrap();
+    assert_eq!((pages(&v), spreads(&v)), (vec!["page-1".to_string()], vec![SPREAD_A.to_string()]), "the spread goes with its only page");
+    assert!(bound_pages(&mut v).is_empty());
+    v.undo().unwrap();
+    assert_eq!(pages(&v), ["page-1", "page-2"]);
+    assert_eq!(spreads(&v), [SPREAD_A, SPREAD_B], "undo restores the spread with its id");
+    assert_eq!(bound_pages(&mut v), ["page-2"], "and the binding");
+    let saved = scratch.0.join("spreads-undone.handshake");
+    v.save(&saved, false).unwrap();
+    let mut back = open(&saved);
+    assert_eq!(bound_pages(&mut back), ["page-2"]);
+    back.layout_apply(frame_on_page_1()).expect("editable after reopen");
+}
+
+/// Review F2 of c43f2d90 (lead ruling 2026-11-11): a page key at the last u64 leaves no number past it, so
+/// the mint takes the lowest number no page key names: two page adds return two pages, never
+/// `page_number_exhausted`.
+#[test]
+fn r60_f2_a_page_key_at_the_last_u64_still_lets_page_add_mint() {
+    let scratch = Scratch::new("r60-f2");
+    let mut v = open(&package_of(&scratch.0, "last.handshake", &document_of(&[(SPREAD_A, &["page-18446744073709551615"])])));
+    let first = v.add_page(None, false, Some((100.0, 100.0)), None).expect("a page");
+    let second = v.add_page(None, false, Some((100.0, 100.0)), None).expect("another page");
+    assert_eq!((first.as_str(), second.as_str()), ("page-1", "page-2"));
+}
+
 /// Probe i3: a sized `layout.open` on an open document adds an undo step, and its row says it mutates.
 #[test]
 fn r60_i3_layout_open_that_adds_an_undo_step_declares_it_mutates() {
@@ -164,4 +216,51 @@ fn r60_i3_layout_open_that_adds_an_undo_step_declares_it_mutates() {
     let before = v.edit_json()["history"]["undo"].as_array().unwrap().len();
     v.layout_open(Some((200.0, 200.0)), Some(1)).unwrap();
     assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), before + 1, "a sized open is a step");
+
+    // Review F1 of c43f2d90: the drive reply names that step (the process, as a model drives it).
+    let scratch = Scratch::new("r60-i3-drive");
+    let package = package(&scratch.0, "drive.handshake");
+    let line = serde_json::json!({"command": "command", "command_id": "layout.open", "parameters": {"page_width_pt": 200, "page_height_pt": 200, "pages": 1}});
+    let (_, replies) = session(&scratch.0, &package, &[line]);
+    assert_eq!(replies[1]["ok"], true, "{}", replies[1]);
+    assert_eq!(replies[1]["detail"]["undo_name"], "layout.open", "the drive names the step a mutating row made: {}", replies[1]);
+}
+
+// ---- the process: no Rust call (as tests/layout_pdf_host.rs) ---------------------------------------
+
+#[cfg(not(feature = "desktop"))]
+fn binary() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().and_then(Path::parent).expect("target directory").to_path_buf();
+    let example = dir.join("examples").join(format!("studio-harness{}", std::env::consts::EXE_SUFFIX));
+    assert!(example.is_file(), "the studio-harness example was not built at {}", example.display());
+    example
+}
+#[cfg(feature = "desktop")]
+fn binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_studio-harness"))
+}
+
+/// One quiet `command PACKAGE --stdin` session; one JSON value per stdout line.
+fn session(dir: &Path, package: &Path, input: &[serde_json::Value]) -> (i32, Vec<serde_json::Value>) {
+    use std::io::Write as _;
+    let mut command = std::process::Command::new(binary());
+    command
+        .args(["command", package.to_str().unwrap(), "--actor", "layout-model", "--session", "s-1", "--stdin"])
+        .current_dir(dir)
+        .env("STUDIO_DIAG_DIR", dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command.spawn().expect("spawn studio-harness");
+    let text: String = input.iter().map(|l| format!("{l}\n")).collect();
+    child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let lines = String::from_utf8(out.stdout).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    (out.status.code().expect("an exit code"), lines)
 }
