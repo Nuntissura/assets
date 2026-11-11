@@ -17,6 +17,7 @@ use hsk_studio_harness::cli;
 use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::timeline::ExportSequenceRequest;
+use hsk_studio_harness::{Harness, References, Selection, asset_local_test_context};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 
@@ -488,4 +489,232 @@ fn deliver_cli_runs_the_queue_headless() {
     assert_eq!(json["receipts"][0]["outcome"], "complete", "{json}");
     assert!(s.0.join("cli.mov").is_file());
     let _ = S;
+}
+
+// -------------------------------------------------------------------------------------------------
+// Review 44da1364 findings F1-F7 (lead rulings 2026-11-11, research/lead-rulings-20261108-by-lane.json).
+// -------------------------------------------------------------------------------------------------
+
+/// `pkg` reopened through the harness run with the document entry `export_recipes` replaced by `body`, stored by
+/// the session as is (another writer's or a damaged entry: the viewer's producer checks are bypassed), saved as
+/// `name` beside it.
+fn with_recipes_entry(s: &Scratch, pkg: &Path, name: &str, body: &[u8]) -> PathBuf {
+    let harness = Harness::new(Selection { providers: vec![], references: References::TrustAll }).unwrap();
+    let cancel = CancellationToken::default();
+    let mut run = harness.run(asset_local_test_context(), &cancel);
+    assert!(run.open_path(pkg), "{}", run.finish("open"));
+    run.set_document_entry("export_recipes", Some(body.to_vec())).unwrap_or_else(|e| panic!("set_document_entry: {e}"));
+    let path = s.0.join(name);
+    assert!(run.save_to(&path), "{}", run.finish("save"));
+    path
+}
+
+/// The viewer on `path`, the fixture bound to the program monitor at 64x32.
+fn viewer_at(path: &Path) -> Viewer {
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(path).unwrap_or_else(|e| panic!("{e}"));
+    v.bind_program_media("seq-main", vec![DNX.to_vec()], 64, 32).unwrap_or_else(|e| panic!("{} {}", e.code, e.detail));
+    v
+}
+
+/// A recipe entry body (`hsk.studio.export_recipes@1`) of `recipes` (JSON texts).
+fn recipes_entry(recipes: &[String]) -> Vec<u8> {
+    format!(r#"{{"schema_id":"hsk.studio.export_recipes@1","recipes":[{}]}}"#, recipes.join(",")).into_bytes()
+}
+
+/// The JSON of shipped preset `preset` as user recipe `id`, `edit` applied.
+fn preset_json(preset: &str, id: &str, edit: &dyn Fn(&mut Value)) -> String {
+    let mut v: Value = serde_json::from_str(&hsk_studio_reel::presets::export_preset(preset).unwrap().studio_recipe().to_json()).unwrap();
+    v["recipe_id"] = json!(id);
+    edit(&mut v);
+    serde_json::to_string(&v).unwrap()
+}
+
+/// F1: an entry this build cannot read (here a newer writer's schema) never blocks a shipped preset: export_sequence,
+/// delivery.add and the run keep working; only a user recipe id refuses `export_recipes_invalid`, and the listing
+/// still shows the shipped presets with the entry marked unreadable.
+#[test]
+fn an_unreadable_recipe_entry_never_blocks_a_shipped_preset() {
+    let s = Scratch::new("f1-unreadable");
+    let pkg = package(&s.0);
+    let path = with_recipes_entry(&s, &pkg, "newer.handshake", br#"{"schema_id":"hsk.studio.export_recipes@2","recipes":[]}"#);
+    let mut v = viewer_at(&path);
+    let mut request = ExportSequenceRequest::new(PRESET, s.0.join("shipped.mov"));
+    request.width = 64;
+    request.height = 32;
+    let result = v.export_sequence("seq-main", request).unwrap_or_else(|e| panic!("{} {}", e.code, e.detail));
+    assert_eq!(result["receipt"]["outcome"], "complete", "{result}");
+    ok(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": PRESET, "output": "queued.mov", "width": 64, "height": 32}));
+    assert_eq!(refused(&mut v, "delivery.add", json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": "user.any", "output": "user.mov"})), "export_recipes_invalid");
+    let run = ok(&mut v, "delivery.run", json!({}));
+    assert_eq!(run["receipts"][0]["outcome"], "complete", "{run}");
+    let listed = ok(&mut v, "export.recipes", json!({}));
+    assert!(listed["shipped"].as_array().unwrap().iter().any(|r| r["recipe_id"] == PRESET), "{listed}");
+    assert_eq!((listed["user_entry"]["readable"].as_bool(), listed["user_entry"]["code"].as_str()), (Some(false), Some("export_recipes_invalid")), "{listed}");
+    // The whole unreadable entry can be removed (one undo step), so the user can repair the document.
+    ok(&mut v, "export.recipe_delete", json!({"all": true}));
+    assert!(v.run().document_entry("export_recipes").is_none());
+    assert_eq!(ok(&mut v, "export.recipes", json!({}))["user_entry"]["readable"], true);
+}
+
+/// The text value reel stores up to 4096 bytes with no character rule; control characters serialize as 6 bytes.
+fn big_recipe(id: &str) -> String {
+    let wide = "\u{1}".repeat(4096);
+    preset_json(PRESET, id, &|v| {
+        v["parameters"]["0"] = json!(wide);
+        v["parameters"]["ADBEAudioChannelConfiguration"] = json!(wide);
+    })
+}
+
+/// F2: one 8 MiB bound for save and read. A save that would cross it refuses typed and changes nothing; an entry
+/// over it (another writer's) still lists and deletes recipe by recipe until it reads again.
+#[test]
+fn recipe_entry_size_bound_is_one_for_save_and_read_and_an_oversized_entry_is_repairable() {
+    const LIMIT: usize = 8 << 20;
+    let s = Scratch::new("f2-size");
+    let pkg = package(&s.0);
+    let one = big_recipe("user.big.000").len();
+    let header = recipes_entry(&[]).len();
+    let fit = (LIMIT - header + 1) / (one + 1);
+    assert!(fit < 255, "{fit} recipes fit");
+    let ids: Vec<String> = (0..fit + 2).map(|n| format!("user.big.{n:03}")).collect();
+    let under: Vec<String> = ids[..fit].iter().map(|id| big_recipe(id)).collect();
+    let body = recipes_entry(&under);
+    assert!(body.len() <= LIMIT && body.len() + one + 1 > LIMIT, "{} bytes", body.len());
+    let path = with_recipes_entry(&s, &pkg, "full.handshake", &body);
+    let mut v = viewer_at(&path);
+    assert_eq!(ok(&mut v, "export.recipes", json!({}))["user"].as_array().map(Vec::len), Some(fit));
+    assert_eq!(refused(&mut v, "export.recipe_save", json!({"from": "user.big.000", "recipe_id": "user.big.zzz"})), "export_recipes_full");
+    assert_eq!(v.run().document_entry("export_recipes").map(<[u8]>::len), Some(body.len()), "a refused save changes nothing");
+    // Over the bound: listed (shipped plus the entry state) and repaired by deletes.
+    let over: Vec<String> = ids.iter().map(|id| big_recipe(id)).collect();
+    let path = with_recipes_entry(&s, &pkg, "over.handshake", &recipes_entry(&over));
+    let mut w = viewer_at(&path);
+    let listed = ok(&mut w, "export.recipes", json!({}));
+    assert_eq!(listed["user_entry"]["readable"], false, "{}", listed["user_entry"]);
+    assert!(listed["shipped"].as_array().is_some_and(|l| !l.is_empty()));
+    assert_eq!(refused(&mut w, "export.recipe_save", json!({"from": PRESET, "recipe_id": "user.new"})), "export_recipes_invalid");
+    ok(&mut w, "export.recipe_delete", json!({"recipe_id": ids[fit + 1]}));
+    ok(&mut w, "export.recipe_delete", json!({"recipe_id": ids[fit]}));
+    let listed = ok(&mut w, "export.recipes", json!({}));
+    assert_eq!((listed["user_entry"]["readable"].as_bool(), listed["user"].as_array().map(Vec::len)), (Some(true), Some(fit)), "{}", listed["user_entry"]);
+}
+
+/// A full-frame opaque mid-grey composition (linear 0.5) with render queue item `rq`, PNG module `png` at
+/// `renders/grey.png`, its colour group `colour`.
+fn author_grey(v: &mut Viewer, colour: Value) {
+    motion(v, "composition.new", json!({"composition_id": "G01", "name": "G01", "width": 16, "height": 8, "frame_rate": {"numerator": 25, "denominator": 1}, "duration": F, "background": {"r": 0, "g": 0, "b": 0, "a": 0, "colour_profile_id": null}}));
+    motion(v, "composition.add_layer", json!({"composition_id": "G01", "kind": "shape", "root": {"items": [
+        {"kind": "rect", "position": [8.0, 4.0], "size": [16.0, 8.0]},
+        {"kind": "fill", "rgba": [0.5, 0.5, 0.5, 1.0], "opacity": 100.0, "rule": "non_zero"}]}}));
+    motion(v, "composition.queue_add", json!({"item_id": "rq", "composition_id": "G01", "module_id": "png", "format": "png_sequence", "output_path": "renders/grey.png"}));
+    motion(v, "composition.queue_set_module", json!({"item_id": "rq", "module_id": "png", "colour": colour}));
+}
+
+/// The data of the first `cICP` chunk of a PNG.
+fn cicp(bytes: &[u8]) -> Option<[u8; 4]> {
+    let at = bytes.windows(4).position(|w| w == b"cICP")?;
+    bytes.get(at + 4..at + 8)?.try_into().ok()
+}
+
+/// F3: PNG frames apply the transfer of the module's colour space (linear 0.5 -> sRGB 188, BT.709 180) and carry the
+/// matching chunk (iCCP sRGB, cICP 1/1/0/1) when `embed_color_space` is set; without it no colour chunk.
+#[test]
+fn png_frames_apply_the_colour_space_transfer_and_tag_it() {
+    let cases = [("srgb", true, 188u8), ("rec709", true, 180), ("srgb", false, 188), ("rec709", false, 180)];
+    for (space, embed, want) in cases {
+        let s = Scratch::new(&format!("f3-{space}-{embed}"));
+        std::fs::create_dir_all(s.0.join("renders")).unwrap();
+        let mut v = viewer(&s);
+        author_grey(&mut v, json!({"preserve_rgb": false, "output_color_space": space, "embed_color_space": embed}));
+        ok(&mut v, "delivery.add", json!({"kind": "composition", "item_id": "rq"}));
+        let run = ok(&mut v, "delivery.run", json!({}));
+        assert_eq!(run["receipts"][0]["outcome"], "complete", "{run}");
+        let file = s.0.join("renders/grey_0000000.png");
+        let img = decode_png(&file);
+        let px = rgba8(&img, 8, 4);
+        for c in 0..3 {
+            assert!((i32::from(px[c]) - i32::from(want)).abs() <= 1, "{space} embed={embed}: {px:?} vs {want}");
+        }
+        assert_eq!(px[3], 255);
+        let bytes = std::fs::read(&file).unwrap();
+        match (space, embed) {
+            ("srgb", true) => assert!(img.icc.is_some() && cicp(&bytes).is_none(), "{space}: iCCP sRGB"),
+            ("rec709", true) => assert_eq!((cicp(&bytes), img.icc.is_some()), (Some([1, 1, 0, 1]), false), "{space}: cICP BT.709"),
+            _ => assert_eq!((cicp(&bytes), img.icc.is_some()), (None, false), "{space}: embed off, no colour chunk"),
+        }
+    }
+}
+
+/// F4: an output-module template keeps every AV1 setting of the recipe, and the output path's extension follows the
+/// template's container.
+#[test]
+fn an_output_module_template_keeps_av1_settings_and_the_container_extension() {
+    let s = Scratch::new("f4-template");
+    let pkg = package(&s.0);
+    let av1 = preset_json("studio.av1.mp4", "user.av1.slow", &|v| {
+        v["video"]["speed"] = json!(2);
+        v["video"]["bitrate"] = json!(5_000_000);
+        v["video"]["max_keyframe_interval"] = json!(60);
+    });
+    let quantizer = serde_json::from_str::<Value>(&av1).unwrap()["video"]["quantizer"].as_u64().unwrap();
+    let hq = preset_json("studio.dnxhr.hq.mov", "user.hq", &|_| {});
+    let path = with_recipes_entry(&s, &pkg, "templates.handshake", &recipes_entry(&[av1, hq]));
+    let mut v = viewer_at(&path);
+    author(&mut v, "straight");
+    motion(&mut v, "composition.queue_apply_template", json!({"item_id": "rq", "module_id": "png", "template": "output_module", "recipe_id": "user.av1.slow"}));
+    let records: Value = serde_json::from_slice(v.run().document_entry("motion").unwrap()).unwrap();
+    let module = &records["render_queue"][0]["output_modules"][0];
+    let want = format!("{quantizer},speed=2,bitrate=5000000,keyframe=60");
+    assert_eq!(
+        (module["format"].as_str(), module["codec_option"].as_str(), module["output_path"].as_str()),
+        (Some("mp4_av1"), Some(want.as_str()), Some("renders/title.mp4")),
+        "{module}"
+    );
+    motion(&mut v, "composition.queue_apply_template", json!({"item_id": "rq", "module_id": "png", "template": "output_module", "recipe_id": "user.hq"}));
+    let records: Value = serde_json::from_slice(v.run().document_entry("motion").unwrap()).unwrap();
+    let module = &records["render_queue"][0]["output_modules"][0];
+    assert_eq!((module["format"].as_str(), module["codec_option"].as_str(), module["output_path"].as_str()), (Some("mov_vc3"), Some("dnxhr_hq"), Some("renders/title.mov")), "{module}");
+}
+
+/// F5: outputs equal on Windows are one output: trailing dots and spaces, case, and a sequence output equal to one of a
+/// PNG module's frame names refuse the run before any write.
+#[test]
+fn windows_equivalent_outputs_collide_before_any_write() {
+    let s = Scratch::new("f5-collide");
+    std::fs::create_dir_all(s.0.join("renders")).unwrap();
+    let mut v = viewer(&s);
+    author(&mut v, "straight");
+    let item = |out: &str| json!({"kind": "sequence", "sequence_id": "seq-main", "recipe_id": PRESET, "output": out, "width": 64, "height": 32, "overwrite": true});
+    for (a, b) in [("a.mov", "a.mov."), ("b.mov", "B.MOV "), ("renders/title_0000001.png", "")] {
+        ok(&mut v, "delivery.add", item(a));
+        if b.is_empty() {
+            ok(&mut v, "delivery.add", json!({"kind": "composition", "item_id": "rq", "overwrite": true}));
+        } else {
+            ok(&mut v, "delivery.add", item(b));
+        }
+        assert_eq!(refused(&mut v, "delivery.run", json!({})), "delivery_output_collision", "{a} / {b}");
+        let listed = ok(&mut v, "delivery.list", json!({}));
+        for queued in listed["items"].as_array().unwrap() {
+            ok(&mut v, "delivery.remove", json!({"delivery_id": queued["delivery_id"]}));
+        }
+    }
+    let written: Vec<_> = std::fs::read_dir(&s.0).unwrap().filter_map(Result::ok).map(|e| e.file_name()).filter(|n| n.to_string_lossy().to_ascii_lowercase().contains(".mov")).collect();
+    assert!(written.is_empty(), "nothing written: {written:?}");
+    assert_eq!(std::fs::read_dir(s.0.join("renders")).unwrap().count(), 0);
+}
+
+/// F6: a PNG receipt names the frame pattern and the range written, not one entry per frame.
+#[test]
+fn png_receipt_names_the_pattern_and_range_not_each_frame() {
+    let s = Scratch::new("f6-receipt");
+    std::fs::create_dir_all(s.0.join("renders")).unwrap();
+    let mut v = viewer(&s);
+    author(&mut v, "straight");
+    ok(&mut v, "delivery.add", json!({"kind": "composition", "item_id": "rq"}));
+    let run = ok(&mut v, "delivery.run", json!({}));
+    let r = &run["receipts"][0];
+    assert_eq!(r["artifacts"], json!([{"pattern": "renders/title_%07d.png", "first_number": 0, "last_number": 2, "frames": 3}]), "{r}");
+    assert_eq!((r["receipt"]["pattern"].as_str(), r["receipt"]["frames_written"].as_u64()), (Some("renders/title_%07d.png"), Some(3)), "{r}");
+    assert!(!r.to_string().contains("title_0000001.png"), "no per-frame name: {r}");
 }
