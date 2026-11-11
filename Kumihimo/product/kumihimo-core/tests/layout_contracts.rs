@@ -308,6 +308,21 @@ fn finite_numeric_construction_and_exact_envelope_replay() {
 }
 
 #[test]
+fn rectangle_clip_is_available_to_consumers_and_preserves_empty_origins() {
+    let bounds = rect(10.0, 20.0, 30.0, 40.0);
+    let cases = [
+        (rect(12.0, 24.0, 4.0, 5.0), rect(12.0, 24.0, 4.0, 5.0)),
+        (rect(5.0, 25.0, 12.0, 50.0), rect(10.0, 25.0, 7.0, 35.0)),
+        (rect(40.0, 22.0, 5.0, 8.0), rect(40.0, 22.0, 0.0, 8.0)),
+        (rect(50.0, 75.0, 5.0, 6.0), rect(50.0, 75.0, 0.0, 0.0)),
+    ];
+
+    for (clip, expected) in cases {
+        assert_eq!(bounds.clip(clip).unwrap(), expected);
+    }
+}
+
+#[test]
 fn shared_split_edges_minima_and_grid_holes_use_host_weights() {
     let mut f = fixture();
     apply(

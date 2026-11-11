@@ -175,7 +175,8 @@ impl Rect {
             && other.right() <= self.right()
             && other.bottom() <= self.bottom()
     }
-    pub(crate) fn clip(self, other: Self) -> Result<Self, Error> {
+    /// Clips this rectangle to another, preserving zero extents on disjoint axes.
+    pub fn clip(self, other: Self) -> Result<Self, Error> {
         let x = self.x().max(other.x());
         let y = self.y().max(other.y());
         Self::new(

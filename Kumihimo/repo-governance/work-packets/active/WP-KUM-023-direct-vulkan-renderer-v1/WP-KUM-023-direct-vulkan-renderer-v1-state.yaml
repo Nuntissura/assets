@@ -1,14 +1,35 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-023-direct-vulkan-renderer-v1
-generation: 1
-phase: planned
+generation: 4
+phase: active
 owner: 01a17374-1d96-7e02-9aea-77b0f62f20dc
-changed_files: []
+changed_files:
+- product/kumihimo-core/src/geometry.rs
+- product/kumihimo-web/src/projection.rs
+- product/kumihimo-core/tests/layout_contracts.rs
 proof:
 - kind: published_spec
   revision: 7607822c88240dffaac7ec1e90f6ad2b4cfb8fe4
   observation: Exact independent canonical spec29 reread.
-blockers:
-- Owning WP publication and dependency readiness are required by KUM-TEAM-002 before coding.
-next_action: Publish this WP predecessor and record focused dependency readiness, then admit only the three named
-  source and test paths.
+- kind: published_predecessor
+  revision: 0eb7c2f0af757e46f63fbe5b46216eb65309c724
+  observation: Independent canonical reread verified the exact five WP predecessor files.
+- kind: dependency_readiness
+  reviewer: dependency_authority
+  observation: Exact three-path source inputs match the published base. Existing Core dependency and public test
+    imports suffice. No manifest, lock, Studio or GPU dependency.
+- kind: nonauthor_source_review
+  reviewer: redraw_review
+  status: cleared
+  base: 0eb7c2f0af757e46f63fbe5b46216eb65309c724
+  source_delta_sha256: 42931a9f761679e45ad8f6dee35d2efd72dfb997f6bb67efd4a5f060874a0c48
+  observation: Exact Core arithmetic and browser error mapping preserved. The public test covers containment, overlap,
+    edge contact and disjoint origins. The separate host path is preserved. No test execution.
+- kind: independent_focused_test_evaluation
+  reviewer: redraw_review
+  base: 0eb7c2f0af757e46f63fbe5b46216eb65309c724
+  terminal_sha256: 329dd6a7cfe3ef0ca28fc4925725724fd6cda3508ca4e7c5b17503110d6ca6fd
+  observation: Locked offline Core layout_contracts passed 13 cases and Web web_contracts passed 6 cases on the
+    exact source candidate.
+blockers: []
+next_action: Independently reread the published shared clipping source and proof state.

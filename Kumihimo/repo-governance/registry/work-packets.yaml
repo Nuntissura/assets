@@ -180,10 +180,8 @@ work_packets:
     Primary phase/slot required; host adoption held
 - wp_id: WP-KUM-023-direct-vulkan-renderer-v1
   title: Direct Vulkan shared geometry
-  phase: planned
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-023-direct-vulkan-renderer-v1/WP-KUM-023-direct-vulkan-renderer-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-023-direct-vulkan-renderer-v1/WP-KUM-023-direct-vulkan-renderer-v1-state.yaml
-  next_action: Publish this WP predecessor and record focused dependency readiness, then admit only the three named
-    source and test paths.
-  blockers:
-  - Owning WP publication and dependency readiness are required by KUM-TEAM-002 before coding.
+  next_action: Independently reread the published shared clipping source and proof state.
+  blockers: []

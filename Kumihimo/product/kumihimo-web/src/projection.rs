@@ -12,15 +12,7 @@ pub fn rect_value(rect: core::Rect) -> Value {
     json!({"x":rect.x(),"y":rect.y(),"width":rect.width(),"height":rect.height()})
 }
 fn intersection(first: core::Rect, second: core::Rect) -> Result<core::Rect, WebError> {
-    let x = first.x().max(second.x());
-    let y = first.y().max(second.y());
-    core::Rect::new(
-        x,
-        y,
-        (first.right().min(second.right()) - x).max(0.0),
-        (first.bottom().min(second.bottom()) - y).max(0.0),
-    )
-    .map_err(|_| WebError::new("geometry_overflow"))
+    first.clip(second).map_err(|_| WebError::new("geometry_overflow"))
 }
 fn usable(rect: core::Rect) -> Result<core::Rect, WebError> {
     let reserved = HEADER_HEIGHT.min(rect.height());
