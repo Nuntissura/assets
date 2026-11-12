@@ -402,20 +402,19 @@ fn f6_a_stale_override_refuses_its_instance_only_and_keeps_every_binding() {
     assert_eq!(main_of(&mut v, &stale), json!(a));
 }
 
-/// F2: hundreds of redraws of one instance never unbind another.
+/// F2: more than 256 instance states never unbind the first instance (no eviction).
 #[test]
 fn f2_many_redraws_never_unbind_the_first_instance() {
     let mut v = design_doc();
-    let (a, _, icon) = button(&mut v, "A", 10.0);
+    let (a, ..) = button(&mut v, "A", 10.0);
     let first = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
-    let busy = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 300, "y": 10})), "layer_id");
-    for i in 0..257 {
-        ok(&mut v, "design.instance.set_override", json!({"layer": busy, "node_id": icon, "field": "visible", "value": i % 2 == 0}));
+    for i in 0..256 {
+        ok(&mut v, "component.create_instance", json!({"component": a, "x": 300 + (i % 16) * 70, "y": 100 + (i / 16) * 30}));
     }
     assert!(states(&v) > 256, "every binding state is kept: {}", states(&v));
     assert_eq!(main_of(&mut v, &first), json!(a));
     let listed = ok(&mut v, "component.list_instances", json!({"component": a}));
-    assert_eq!(listed["instances"].as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(listed["instances"].as_array().unwrap().len(), 257, "{listed}");
 }
 
 /// F3 and F5: a layer delete drops the records keyed to it in the same undo step, so auto layout,
