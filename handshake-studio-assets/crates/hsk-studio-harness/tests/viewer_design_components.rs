@@ -571,8 +571,8 @@ fn r1_reopen_compacts_unreachable_copy_text_and_redraws_run_again() {
 
 /// R2: a document reopened after more than 1024 instance commands does not refuse design_state_over_cap
 /// (on open with no history, states nothing can bind again are pruned: superseded contents and instances
-/// whose record is gone). An instance created and deleted again leaves a state of its layer id, which the
-/// next instance takes again.
+/// whose record is gone). An undone instance leaves a state of its layer id, which the next instance takes
+/// again with a new instance id.
 #[test]
 fn r2_reopen_after_more_than_1024_instance_commands_keeps_working() {
     let scratch = Scratch::new("ds-r2-reopen-states");
@@ -583,7 +583,7 @@ fn r2_reopen_after_more_than_1024_instance_commands_keeps_working() {
         for i in 0..n {
             frame = text(&ok(v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
             if i + 1 < n {
-                v.delete_layer(&frame).unwrap();
+                v.undo().unwrap();
             }
         }
         frame
