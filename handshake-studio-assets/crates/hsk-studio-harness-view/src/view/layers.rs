@@ -187,6 +187,35 @@ impl Viewer {
             return self.delete_graphic_frame(layer_id);
         }
         let doc = self.doc()?;
+        // Lane SMB-R60-FOLLOWUPS-1 (lead ruling 2026-11-11T10:39Z): a text-frame layer that a thread (another
+        // frame's previous or next frame) or a layout flow record names is refused typed before any change,
+        // naming the record, so no delete leaves records naming a missing frame (a stale entry locks the layout
+        // after save). Re-linking the thread past the deleted frame is a next-lane candidate.
+        fn path_naming(v: &serde_json::Value, at: String, id: &str) -> Option<String> {
+            match v {
+                serde_json::Value::String(s) if s == id => Some(at),
+                serde_json::Value::Array(items) => items.iter().enumerate().find_map(|(i, x)| path_naming(x, format!("{at}/{i}"), id)),
+                serde_json::Value::Object(map) => map.iter().find_map(|(k, x)| path_naming(x, format!("{at}/{k}"), id)),
+                _ => None,
+            }
+        }
+        let thread = doc.layers.iter().filter(|l| l.layer_id != layer_id).find_map(|l| {
+            let f = l.text_frame.as_ref()?;
+            [("previous_text_frame", &f.previous_text_frame), ("next_text_frame", &f.next_text_frame)]
+                .into_iter()
+                .find(|(_, v)| v.as_deref() == Some(layer_id))
+                .map(|(field, _)| format!("thread {}.{field}", l.layer_id))
+        });
+        let flow = || {
+            let bytes = self.run.document_entry(hsk_studio_session::LAYOUT_RECORDS_ENTRY)?;
+            let records = hsk_studio_session::LayoutRecords::decode(bytes, hsk_studio_folio::Budget::default(), self.cancel).ok()?;
+            path_naming(&serde_json::to_value(&records.flow).ok()?, "flow".to_string(), layer_id)
+        };
+        if let Some(record) = thread.or_else(flow) {
+            let e = format!("delete: layer_bound_by_layout_records {record}");
+            self.say(e.clone());
+            return Err(e);
+        }
         if self.run.placement(layer_id).is_none() {
             return Err(format!("delete: {layer_id} is not in a layer stack"));
         }
