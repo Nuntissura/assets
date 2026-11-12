@@ -307,8 +307,9 @@ impl Viewer {
 
     /// Run when a document is opened (view `open`): with no undo or redo step nothing can return to
     /// a layer that is gone or to a layer's earlier children, so the `design` states of absent layers
-    /// (lead ruling 2026-11-11, F1 (b)), of superseded contents and of authored instances whose record
-    /// the document no longer holds (ruling R2, 2026-11-12: none of them can bind again) are dropped,
+    /// (lead ruling 2026-11-11, F1 (b)) and, for authored instances, the states of superseded contents
+    /// and of instances whose record the document no longer holds (ruling R2, 2026-11-12: none of them
+    /// can bind again) are dropped (a design file instance's states are kept as saved),
     /// and the `text` records of redraw copies the document no longer draws are compacted (ruling R1).
     /// Each entry is written only when something was dropped.
     pub(in crate::view) fn design_opened(&mut self) {
@@ -321,10 +322,15 @@ impl Viewer {
         let (design_file, native) = self.design_receipt().map_or_else(Default::default, |r| (r.design_file, r.native.into_keys().collect::<BTreeSet<_>>()));
         if let Some(mut records) = self.run.document_entry(ENTRY).and_then(raw_states) {
             let before = records.instances.len();
+            // A design file instance's states keep their contents (its saved entry reopens byte for byte,
+            // lane SMB-FIG-EDIT-2); a native binding keeps only the current content of a live record.
             records.instances.retain(|s| {
-                (design_file.contains(&s.instance_id) || native.contains(&s.instance_id))
-                    && doc.layers.iter().any(|l| l.layer_id == s.layer_id)
-                    && s.content_signature == content(&doc, &s.layer_id)
+                let present = doc.layers.iter().any(|l| l.layer_id == s.layer_id);
+                if design_file.contains(&s.instance_id) {
+                    present
+                } else {
+                    present && native.contains(&s.instance_id) && s.content_signature == content(&doc, &s.layer_id)
+                }
             });
             if records.instances.len() != before {
                 let written = serde_json::to_vec(&records).map_err(|e| e.to_string()).and_then(|b| self.run.set_document_entry(ENTRY, Some(b)).map_err(str::to_owned));
