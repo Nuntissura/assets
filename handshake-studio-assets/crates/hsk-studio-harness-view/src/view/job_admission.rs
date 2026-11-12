@@ -217,6 +217,13 @@ impl Viewer {
             .with_correlations(Arc::new(RunCorrelations(self.run.context().clone())))
     }
 
+    /// [`Viewer::job_admission`] for a job of `resource` (lane SMB-R60-FOLLOWUPS-1, lead ruling 2026-11-12:
+    /// resource-less admission is not accepted, so an export with no open document names a derived resource
+    /// and the bound port is asked).
+    pub(in crate::view) fn job_admission_of(&self, resource: DomainId) -> JobAdmission {
+        JobAdmission { resource: Some(resource), ..self.job_admission() }
+    }
+
     /// Records a replaceable preview at `bound_revision` superseded by `revision` (counted and
     /// emitted; nothing was admitted).
     pub(in crate::view) fn record_superseded_preview(&self, bound_revision: u64, revision: u64) -> JobSettlement {

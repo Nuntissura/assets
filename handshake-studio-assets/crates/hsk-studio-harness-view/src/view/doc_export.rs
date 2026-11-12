@@ -42,7 +42,7 @@ use super::Viewer;
 use super::develop::export_dialog::{any_group_on, read_watermark_graphic, receipt_json, stage_from_fields};
 use super::develop::{Refusal, SRGB_V4_ICC};
 use super::export::{create_unique_sibling, write_atomic, write_new};
-use super::job_admission::{refusal_json, settlement_json};
+use super::job_admission::{JobAdmission, refusal_json, settlement_json};
 use super::render::{self, Assets, LinearFrame, Prefer};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_develop::{DevelopedImage, ExportStage, apply_export_stage};
@@ -885,7 +885,12 @@ impl Viewer {
     /// rendered or written (the `as_export_job` pattern of `layout_export`): a refusal is typed
     /// `overloaded`, `canceled` or `stale_revision` with the port's detail.
     pub(in crate::view) fn admit_export_job(&self) -> Result<AdmittedJob, Refusal> {
-        let admission = self.job_admission();
+        self.admit_export_job_with(&self.job_admission())
+    }
+
+    /// [`Viewer::admit_export_job`] through `admission` (an export of a derived resource:
+    /// [`Viewer::job_admission_of`]).
+    pub(in crate::view) fn admit_export_job_with(&self, admission: &JobAdmission) -> Result<AdmittedJob, Refusal> {
         let head = self.document_head();
         let correlation = admission.next_correlation();
         admission.admit(admission.request(Action::Export, 0, head, correlation), head, self.cancel).map_err(|r| refuse(r.code(), refusal_json(r).to_string()))

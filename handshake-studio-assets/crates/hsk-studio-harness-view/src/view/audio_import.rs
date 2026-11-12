@@ -29,7 +29,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::monitor::{self, MonitorFail};
-use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_accord::{CancellationToken, DomainId, Ticks};
 use hsk_studio_folio::{
     ClipSchema, ClipSource, ClipTransitions, ContentDigest, SequenceFrameRate, SequenceSchema, Speed,
     StudioClip, StudioSequence, StudioTrack, TrackKind, TrackSchema,
@@ -871,6 +871,25 @@ impl monitor::FrameSource for NoVideo {
 /// Monitor size of an audio-only import (no picture).
 const MONITOR_SIDE: u32 = 16;
 
+/// The job resource of an open audio file's export when no document is open (lane SMB-R60-FOLLOWUPS-1, lead
+/// ruling 2026-11-12, as SMB-WEB-SITE-1's site resource): an `SDOC` id in the UUIDv7 shape whose digits are the
+/// SHA-256 of the file's canonical path (absolute when it does not resolve), `/`-separated and ASCII
+/// case-folded, so every export of one file addresses one resource in every process. `None` only if the id
+/// does not parse.
+fn audio_file_resource(path: &Path) -> Option<DomainId> {
+    let resolved = std::fs::canonicalize(path).or_else(|_| std::path::absolute(path)).unwrap_or_else(|_| path.to_path_buf());
+    let key = resolved.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let hex = hsk_studio_package::sha256_hex_of(format!("hsk.studio.audio.file\0{key}").as_bytes());
+    let g = |r: std::ops::Range<usize>| hex.get(r).unwrap_or("0");
+    let variant = match g(16..17) {
+        "0" | "4" | "8" | "c" => "8",
+        "1" | "5" | "9" | "d" => "9",
+        "2" | "6" | "a" | "e" => "a",
+        _ => "b",
+    };
+    DomainId::parse(&format!("SDOC-{}-{}-7{}-{variant}{}-{}", g(0..8), g(8..12), g(13..16), g(17..20), g(20..32))).ok()
+}
+
 impl super::Viewer {
     /// Registers the external audio decoder audio files open with (D24-A: the OS AAC decoder; lane
     /// SMB-PR-SOURCE-MONITOR). Under feature `media-native` [`super::Viewer::new`] already registers
@@ -939,7 +958,13 @@ impl super::Viewer {
         let result = if self.audio.is_none() || self.source.as_deref() == Some(path) {
             self.export_audio_inner(path, format, overwrite)
         } else {
-            match self.admit_export_job() {
+            // A plain audio file opens no document: its job names the file's derived resource (lead ruling
+            // 2026-11-12, as SMB-WEB-SITE-1's site resource), so the bound port is asked.
+            let admitted = match self.source.as_deref().filter(|_| self.run.snapshot().is_none()).and_then(audio_file_resource) {
+                Some(resource) => self.admit_export_job_with(&self.job_admission_of(resource)),
+                None => self.admit_export_job(),
+            };
+            match admitted {
                 Ok(job) => {
                     let result = self.export_audio_inner(path, format, overwrite);
                     self.settle_export_text(job, result, "export_audio")
