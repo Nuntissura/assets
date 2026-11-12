@@ -1279,7 +1279,7 @@ impl WebHost {
             if edges.len() != src.edges.len() {
                 return no("move_rewrite_unverified", &format!("{new_id}:0"));
             }
-            if let Some((n, _)) = edges.iter().zip(&src.edges).enumerate().find(|(i, (n, o))| differs(*i, *n, *o)).map(|(_, pair)| pair) {
+            if let Some((n, _)) = edges.iter().zip(&src.edges).enumerate().find(|(i, (n, o))| differs(*i, n, o)).map(|(_, pair)| pair) {
                 return no("move_rewrite_unverified", &format!("{new_id}:{}", n.line));
             }
             if !changes.is_empty() {
