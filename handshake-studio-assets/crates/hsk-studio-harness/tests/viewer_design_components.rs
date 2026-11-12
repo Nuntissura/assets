@@ -463,22 +463,6 @@ fn f1_states_of_absent_layers_are_pruned_on_open_and_nothing_else_changes() {
     assert_eq!(main_of(&mut w, &keep), json!(a));
 }
 
-/// F7: redraws of a component with text never pile up past the text entry's cap.
-#[test]
-fn f7_redraws_of_a_text_component_do_not_exhaust_the_text_entry() {
-    let mut v = design_doc();
-    let label = v.place_text_with_font(10.0, 40.0, "OK", "Inter-Regular").unwrap();
-    v.select(None);
-    let made = ok(&mut v, "component.create_from_selection", json!({"layers": [label], "name": "Label"}));
-    let a = text(&made, "component_id");
-    let one = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
-    ok(&mut v, "component.create_instance", json!({"component": a, "x": 300, "y": 10}));
-    for _ in 0..140 {
-        ok(&mut v, "component.sync_instances", json!({"component": a}));
-    }
-    ok(&mut v, "design.instance.set_override", json!({"layer": one, "node_id": label, "field": "characters", "value": "Go"}));
-}
-
 /// F8: an instance copy carries the definition layer's live filter stack.
 #[test]
 fn f8_instance_copies_carry_live_filter_stacks() {
@@ -508,4 +492,123 @@ fn f10_a_duplicated_instance_is_an_instance_of_the_same_main() {
     assert_eq!(ok(&mut v, "component.list_instances", json!({"component": a}))["instances"].as_array().unwrap().len(), 2);
     v.undo().unwrap();
     assert_eq!(snapshot(&v), before, "one undo step");
+}
+
+// Lead rulings R1 to R3 (2026-11-12) on BUNDLED GREEN 8a94c6af.
+
+/// The text records the document's `text` entry holds: (layer id, story id).
+fn text_records(v: &Viewer) -> Vec<(String, String)> {
+    let entry: Value = serde_json::from_slice(v.run().document_entry("text").unwrap()).unwrap();
+    entry["layers"].as_array().unwrap().iter().map(|r| (text(r, "layer_id"), text(r, "story_id"))).collect()
+}
+
+/// A label component (one text layer) and two of its instances: (component, label, first instance).
+fn label_component(v: &mut Viewer) -> (String, String, String) {
+    let label = v.place_text_with_font(10.0, 40.0, "OK", "Inter-Regular").unwrap();
+    v.select(None);
+    let a = text(&ok(v, "component.create_from_selection", json!({"layers": [label], "name": "Label"})), "component_id");
+    let one = text(&ok(v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    ok(v, "component.create_instance", json!({"component": a, "x": 300, "y": 10}));
+    (a, label, one)
+}
+
+/// R1: the text records of instance copies an undo can still return to are never compacted: a sync past
+/// the text entry's cap is refused typed, and undo brings every copy back with its text record.
+#[test]
+fn r1_text_records_an_undo_can_reach_are_never_compacted() {
+    let mut v = design_doc();
+    let (a, _, one) = label_component(&mut v);
+    let first: Vec<(String, String)> = children(&v, &one).into_iter().map(|k| {
+        let story = layer(&v, &k)["payload"]["story_id"].as_str().unwrap().to_string();
+        (k, story)
+    }).collect();
+    assert!(!first.is_empty());
+    let mut done = 0;
+    for _ in 0..140 {
+        match call(&mut v, "component.sync_instances", json!({"component": a})) {
+            Ok(_) => done += 1,
+            Err((code, detail)) => {
+                assert_eq!(code, "text_layer_over_cap", "{detail}");
+                break;
+            }
+        }
+    }
+    for _ in 0..done {
+        v.undo().unwrap();
+    }
+    assert_eq!(children(&v, &one), first.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>());
+    let records = text_records(&v);
+    for r in &first {
+        assert!(records.contains(r), "the copy {} lost its text record after {done} syncs and their undo", r.0);
+    }
+}
+
+/// F7 under R1: in a session the text entry's cap refuses typed; a save and reopen (no history) compacts
+/// the records of copies no history can return to, and the redraws run again.
+#[test]
+fn r1_reopen_compacts_unreachable_copy_text_and_redraws_run_again() {
+    let scratch = Scratch::new("ds-r1-reopen-text");
+    let mut v = design_doc();
+    let (a, label, one) = label_component(&mut v);
+    let mut refused_at = None;
+    for i in 0..140 {
+        if let Err((code, detail)) = call(&mut v, "component.sync_instances", json!({"component": a})) {
+            assert_eq!(code, "text_layer_over_cap", "{detail}");
+            refused_at = Some(i);
+            break;
+        }
+    }
+    assert!(refused_at.is_some(), "a sync past the text entry's cap is refused in the session");
+    let path = scratch.0.join("text.handshake");
+    v.save(&path, false).unwrap();
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.add_font("Inter-Regular", INTER.to_vec());
+    w.open(&path).unwrap();
+    assert!(text_records(&w).len() < text_records(&v).len(), "the reopen compacts the copies' records");
+    ok(&mut w, "component.sync_instances", json!({"component": a}));
+    ok(&mut w, "design.instance.set_override", json!({"layer": one, "node_id": label, "field": "characters", "value": "Go"}));
+}
+
+/// R2: a document reopened after more than 1024 instance commands does not refuse design_state_over_cap
+/// (the states of superseded contents are pruned on open with no history).
+#[test]
+fn r2_reopen_after_more_than_1024_instance_commands_keeps_working() {
+    let scratch = Scratch::new("ds-r2-reopen-states");
+    let mut v = design_doc();
+    let (a, _, icon) = button(&mut v, "A", 10.0);
+    let frame = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+    // A drawn shape between two redraws makes every redraw's copies new layer ids (a new content key).
+    let round = |v: &mut Viewer, n: usize, base: f64| {
+        for i in 0..n {
+            let x = base + (i % 64) as f64 * 3.0;
+            let y = 400.0 + (i / 64) as f64 * 3.0;
+            v.draw_shape(ShapeKind::Rectangle, [x, y], [x + 1.0, y + 1.0], false).unwrap();
+            v.select(None);
+            ok(v, "design.instance.set_override", json!({"layer": frame, "node_id": icon, "field": "visible", "value": i % 2 == 0}));
+        }
+    };
+    round(&mut v, 513, 0.0);
+    assert!(states(&v) > 512, "every redraw kept its state: {}", states(&v));
+    let path = scratch.0.join("states.handshake");
+    v.save(&path, false).unwrap();
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&path).unwrap();
+    round(&mut w, 513, 300.0);
+    assert_eq!(main_of(&mut w, &frame), json!(a));
+}
+
+/// R3 (F10): an instance of the design file's records is not duplicated as a silent plain group.
+#[test]
+fn r3_a_design_file_instance_duplicate_is_refused_typed() {
+    let scratch = Scratch::new("ds-r3-fig-duplicate");
+    let fig = scratch.0.join("components.fig");
+    std::fs::copy(format!("{}/../hsk-studio-interop-fig/tests/fixtures/fig-components-autolayout.fig", env!("CARGO_MANIFEST_DIR")), &fig).unwrap();
+    let dest = scratch.0.join("components.handshake");
+    let mut v = design_doc();
+    let report = ok(&mut v, "design.import_fig", json!({"source": fig.to_str().unwrap(), "dest": dest.to_str().unwrap()}));
+    let layer = report["instance_layers"][0].as_str().unwrap_or_else(|| panic!("{report}")).to_string();
+    let before = snapshot(&v);
+    let e = v.duplicate_layer(&layer).unwrap_err();
+    assert!(e.contains("duplicate_instance_unsupported"), "{e}");
+    assert_eq!(snapshot(&v), before, "nothing is copied");
 }

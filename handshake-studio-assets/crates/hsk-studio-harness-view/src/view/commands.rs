@@ -94,7 +94,7 @@ const ENGINE_PREFIXES: &[&str] = &["fig_import"];
 /// the token after `refused ` (`fig_import: decode refused not_fig`). A leading token followed by
 /// ` refused` names the op that was refused (`mixer: mixer_master_volume refused: ...`), not a reason:
 /// `None` (review F1 on 2bbe2207).
-fn leading_code(message: &str) -> Option<String> {
+pub(in crate::view) fn leading_code(message: &str) -> Option<String> {
     let rest = match message.split_once(": ") {
         Some((engine, rest)) if engine.bytes().all(|b| b.is_ascii_lowercase()) || ENGINE_PREFIXES.contains(&engine) => rest,
         _ => message,

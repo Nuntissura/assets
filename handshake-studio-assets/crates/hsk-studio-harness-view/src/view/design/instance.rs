@@ -1141,7 +1141,7 @@ impl Viewer {
     /// member each job drew and the revision.
     pub(super) fn native_redraw(&mut self, op: &str, receipt: &Receipt, jobs: &[NativeJob], create: Option<PlacementWrite>) -> Result<(Vec<String>, Vec<String>, u64), String> {
         if !vector::entry_persistable() {
-            return Err(format!("design: vector_entry_not_persistable ({op})"));
+            return Err(not_persistable(op));
         }
         persist::room_for(self.run.document_entry(persist::ENTRY), jobs.len())?;
         let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
@@ -1339,6 +1339,12 @@ impl Viewer {
 /// The error of a refused design-state save after the redraw rollback: it says the redraw was undone
 /// only when the undo succeeded, and names the undo failure otherwise (the document then still holds
 /// the unsaved redraw; F-R40-5).
+/// F9: the refusal of a native redraw in a session without the vector entry token (its code is the
+/// reason, not the op).
+pub(super) fn not_persistable(op: &str) -> String {
+    format!("design: vector_entry_not_persistable ({op})")
+}
+
 pub(super) fn rollback_error(save: &str, undone: Result<(), String>) -> String {
     match undone {
         Ok(()) => format!("{save} (the redraw was undone)"),
@@ -1348,7 +1354,13 @@ pub(super) fn rollback_error(save: &str, undone: Result<(), String>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::rollback_error;
+    use super::{not_persistable, rollback_error};
+
+    #[test]
+    fn a_native_redraw_without_the_vector_entry_token_refuses_with_its_reason_code() {
+        let m = not_persistable("component_create_instance");
+        assert_eq!(crate::view::commands::leading_code(&m).as_deref(), Some("vector_entry_not_persistable"), "{m}");
+    }
 
     #[test]
     fn rollback_error_names_a_failed_undo_and_never_claims_the_redraw_was_undone() {
