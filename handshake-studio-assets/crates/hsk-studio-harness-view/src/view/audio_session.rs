@@ -376,9 +376,23 @@ impl super::Viewer {
     /// encoders (WAV, FLAC, AIFF), atomically, never over the opened file. Needs no picture. Refusals:
     /// as [`super::Viewer::sequence_sound`], `unknown_sequence`, `mixdown`, `export_over_source`, then
     /// [`super::audio_import::write_atomically`]'s and `export_from`'s.
+    ///
+    /// Admission (lane SMB-R60-FOLLOWUPS-1 item 3a, HBR-HOST-004): after the sequence and output checks, which the
+    /// inner export refuses unadmitted, one export job through the viewer's bound JobPort before anything is
+    /// rendered or written; `overloaded`, `canceled` or `stale_revision` refuse it typed, and the job settles once.
     pub fn export_sequence_mix(&mut self, sequence_id: &str, format: MixFormat, output: &Path, overwrite: bool) -> Result<MixExport, MonitorFail> {
         let mut notes = Vec::new();
-        let result = self.export_sequence_mix_inner(sequence_id, format, output, overwrite, &mut notes);
+        let result = match self.known_sequence(sequence_id).and_then(|_| self.check_output(output)) {
+            Err(_) => self.export_sequence_mix_inner(sequence_id, format, output, overwrite, &mut notes),
+            Ok(()) => match self.admit_export_job() {
+                Err(r) => Err(MonitorFail { code: r.code, detail: r.detail }),
+                Ok(job) => {
+                    let result = self.export_sequence_mix_inner(sequence_id, format, output, overwrite, &mut notes);
+                    self.settle_audio_export(job, &result);
+                    result
+                }
+            },
+        };
         self.record_print_recomputes(&notes);
         match &result {
             Ok(r) => {
@@ -390,6 +404,17 @@ impl super::Viewer {
             Err(e) => self.say(format!("mixdown {sequence_id} refused {} {}", e.code, e.detail)),
         }
         result
+    }
+
+    /// Settles an audio export's job once from its result: `completed` (`completed_stale` when the head
+    /// moved), `canceled`, or `failed` with the refusal's code (lane SMB-R60-FOLLOWUPS-1 items 3a, 3b).
+    fn settle_audio_export<T>(&self, job: hsk_studio_session::AdmittedJob, result: &Result<T, MonitorFail>) {
+        use hsk_studio_session::JobOutcome;
+        let _ = match result {
+            Ok(_) => job.complete(self.document_head()),
+            Err(e) if e.code == "canceled" => job.settle(JobOutcome::Canceled),
+            Err(e) => job.settle(JobOutcome::Failed(e.code)),
+        };
     }
 
     fn check_output(&self, output: &Path) -> Result<(), MonitorFail> {
@@ -438,9 +463,24 @@ impl super::Viewer {
     /// keep their old content). A stored edit list that matched no clip source is each receipt's
     /// `repair_unmatched`.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// Admission (lane SMB-R60-FOLLOWUPS-1 item 3b, HBR-HOST-004): after the sequence check, which the inner
+    /// export refuses unadmitted, the whole stem set is ONE export job through the viewer's bound JobPort before
+    /// any stream is built or file written; `overloaded`, `canceled` or `stale_revision` refuse it typed, and
+    /// the job settles once (a later plan refusal settles it `failed` with its code).
     pub fn export_sequence_stems(&mut self, sequence_id: &str, buses: &[String], rest: bool, format: MixFormat, dir: &Path, overwrite: bool) -> Result<StemReport, MonitorFail> {
         let mut notes = Vec::new();
-        let result = self.export_sequence_stems_inner(sequence_id, buses, rest, format, dir, overwrite, &mut notes);
+        let result = match self.known_sequence(sequence_id) {
+            Err(_) => self.export_sequence_stems_inner(sequence_id, buses, rest, format, dir, overwrite, &mut notes),
+            Ok(_) => match self.admit_export_job() {
+                Err(r) => Err(MonitorFail { code: r.code, detail: r.detail }),
+                Ok(job) => {
+                    let result = self.export_sequence_stems_inner(sequence_id, buses, rest, format, dir, overwrite, &mut notes);
+                    self.settle_audio_export(job, &result);
+                    result
+                }
+            },
+        };
         self.record_print_recomputes(&notes);
         match &result {
             Ok(r) => {

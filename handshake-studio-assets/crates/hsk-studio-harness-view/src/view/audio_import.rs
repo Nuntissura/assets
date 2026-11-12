@@ -933,7 +933,20 @@ impl super::Viewer {
 
     /// Exports the mixdown of the open audio file to `path` (never over the opened file).
     pub fn export_audio(&mut self, path: &Path, format: MixFormat, overwrite: bool) -> Result<MixExport, String> {
-        let result = self.export_audio_inner(path, format, overwrite);
+        // Admission (lane SMB-R60-FOLLOWUPS-1, review F3 of c43f2d90): after the cheap checks (an open audio file,
+        // not the opened file), which the inner export refuses unadmitted, one export job through the bound
+        // JobPort before rendering, settled once.
+        let result = if self.audio.is_none() || self.source.as_deref() == Some(path) {
+            self.export_audio_inner(path, format, overwrite)
+        } else {
+            match self.admit_export_job() {
+                Ok(job) => {
+                    let result = self.export_audio_inner(path, format, overwrite);
+                    self.settle_export_text(job, result, "export_audio")
+                }
+                Err(r) => Err(format!("export {}: {} {}", path.display(), r.code, r.detail)),
+            }
+        };
         match &result {
             Ok(r) => self.say(format!("exported {} ({} frames, {} clipped)", path.display(), r.frames, r.clipped_samples)),
             Err(e) => self.say(e.clone()),
