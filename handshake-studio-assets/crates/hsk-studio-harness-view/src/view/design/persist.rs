@@ -294,10 +294,10 @@ impl Viewer {
             notes.push("refused_design_states_dropped".to_owned());
         }
         let mut records = base.records.take().unwrap_or_else(|| StudioDesignStateRecords::new(doc.document_id.clone()));
-        let (layer, content) = (state.layer_id.clone(), state.content_signature.clone());
+        let key = (state.layer_id.clone(), state.content_signature.clone(), state.instance_id.clone());
         push_state(&mut records, state)?;
         let mut check = records.clone();
-        check.instances.retain(|s| receipt.design_file.contains(&s.instance_id) || (checked && s.layer_id == layer && s.content_signature == content));
+        check.instances.retain(|s| receipt.design_file.contains(&s.instance_id) || (checked && (&s.layer_id, &s.content_signature, &s.instance_id) == (&key.0, &key.1, &key.2)));
         folio::validate_design_state_records(&check, &doc, Some(&receipt.records), Budget::default(), self.cancel)
             .map_err(|d| format!("design: design_state {} {}", snake(d.code), d.target))?;
         let bytes = serde_json::to_vec(&records).map_err(|e| format!("design: design_state {e}"))?;
