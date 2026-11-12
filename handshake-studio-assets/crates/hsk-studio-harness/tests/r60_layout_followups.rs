@@ -206,6 +206,30 @@ fn r60_f2_a_page_key_at_the_last_u64_still_lets_page_add_mint() {
     assert_eq!((first.as_str(), second.as_str()), ("page-1", "page-2"));
 }
 
+/// Lead ruling 2026-11-11T10:39Z: deleting a text-frame layer that a thread or layout flow record names is
+/// refused typed `layer_bound_by_layout_records`, naming the record, before any change; the document is
+/// unchanged and the layout stays editable after save and reopen.
+#[test]
+fn r60_l1_a_threaded_text_frame_layer_delete_is_refused_typed_and_leaves_the_layout_editable() {
+    let scratch = Scratch::new("r60-l1");
+    let mut v = open(&package(&scratch.0, "threaded.handshake"));
+    v.layout_apply(frame_on_page_1()).unwrap();
+    let a = v.layout_editor().unwrap().selected.clone().unwrap();
+    v.layout_apply(LayoutEdit::DrawFrame { page_id: "page-2".into(), x: 1.0, y: 1.0, w: 10.0, h: 10.0 }).unwrap();
+    let b = v.layout_editor().unwrap().selected.clone().unwrap();
+    v.layout_apply(LayoutEdit::Thread { from: a.clone(), to: b.clone() }).unwrap();
+    let before = v.run().snapshot().unwrap().document().clone();
+    let depth = v.edit_json()["history"]["undo"].as_array().unwrap().len();
+    let refused = v.delete_layer(&b).expect_err("a threaded frame layer is bound by the thread record");
+    assert!(refused.contains("layer_bound_by_layout_records") && refused.contains(&a), "typed, naming the record: {refused}");
+    assert_eq!(v.run().snapshot().unwrap().document(), &before, "nothing changed");
+    assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), depth, "no step");
+    let saved = scratch.0.join("threaded-saved.handshake");
+    v.save(&saved, false).unwrap();
+    let mut back = open(&saved);
+    back.layout_apply(LayoutEdit::DrawFrame { page_id: "page-3".into(), x: 1.0, y: 1.0, w: 10.0, h: 10.0 }).expect("editable after reopen");
+}
+
 /// Probe i3: a sized `layout.open` on an open document adds an undo step, and its row says it mutates.
 #[test]
 fn r60_i3_layout_open_that_adds_an_undo_step_declares_it_mutates() {
