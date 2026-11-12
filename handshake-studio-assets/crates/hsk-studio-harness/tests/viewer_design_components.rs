@@ -570,31 +570,32 @@ fn r1_reopen_compacts_unreachable_copy_text_and_redraws_run_again() {
 }
 
 /// R2: a document reopened after more than 1024 instance commands does not refuse design_state_over_cap
-/// (the states of superseded contents are pruned on open with no history).
+/// (on open with no history, states nothing can bind again are pruned: superseded contents and instances
+/// whose record is gone). An instance created and deleted again leaves a state of its layer id, which the
+/// next instance takes again.
 #[test]
 fn r2_reopen_after_more_than_1024_instance_commands_keeps_working() {
     let scratch = Scratch::new("ds-r2-reopen-states");
     let mut v = design_doc();
-    let (a, _, icon) = button(&mut v, "A", 10.0);
-    let frame = text(&ok(&mut v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
-    // A drawn shape between two redraws makes every redraw's copies new layer ids (a new content key).
-    let round = |v: &mut Viewer, n: usize, base: f64| {
+    let (a, ..) = button(&mut v, "A", 10.0);
+    let cycle = |v: &mut Viewer, n: usize| -> String {
+        let mut frame = String::new();
         for i in 0..n {
-            let x = base + (i % 64) as f64 * 3.0;
-            let y = 400.0 + (i / 64) as f64 * 3.0;
-            v.draw_shape(ShapeKind::Rectangle, [x, y], [x + 1.0, y + 1.0], false).unwrap();
-            v.select(None);
-            ok(v, "design.instance.set_override", json!({"layer": frame, "node_id": icon, "field": "visible", "value": i % 2 == 0}));
+            frame = text(&ok(v, "component.create_instance", json!({"component": a, "x": 200, "y": 10})), "layer_id");
+            if i + 1 < n {
+                v.delete_layer(&frame).unwrap();
+            }
         }
+        frame
     };
-    round(&mut v, 513, 0.0);
-    assert!(states(&v) > 512, "every redraw kept its state: {}", states(&v));
+    cycle(&mut v, 520);
+    assert!(states(&v) > 512, "every instance kept its state: {}", states(&v));
     let path = scratch.0.join("states.handshake");
     v.save(&path, false).unwrap();
     let mut w = Viewer::new(Prefer::Cpu);
     w.open(&path).unwrap();
-    round(&mut w, 513, 300.0);
-    assert_eq!(main_of(&mut w, &frame), json!(a));
+    let last = cycle(&mut w, 520);
+    assert_eq!(main_of(&mut w, &last), json!(a));
 }
 
 /// R3 (F10): an instance of the design file's records is not duplicated as a silent plain group.
