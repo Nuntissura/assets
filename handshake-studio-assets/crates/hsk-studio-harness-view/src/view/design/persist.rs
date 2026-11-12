@@ -306,8 +306,10 @@ impl Viewer {
     }
 
     /// Run when a document is opened (view `open`): with no undo or redo step nothing can return to
-    /// a layer that is gone, so the `design` states of absent layers are dropped (lead ruling
-    /// 2026-11-11, F1 (b)); the entry is written only when something was dropped.
+    /// a layer that is gone or to a layer's earlier children, so the `design` states of absent layers
+    /// (lead ruling 2026-11-11, F1 (b)) and of superseded contents (ruling R2, 2026-11-12) are dropped,
+    /// and the `text` records of redraw copies the document no longer draws are compacted (ruling R1).
+    /// Each entry is written only when something was dropped.
     pub(in crate::view) fn design_opened(&mut self) {
         let history = self.run.history();
         let empty = |k: &str| history[k].as_array().is_some_and(Vec::is_empty);
@@ -315,15 +317,24 @@ impl Viewer {
             return;
         }
         let Some(doc) = self.run.snapshot().map(|s| s.document().clone()) else { return };
-        let Some(mut records) = self.run.document_entry(ENTRY).and_then(raw_states) else { return };
-        let before = records.instances.len();
-        records.instances.retain(|s| doc.layers.iter().any(|l| l.layer_id == s.layer_id));
-        if records.instances.len() == before {
-            return;
+        if let Some(mut records) = self.run.document_entry(ENTRY).and_then(raw_states) {
+            let before = records.instances.len();
+            records.instances.retain(|s| doc.layers.iter().any(|l| l.layer_id == s.layer_id) && s.content_signature == content(&doc, &s.layer_id));
+            if records.instances.len() != before {
+                let written = serde_json::to_vec(&records).map_err(|e| e.to_string()).and_then(|b| self.run.set_document_entry(ENTRY, Some(b)).map_err(str::to_owned));
+                if let Err(e) = written {
+                    self.say(format!("design states of deleted layers not pruned: {e}"));
+                }
+            }
         }
-        let written = serde_json::to_vec(&records).map_err(|e| e.to_string()).and_then(|b| self.run.set_document_entry(ENTRY, Some(b)).map_err(str::to_owned));
-        if let Err(e) = written {
-            self.say(format!("design states of deleted layers not pruned: {e}"));
+        if self.run.document_entry(super::super::text::ENTRY).is_some()
+            && let Ok(mut tentry) = self.text_entry()
+            && super::instance::compact_copy_text(&mut tentry, &doc)
+        {
+            let written = super::super::text::TextEntry::to_bytes(&tentry).and_then(|b| self.run.set_document_entry(super::super::text::ENTRY, Some(b)).map_err(str::to_owned));
+            if let Err(e) = written {
+                self.say(format!("text records of instance copies not compacted: {e}"));
+            }
         }
     }
 }

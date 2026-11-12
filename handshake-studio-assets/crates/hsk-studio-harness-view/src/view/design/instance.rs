@@ -38,10 +38,10 @@
 //! layers together; a binding is never pruned by a later write ([`super::persist`]). A native redraw
 //! drops, in its own step, the node entries, live filter stacks and paths of the copies it deletes;
 //! a copy carries its definition layer's live filter stack (moved with the copy). Text records of
-//! copies (the `text` entry is outside the history) are compacted when the entry would pass its cap:
-//! records of copies no longer in the document go first, oldest first (note
-//! `superseded_text_records_compacted`); only live text layers past the cap are refused
-//! (`text_layer_over_cap`). Native origins are the layers' bounds at command time (Studio reading: the
+//! copies (the `text` entry is outside the history) are never dropped while an undo can return to
+//! them (lead ruling R1): a redraw past the entry's cap is refused `text_layer_over_cap`, and the
+//! records of copies no longer in the document are compacted when it is opened with no history
+//! ([`compact_copy_text`]). Native origins are the layers' bounds at command time (Studio reading: the
 //! top-left of the vector bounds and text origins under the layer); a native redraw also draws the
 //! `visible` and `characters` fields the component properties drive ([STU-DS-113], resolved by
 //! `resolve_instance`).
@@ -592,52 +592,16 @@ impl<'d> Redraw<'d> {
         Ok(())
     }
 
-    /// F7: keeps the `text` entry under its cap. Text records of redraw copies (their stories are
-    /// minted by [`Self::fresh`]) whose layer the transaction leaves out of the document go first,
-    /// oldest first, with the stories no other record or layer names; refused `text_layer_over_cap`
-    /// only when the records still pass the cap.
+    /// F7 under lead ruling R1 (2026-11-12): the `text` entry is outside the history, so no record an
+    /// undo can return to is dropped in a session; a redraw that would pass the entry's cap is refused
+    /// `text_layer_over_cap`. The records of copies no history can return to are compacted on open
+    /// ([`compact_copy_text`]).
     fn compact_text(&mut self) -> Result<(), String> {
-        let over = |t: &TextEntry| t.layers.len() > text::MAX_TEXT_LAYERS || t.stories.len() > text::MAX_TEXT_LAYERS;
-        if !over(&self.tentry) {
-            return Ok(());
-        }
-        let deleted: BTreeSet<&str> = self.writes.iter().filter(|w| w.to.is_none()).map(|w| w.layer_id.as_str()).collect();
-        let created: BTreeSet<&str> = self.writes.iter().filter(|w| w.create.is_some()).map(|w| w.layer_id.as_str()).collect();
-        let present = |id: &str| created.contains(id) || (!deleted.contains(id) && self.doc.layers.iter().any(|l| l.layer_id == id));
-        let named: BTreeSet<String> = self
-            .doc
-            .layers
-            .iter()
-            .filter(|l| present(&l.layer_id))
-            .filter_map(|l| match &l.payload {
-                Payload::Text { story_id } => Some(story_id.clone()),
-                _ => None,
-            })
-            .chain(self.writes.iter().filter_map(|w| match w.create.as_ref().map(|(l, _)| &l.payload) {
-                Some(Payload::Text { story_id }) => Some(story_id.clone()),
-                _ => None,
-            }))
-            .collect();
-        let copy_story = |sid: &str| sid.starts_with("STXT-") && sid.contains("-7f17-8000-");
-        let mut i = 0_usize;
-        let mut compacted = false;
-        while over(&self.tentry) && i < self.tentry.layers.len() {
-            let r = &self.tentry.layers[i];
-            if present(&r.layer_id) || !copy_story(&r.story_id) {
-                i = i.saturating_add(1);
-                continue;
-            }
-            let gone = self.tentry.layers.remove(i);
-            compacted = true;
-            if !named.contains(&gone.story_id) && !self.tentry.layers.iter().any(|x| x.story_id == gone.story_id) {
-                self.tentry.stories.retain(|s| s.story_id != gone.story_id);
-            }
-        }
-        if over(&self.tentry) {
-            return Err(format!("design: text_layer_over_cap (the document's live text layers pass the window's {})", text::MAX_TEXT_LAYERS));
-        }
-        if compacted {
-            self.notes.push("superseded_text_records_compacted".into());
+        if self.tentry.layers.len() > text::MAX_TEXT_LAYERS || self.tentry.stories.len() > text::MAX_TEXT_LAYERS {
+            return Err(format!(
+                "design: text_layer_over_cap (the redraw passes the window's {} text records; save and reopen the document to compact the records of instance copies no undo can return to)",
+                text::MAX_TEXT_LAYERS
+            ));
         }
         Ok(())
     }
@@ -1339,6 +1303,28 @@ impl Viewer {
 /// The error of a refused design-state save after the redraw rollback: it says the redraw was undone
 /// only when the undo succeeded, and names the undo failure otherwise (the document then still holds
 /// the unsaved redraw; F-R40-5).
+/// R1: drops the `text` records of redraw copies (stories minted by a redraw) that `doc` does not
+/// draw: a record whose layer is gone or names another story, and the stories no remaining record or
+/// layer names. Only for a document with no history (opened): nothing can return to them then.
+/// Returns whether anything was dropped.
+pub(super) fn compact_copy_text(tentry: &mut TextEntry, doc: &StudioDocument) -> bool {
+    let copy_story = |sid: &str| sid.starts_with("STXT-") && sid.contains("-7f17-8000-");
+    let drawn = |layer: &str, story: &str| doc.layers.iter().any(|l| l.layer_id == layer && matches!(&l.payload, Payload::Text { story_id } if story_id == story));
+    let before = (tentry.layers.len(), tentry.stories.len());
+    tentry.layers.retain(|r| !copy_story(&r.story_id) || drawn(&r.layer_id, &r.story_id));
+    let named: BTreeSet<String> = tentry
+        .layers
+        .iter()
+        .map(|r| r.story_id.clone())
+        .chain(doc.layers.iter().filter_map(|l| match &l.payload {
+            Payload::Text { story_id } => Some(story_id.clone()),
+            _ => None,
+        }))
+        .collect();
+    tentry.stories.retain(|st| !copy_story(&st.story_id) || named.contains(&st.story_id));
+    (tentry.layers.len(), tentry.stories.len()) != before
+}
+
 /// F9: the refusal of a native redraw in a session without the vector entry token (its code is the
 /// reason, not the op).
 pub(super) fn not_persistable(op: &str) -> String {
