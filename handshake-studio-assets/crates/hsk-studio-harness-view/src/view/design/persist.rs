@@ -307,7 +307,8 @@ impl Viewer {
 
     /// Run when a document is opened (view `open`): with no undo or redo step nothing can return to
     /// a layer that is gone or to a layer's earlier children, so the `design` states of absent layers
-    /// (lead ruling 2026-11-11, F1 (b)) and of superseded contents (ruling R2, 2026-11-12) are dropped,
+    /// (lead ruling 2026-11-11, F1 (b)), of superseded contents and of authored instances whose record
+    /// the document no longer holds (ruling R2, 2026-11-12: none of them can bind again) are dropped,
     /// and the `text` records of redraw copies the document no longer draws are compacted (ruling R1).
     /// Each entry is written only when something was dropped.
     pub(in crate::view) fn design_opened(&mut self) {
@@ -317,9 +318,14 @@ impl Viewer {
             return;
         }
         let Some(doc) = self.run.snapshot().map(|s| s.document().clone()) else { return };
+        let (design_file, native) = self.design_receipt().map_or_else(Default::default, |r| (r.design_file, r.native.into_keys().collect::<BTreeSet<_>>()));
         if let Some(mut records) = self.run.document_entry(ENTRY).and_then(raw_states) {
             let before = records.instances.len();
-            records.instances.retain(|s| doc.layers.iter().any(|l| l.layer_id == s.layer_id) && s.content_signature == content(&doc, &s.layer_id));
+            records.instances.retain(|s| {
+                (design_file.contains(&s.instance_id) || native.contains(&s.instance_id))
+                    && doc.layers.iter().any(|l| l.layer_id == s.layer_id)
+                    && s.content_signature == content(&doc, &s.layer_id)
+            });
             if records.instances.len() != before {
                 let written = serde_json::to_vec(&records).map_err(|e| e.to_string()).and_then(|b| self.run.set_document_entry(ENTRY, Some(b)).map_err(str::to_owned));
                 if let Err(e) = written {
