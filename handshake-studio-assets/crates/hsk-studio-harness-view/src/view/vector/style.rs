@@ -290,8 +290,10 @@ pub(super) fn has_fill(entry: &VectorEntry, layer_id: &str, record: &PathRecord)
 /// Most authored components and component sets (together) one entry holds (lane
 /// SMB-DS-COMPONENTS-AUTHOR-1; Studio-declared, the spec declares none).
 pub const MAX_ENTRY_COMPONENTS: usize = 1024;
-/// Most authored component instances one entry holds (Studio-declared).
-pub const MAX_ENTRY_INSTANCES: usize = 4096;
+/// Most authored component instances one entry holds (Studio-declared): Folio's bound on the
+/// `design` entry's states (`MAX_DESIGN_STATES`), so every instance can hold its binding (lead
+/// ruling 2026-11-11; this lane introduced the cap).
+pub const MAX_ENTRY_INSTANCES: usize = 1024;
 
 /// Checks of the entry's `design` member (decode): layer nodes with a `fill_style_id` naming a style
 /// of the set (or none when the node carries layout or component-property references), Folio-valid

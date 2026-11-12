@@ -35,13 +35,20 @@
 //! `design_record_duplicate`. A native instance is bound by its states in the `design` entry (layer,
 //! instance, content); its record is the entry's instance record, which every command rewrites in the
 //! same history step as the redraw (`Run::restructure_and_entry`), so undo and redo restore record and
-//! layers together. Native origins are the layers' bounds at command time (Studio reading: the
+//! layers together; a binding is never pruned by a later write ([`super::persist`]). A native redraw
+//! drops, in its own step, the node entries, live filter stacks and paths of the copies it deletes;
+//! a copy carries its definition layer's live filter stack (moved with the copy). Text records of
+//! copies (the `text` entry is outside the history) are compacted when the entry would pass its cap:
+//! records of copies no longer in the document go first, oldest first (note
+//! `superseded_text_records_compacted`); only live text layers past the cap are refused
+//! (`text_layer_over_cap`). Native origins are the layers' bounds at command time (Studio reading: the
 //! top-left of the vector bounds and text origins under the layer); a native redraw also draws the
 //! `visible` and `characters` fields the component properties drive ([STU-DS-113], resolved by
 //! `resolve_instance`).
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::layers::{mint_layer_id, operation_for, stack};
 use super::super::text::{self, TextEntry, TextLayerRecord};
+use super::super::vector::live_filters::transform_live_filters;
 use super::super::vector::{self, PathRecord, VectorEntry};
 use super::super::Viewer;
 use super::persist;
@@ -165,6 +172,8 @@ pub(super) struct Receipt {
     pub(super) authored: Option<StudioDesignRecords>,
     /// The merge was refused (an id in both sets): commands refuse with it.
     pub(super) error: Option<String>,
+    /// Instance ids of the design file's records (every other state is a native binding).
+    pub(super) design_file: BTreeSet<String>,
 }
 
 /// Most `design` entry bytes read for native bindings (Folio's default input budget).
@@ -292,7 +301,8 @@ fn receipt_design(receipt: Option<&Value>) -> Option<Receipt> {
         .iter()
         .filter_map(|c| Some((c["component_id"].as_str()?.to_owned(), (origin_of(&c["origin_px"])?, c["translation_only"].as_bool()?))))
         .collect();
-    Some(Receipt { records, bindings, origins, native: BTreeMap::new(), contents: BTreeMap::new(), authored: None, error: None })
+    let design_file = records.component_instances.iter().map(|i| i.instance_id.clone()).collect();
+    Some(Receipt { records, bindings, origins, native: BTreeMap::new(), contents: BTreeMap::new(), authored: None, error: None, design_file })
 }
 
 /// The ids `a` and `b` both claim (components and sets share one namespace; instances another).
@@ -532,6 +542,17 @@ impl<'d> Redraw<'d> {
                         self.new_paths.push(moved);
                     }
                     copy.payload = Payload::Vector { path_ids: ids };
+                    // F8: the copy carries the definition layer's live filter stack, its free distort
+                    // corners moved with the copy; a stack that cannot be carried is a named loss.
+                    if let Some(stack) = self.ventry.records.live_filter_stack(&l.layer_id).cloned() {
+                        let mut moved = folio::StudioVectorRecords::new(doc.document_id.clone());
+                        moved.live_filters.push(folio::StudioLiveFilterStack { layer_id: id.clone(), filters: stack.filters });
+                        let room = self.ventry.records.live_filters.len() < folio::TOOLS_MAX_ENTRIES.max(vector::MAX_PATHS);
+                        match transform_live_filters(&mut moved, &id, &[1.0, 0.0, 0.0, 1.0, d[0], d[1]], "design") {
+                            Ok(()) if room => self.ventry.records.live_filters.extend(moved.live_filters),
+                            _ => self.notes.push("definition_live_filters_not_copied".into()),
+                        }
+                    }
                     if let Some(n) = self.design.nodes.iter().find(|n| n.node.node_id == l.layer_id) {
                         let mut n = n.clone();
                         n.node.node_id.clone_from(&id);
@@ -568,14 +589,62 @@ impl<'d> Redraw<'d> {
             let op = operation_for(&id, matches!(copy.payload, Payload::Group))?;
             self.writes.push(PlacementWrite { layer_id: id, to: Some(Place::Inside(target)), create: Some((copy, op)) });
         }
-        if self.tentry.layers.len() > text::MAX_TEXT_LAYERS {
-            return Err(format!("design: the redraw passes the window's {} text layers", text::MAX_TEXT_LAYERS));
+        Ok(())
+    }
+
+    /// F7: keeps the `text` entry under its cap. Text records of redraw copies (their stories are
+    /// minted by [`Self::fresh`]) whose layer the transaction leaves out of the document go first,
+    /// oldest first, with the stories no other record or layer names; refused `text_layer_over_cap`
+    /// only when the records still pass the cap.
+    fn compact_text(&mut self) -> Result<(), String> {
+        let over = |t: &TextEntry| t.layers.len() > text::MAX_TEXT_LAYERS || t.stories.len() > text::MAX_TEXT_LAYERS;
+        if !over(&self.tentry) {
+            return Ok(());
+        }
+        let deleted: BTreeSet<&str> = self.writes.iter().filter(|w| w.to.is_none()).map(|w| w.layer_id.as_str()).collect();
+        let created: BTreeSet<&str> = self.writes.iter().filter(|w| w.create.is_some()).map(|w| w.layer_id.as_str()).collect();
+        let present = |id: &str| created.contains(id) || (!deleted.contains(id) && self.doc.layers.iter().any(|l| l.layer_id == id));
+        let named: BTreeSet<String> = self
+            .doc
+            .layers
+            .iter()
+            .filter(|l| present(&l.layer_id))
+            .filter_map(|l| match &l.payload {
+                Payload::Text { story_id } => Some(story_id.clone()),
+                _ => None,
+            })
+            .chain(self.writes.iter().filter_map(|w| match w.create.as_ref().map(|(l, _)| &l.payload) {
+                Some(Payload::Text { story_id }) => Some(story_id.clone()),
+                _ => None,
+            }))
+            .collect();
+        let copy_story = |sid: &str| sid.starts_with("STXT-") && sid.contains("-7f17-8000-");
+        let mut i = 0_usize;
+        let mut compacted = false;
+        while over(&self.tentry) && i < self.tentry.layers.len() {
+            let r = &self.tentry.layers[i];
+            if present(&r.layer_id) || !copy_story(&r.story_id) {
+                i = i.saturating_add(1);
+                continue;
+            }
+            let gone = self.tentry.layers.remove(i);
+            compacted = true;
+            if !named.contains(&gone.story_id) && !self.tentry.layers.iter().any(|x| x.story_id == gone.story_id) {
+                self.tentry.stories.retain(|s| s.story_id != gone.story_id);
+            }
+        }
+        if over(&self.tentry) {
+            return Err(format!("design: text_layer_over_cap (the document's live text layers pass the window's {})", text::MAX_TEXT_LAYERS));
+        }
+        if compacted {
+            self.notes.push("superseded_text_records_compacted".into());
         }
         Ok(())
     }
 
     /// The entries with the copies' records, the writes and the notes.
     pub(super) fn finish(mut self) -> Result<(VectorEntry, TextEntry, Vec<PlacementWrite>, Vec<String>), String> {
+        self.compact_text()?;
         self.ventry.paths.extend(self.new_paths);
         if !self.new_nodes.is_empty() {
             let mut d2 = self.design;
@@ -655,6 +724,31 @@ fn with_instance(records: &StudioDesignRecords, record: &StudioComponentInstance
     r
 }
 
+/// F3: the live filter stacks and paths of the layers a native step deletes leave the vector entry
+/// in that step (a path another layer, live shape or vector record still names stays).
+fn drop_deleted_copies(ventry: &mut VectorEntry, doc: &StudioDocument, writes: &[PlacementWrite], deleted: &BTreeSet<String>) {
+    if deleted.is_empty() {
+        return;
+    }
+    ventry.records.live_filters.retain(|s| !deleted.contains(&s.layer_id));
+    let paths_of = |l: &StudioLayer| match &l.payload {
+        Payload::Vector { path_ids } => path_ids.clone(),
+        _ => Vec::new(),
+    };
+    let gone: BTreeSet<String> = doc.layers.iter().filter(|l| deleted.contains(&l.layer_id)).flat_map(paths_of).collect();
+    let kept: BTreeSet<String> = doc
+        .layers
+        .iter()
+        .filter(|l| !deleted.contains(&l.layer_id))
+        .chain(writes.iter().filter_map(|w| w.create.as_ref().map(|(l, _)| l)))
+        .flat_map(paths_of)
+        .chain(ventry.live.iter().map(|s| s.path_id.clone()))
+        .collect();
+    // A path any other vector record names (brush strokes, swatch bindings and the like) stays too.
+    let named = serde_json::to_string(&ventry.records).unwrap_or_default();
+    ventry.paths.retain(|p| !gone.contains(&p.path_id) || kept.contains(&p.path_id) || named.contains(p.path_id.as_str()));
+}
+
 impl Viewer {
     /// The design records the inspector reads: the receipt's, merged with the vector entry's authored
     /// records (module docs); `None` when the document has neither.
@@ -671,6 +765,7 @@ impl Viewer {
             contents: BTreeMap::new(),
             authored: None,
             error: None,
+            design_file: BTreeSet::new(),
         });
         if let Some(id) = shared_id(&r.records, &authored) {
             r.error = Some(format!("design: design_record_duplicate ({id} is in the design file's records and the document's)"));
@@ -700,7 +795,9 @@ impl Viewer {
         let mut claimed: BTreeMap<String, String> = BTreeMap::new();
         for s in states.into_iter().take(folio::MAX_DESIGN_STATES) {
             let group = doc.layers.iter().any(|l| l.layer_id == s.layer_id && matches!(l.payload, Payload::Group));
-            if !group || !r.native.contains_key(&s.instance_id) || claimed.get(&s.instance_id).is_some_and(|l| l != &s.layer_id) || r.bindings.iter().any(|b| b.layer_id == s.layer_id && !b.native) {
+            // A layer id a delete gave up can be minted again: a layer is bound to the first instance with a
+            // record whose state names it, and only that instance's contents count for it.
+            if !group || !r.native.contains_key(&s.instance_id) || claimed.get(&s.instance_id).is_some_and(|l| l != &s.layer_id) || r.bindings.iter().any(|b| b.layer_id == s.layer_id && (!b.native || b.instance_id != s.instance_id)) {
                 continue;
             }
             claimed.insert(s.instance_id.clone(), s.layer_id.clone());
@@ -873,7 +970,7 @@ impl Viewer {
             return Err(format!("design: design_state_entry_invalid ({} {}); the stored entry is kept unchanged", persist::snake(e.code), e.target));
         }
         let previous_content = self.run.snapshot().map(|s| persist::content(s.document(), layer_id)).unwrap_or_default();
-        let previous_swap = entry.records.as_ref().and_then(|r| r.state(layer_id, &previous_content)).and_then(|s| s.swap_target.clone());
+        let previous_swap = entry.records.as_ref().and_then(|r| r.instances.iter().find(|s| s.layer_id == layer_id && s.content_signature == previous_content && s.instance_id == binding.instance_id)).and_then(|s| s.swap_target.clone());
         let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
         let base = evaluable(&record);
         let records = with_instance(&receipt.records, &base);
@@ -989,7 +1086,7 @@ impl Viewer {
         };
         let variant = member.variant_properties.clone().unwrap_or_default();
         let saved = persist::state_of(&next, &binding.layer_id, content, variant, swap_target).and_then(|(state, complete)| {
-            let mut n = self.write_design_state(entry, &receipt.records, state)?;
+            let mut n = self.write_design_state(entry, &receipt, state, true)?;
             if !complete {
                 n.push("override_without_value_not_saved".into());
             }
@@ -1038,12 +1135,15 @@ impl Viewer {
     /// `characters` fields drawn; `create` (a new group write) goes first. The structure edit and the
     /// vector entry (paths and every job's instance record) are one step (`Run::restructure_and_entry`);
     /// copied stories go to the text entry before it (append-only, like [`Self::redraw`]); each job's
-    /// binding state is written to the `design` entry after it (a refusal undoes the step). Returns
-    /// the notes, the member each job drew and the revision.
+    /// binding state is written to the `design` entry after it (a refusal undoes the step). The node
+    /// entries, live filter stacks and paths of the copies the step deletes leave the vector entry in
+    /// the same step (F3), and the record caps are checked before the write. Returns the notes, the
+    /// member each job drew and the revision.
     pub(super) fn native_redraw(&mut self, op: &str, receipt: &Receipt, jobs: &[NativeJob], create: Option<PlacementWrite>) -> Result<(Vec<String>, Vec<String>, u64), String> {
         if !vector::entry_persistable() {
-            return Err(format!("{op}: vector_entry_not_persistable"));
+            return Err(format!("design: vector_entry_not_persistable ({op})"));
         }
+        persist::room_for(self.run.document_entry(persist::ENTRY), jobs.len())?;
         let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
         let mut records = receipt.records.clone();
         for job in jobs {
@@ -1082,7 +1182,12 @@ impl Viewer {
             }
         }
         settle(authored, &doc);
+        // F3: what the step deletes takes its node entries along (they are restored by its undo).
+        let deleted: BTreeSet<String> = writes.iter().filter(|w| w.to.is_none()).map(|w| w.layer_id.clone()).collect();
+        authored.nodes.retain(|n| !deleted.contains(&n.node.node_id));
+        super::component::check_caps(authored)?;
         self.check_authored(&doc, &writes, authored)?;
+        drop_deleted_copies(&mut ventry, &doc, &writes, &deleted);
         if tentry != text_before {
             let tbytes = TextEntry::to_bytes(&tentry)?;
             self.run.set_document_entry(text::ENTRY, Some(tbytes)).map_err(|e| format!("design: text entry {e}"))?;
@@ -1102,7 +1207,7 @@ impl Viewer {
                 if let Some(e) = &entry.error {
                     return Err(format!("design: design_state_entry_invalid ({} {})", persist::snake(e.code), e.target));
                 }
-                self.write_design_state(entry, &after.records, state)
+                self.write_design_state(entry, &after, state, true)
             })();
             match saved {
                 Ok(n) => notes.extend(n),
@@ -1234,7 +1339,7 @@ impl Viewer {
 /// The error of a refused design-state save after the redraw rollback: it says the redraw was undone
 /// only when the undo succeeded, and names the undo failure otherwise (the document then still holds
 /// the unsaved redraw; F-R40-5).
-fn rollback_error(save: &str, undone: Result<(), String>) -> String {
+pub(super) fn rollback_error(save: &str, undone: Result<(), String>) -> String {
     match undone {
         Ok(()) => format!("{save} (the redraw was undone)"),
         Err(undo) => format!("{save} (the redraw could not be undone: undo {undo}; the document keeps the unsaved redraw)"),

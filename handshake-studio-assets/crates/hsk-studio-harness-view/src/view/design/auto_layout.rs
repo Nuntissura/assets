@@ -652,7 +652,20 @@ impl Viewer {
         }
         let doc = self.al_doc()?;
         let (mut entry, _) = self.al_records(&doc)?;
-        folio::validate_design_records(&records, &doc, folio::Budget::default(), self.cancel, &crate::harness::TrustAll).map_err(|d| format!("folio {:?} {}", d.code, d.target))?;
+        // Lane SMB-DS-COMPONENTS-AUTHOR-1 (F5): with authored components the records are validated
+        // settled (a definition whose layer is gone dropped, node entries of absent layers left out,
+        // as the component commands do) under their budget.
+        let settled = super::instance::authors_components(&records) || records.nodes.iter().any(|n| !n.component_property_references.is_empty());
+        let (check, budget) = if settled {
+            let mut r = records.clone();
+            super::instance::settle(&mut r, &doc);
+            let present: std::collections::BTreeSet<&str> = doc.layers.iter().map(|l| l.layer_id.as_str()).chain(doc.artboards.iter().map(|a| a.artboard_id.as_str())).chain(doc.page_spreads.iter().map(|s| s.page_spread_id.as_str())).collect();
+            r.nodes.retain(|n| present.contains(n.node.node_id.as_str()));
+            (r, super::component::AUTHORED_BUDGET)
+        } else {
+            (records.clone(), folio::Budget::default())
+        };
+        folio::validate_design_records(&check, &doc, budget, self.cancel, &crate::harness::TrustAll).map_err(|d| format!("folio {:?} {}", d.code, d.target))?;
         if !is_group(layer(&doc, container)?) {
             return Err(format!("auto_layout_not_a_frame:{container}"));
         }

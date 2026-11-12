@@ -620,6 +620,7 @@ impl Viewer {
         drop(original);
         self.source = Some(path.to_path_buf());
         self.place_opened(import_records);
+        self.design_opened();
         self.selected = None;
         self.frame = None;
         self.render_error = None;

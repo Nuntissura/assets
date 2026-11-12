@@ -23,16 +23,26 @@
 //! `layer_inside_instance`), and an instance is never placed where it would contain itself
 //! (`component_cycle`). Out of scope: slots, clone, extract member, restore main, exposed nested
 //! instances, the deferred `list_instances`, per-record expected revisions (STU-DS-163).
+//!
+//! Review fa15c84d, lead rulings 2026-11-11: record ids are minted past every id the records and the
+//! `design` entry's states ever named (F4); every write checks the entry's decode caps first
+//! (`component_over_cap`, `instance_over_cap`, `design_node_over_cap`; F3); a layer delete drops the
+//! component, set and instance records keyed to the deleted layers and their component-property
+//! references in its own undo step (F5, [`Viewer::records_after_delete`]); `component.sync_instances`
+//! refuses an instance whose override names a node its definition no longer holds
+//! (`override_target_gone`) and redraws the others (F6); a duplicated instance is an instance of the
+//! same main with its properties and overrides (F10, [`Viewer::duplicate_instances`]).
 #![deny(clippy::arithmetic_side_effects)]
-use super::super::layers::{mint_layer_id, new_layer, operation_for};
-use super::super::vector::{self, VectorEntry};
+use super::super::layers::{mint_layer_id, new_layer, operation_for, stack};
+use super::super::vector::{self, VectorEntry, style};
 use super::super::Viewer;
 use super::instance::{NativeJob, Receipt, carries_nothing, settle};
 use super::persist;
 use crate::{Place, PlacementWrite};
 use hsk_studio_folio::{
     self as folio, ComponentPropertyType, NodeKind, NodeRef, Parent, Payload, StudioComponent, StudioComponentInstance, StudioComponentProperty,
-    StudioComponentSet, StudioDesignRecords, StudioDocument, StudioDocumentationLink, StudioNodeDesign, StudioPropertyOptions, StudioPropertyValue,
+    StudioComponentSet, StudioDesignRecords, StudioDesignStateRecords, StudioDocument, StudioDocumentationLink, StudioNodeDesign, StudioPropertyOptions,
+    StudioPropertyValue,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,7 +59,7 @@ pub const MAX_TEXT_DEFAULT_BYTES: usize = 4096;
 pub const INSTANCE_COORDINATE_LIMIT: f64 = 1.0e8;
 /// The Folio budget an authored record set is validated under (the default's node and text ceilings
 /// are below the entry's own caps).
-const AUTHORED_BUDGET: folio::Budget = folio::Budget { input_bytes: 1_048_576, nodes: 65_536, edges: 65_536, payload_bytes: 16_777_216, depth: 32 };
+pub(super) const AUTHORED_BUDGET: folio::Budget = folio::Budget { input_bytes: 1_048_576, nodes: 65_536, edges: 65_536, payload_bytes: 16_777_216, depth: 32 };
 
 /// A typed authoring command ([STU-DS-107], [STU-DS-112]).
 #[derive(Clone, Debug, PartialEq)]
@@ -183,13 +193,19 @@ fn project(doc: &StudioDocument, writes: &[PlacementWrite]) -> StudioDocument {
     d
 }
 
-/// A fresh `<prefix>` record id no record of `taken` holds.
+/// A fresh `<prefix>` record id past every minted id `taken` holds (F4: monotonic, never the live
+/// count, so an id a detach or delete gave up is not minted again).
 fn mint_record_id(doc: &StudioDocument, prefix: &str, taken: &BTreeSet<String>) -> String {
-    let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
+    mint_in(&doc.document_id, prefix, taken)
+}
+
+fn mint_in(document_id: &str, prefix: &str, taken: &BTreeSet<String>) -> String {
+    let uuid = document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
-    let mut n = u64::try_from(taken.len()).unwrap_or(0);
+    let stem = format!("{prefix}-{high}-{low}-7ede-a000-");
+    let mut n = taken.iter().filter_map(|id| id.strip_prefix(&stem)).filter_map(|h| u64::from_str_radix(h, 16).ok()).max().map_or(0, |m| m.saturating_add(1));
     loop {
-        let id = format!("{prefix}-{high}-{low}-7ede-a000-{n:012x}");
+        let id = format!("{stem}{n:012x}");
         if !taken.contains(&id) {
             return id;
         }
@@ -218,6 +234,8 @@ struct Ctx {
     ventry: VectorEntry,
     authored: StudioDesignRecords,
     receipt: Option<Receipt>,
+    /// Instance and component ids the `design` entry's states name, bound or not (F4: never minted again).
+    seen: BTreeSet<String>,
 }
 
 impl Ctx {
@@ -229,6 +247,7 @@ impl Ctx {
             ids.extend(r.records.component_sets.iter().map(|s| s.component_id.clone()));
             ids.extend(r.records.component_instances.iter().map(|i| i.instance_id.clone()));
         }
+        ids.extend(self.seen.iter().cloned());
         ids
     }
 
@@ -357,6 +376,38 @@ fn swap_options(v: Option<&Value>) -> Result<StudioPropertyOptions, String> {
     }
 }
 
+/// F3: the counts the vector entry's decode enforces on its `design` member (`vector::style`),
+/// checked before every write so a write never leaves an entry that does not decode.
+pub(super) fn check_caps(d: &StudioDesignRecords) -> Result<(), String> {
+    if d.components.len().saturating_add(d.component_sets.len()) > style::MAX_ENTRY_COMPONENTS {
+        return Err(refused("component_over_cap", format!("at most {} components and sets", style::MAX_ENTRY_COMPONENTS)));
+    }
+    if d.component_instances.len() > style::MAX_ENTRY_INSTANCES {
+        return Err(refused("instance_over_cap", format!("at most {} instances", style::MAX_ENTRY_INSTANCES)));
+    }
+    if d.nodes.len() > style::MAX_STYLES || d.paint_styles.len() > style::MAX_STYLES {
+        return Err(refused("design_node_over_cap", format!("at most {} node entries and paint styles", style::MAX_STYLES)));
+    }
+    Ok(())
+}
+
+/// `id` and every layer under it in the order `duplicate_layer` copies them (pre-order, each stack
+/// bottom first).
+fn preorder(doc: &StudioDocument, id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut todo = vec![id.to_owned()];
+    while let Some(x) = todo.pop() {
+        if out.len() > doc.layers.len() {
+            break;
+        }
+        if is_group(doc, &x) {
+            todo.extend(stack(doc, Some(&x)).into_iter().rev());
+        }
+        out.push(x);
+    }
+    out
+}
+
 impl Viewer {
     /// Runs one authoring command (module docs). Returns the command's result.
     pub fn component_command(&mut self, command: ComponentCommand) -> Result<Value, String> {
@@ -378,7 +429,8 @@ impl Viewer {
         if let Some(e) = receipt.as_ref().and_then(|r| r.error.clone()) {
             return Err(e);
         }
-        Ok(Ctx { doc, ventry, authored, receipt })
+        let seen = self.run.document_entry(persist::ENTRY).and_then(persist::raw_states).map(|r| r.instances.into_iter().flat_map(|s| [s.instance_id, s.component_id]).collect()).unwrap_or_default();
+        Ok(Ctx { doc, ventry, authored, receipt, seen })
     }
 
     /// Folio `validate_design_records` over `design` on the document `writes` produce (node entries of
@@ -405,6 +457,7 @@ impl Viewer {
         let proj = project(&doc, &writes);
         settle(&mut authored, &proj);
         variant_definitions(&mut authored, &proj);
+        check_caps(&authored)?;
         self.check_authored(&doc, &writes, &authored)?;
         ventry.design = Some(authored);
         let bytes = ventry.to_bytes(&doc.document_id)?;
@@ -721,20 +774,149 @@ impl Viewer {
         let receipt = c.receipt.as_ref().ok_or_else(|| refused("component_unknown", component))?;
         let mut jobs = Vec::new();
         let mut skipped = Vec::new();
+        let mut refusals = Vec::new();
         for (layer, instance, state, main) in self.instances_of(receipt, component) {
             let Some(b) = receipt.bindings.iter().find(|b| b.layer_id == layer && b.native) else { continue };
             let record = receipt.native.get(&instance).cloned();
             match (state, main, record) {
-                ("edited", Some(_), Some(record)) => jobs.push(NativeJob { group: layer, record, origin: b.origin, swap: None }),
+                ("edited", Some(_), Some(record)) => match self.binding_refusal(&c.doc, receipt, &layer, &record) {
+                    Some(code) => refusals.push(json!({"layer_id": layer, "instance_id": instance, "code": code})),
+                    None => jobs.push(NativeJob { group: layer, record, origin: b.origin, swap: None }),
+                },
                 _ => skipped.push(layer),
             }
         }
         if jobs.is_empty() {
-            return Ok(json!({"component_id": component, "redrawn": [], "skipped": skipped}));
+            return Ok(json!({"component_id": component, "redrawn": [], "skipped": skipped, "refused": refusals}));
         }
         let redrawn: Vec<String> = jobs.iter().map(|j| j.group.clone()).collect();
         let (notes, _, revision) = self.native_redraw(op, receipt, &jobs, None).map_err(|e| e.replacen("design: ", "component: ", 1))?;
-        Ok(json!({"component_id": component, "redrawn": redrawn, "skipped": skipped, "notes": notes, "revision": revision}))
+        Ok(json!({"component_id": component, "redrawn": redrawn, "skipped": skipped, "refused": refusals, "notes": notes, "revision": revision}))
+    }
+
+    /// F6: the code that would refuse the binding of `record` drawn on `layer` (Folio's state rules:
+    /// an override of a node the definition no longer holds is `override_target_gone`), checked before
+    /// a sync so one instance never refuses the others. `None`: it binds.
+    fn binding_refusal(&self, doc: &StudioDocument, receipt: &Receipt, layer: &str, record: &StudioComponentInstance) -> Option<String> {
+        let variant = persist::native_variant(record, &receipt.records);
+        let (state, _) = persist::state_of(record, layer, persist::content(doc, layer), variant, None).ok()?;
+        let mut r = StudioDesignStateRecords::new(doc.document_id.clone());
+        r.instances.push(state);
+        match folio::validate_design_state_records(&r, doc, Some(&receipt.records), folio::Budget::default(), self.cancel) {
+            Ok(()) => None,
+            Err(d) if d.target.contains("/overrides/") => Some("override_target_gone".to_owned()),
+            Err(d) => Some(format!("design_state_{}", persist::snake(d.code))),
+        }
+    }
+
+    /// F5 (lead ruling 2026-11-11): the vector entry a delete of `deleted` (every layer the delete
+    /// removes) leaves: the component, set and instance records keyed to a deleted layer and the
+    /// component-property references of deleted layers go in the delete's own undo step, settled as
+    /// every authoring commit is. `None` when no authored record changes (a plain structure edit).
+    pub(in crate::view) fn records_after_delete(&self, deleted: &[String]) -> Option<Vec<u8>> {
+        if !vector::entry_persistable() {
+            return None;
+        }
+        let doc = self.run.snapshot()?.document();
+        let mut ventry = self.vector_entry().ok()?;
+        let before = ventry.design.clone()?;
+        let gone: BTreeSet<&str> = deleted.iter().map(String::as_str).collect();
+        let bound: BTreeMap<String, String> = self.design_receipt().map(|r| r.bindings.iter().filter(|b| b.native).map(|b| (b.instance_id.clone(), b.layer_id.clone())).collect()).unwrap_or_default();
+        let mut d = before.clone();
+        d.components.retain(|k| !gone.contains(k.layer_id.as_str()));
+        d.component_sets.retain(|s| !gone.contains(s.layer_id.as_str()));
+        d.component_instances.retain(|i| bound.get(&i.instance_id).is_none_or(|l| !gone.contains(l.as_str())));
+        for n in d.nodes.iter_mut().filter(|n| gone.contains(n.node.node_id.as_str())) {
+            n.component_property_references.clear();
+        }
+        d.nodes.retain(|n| !gone.contains(n.node.node_id.as_str()) || !carries_nothing(n));
+        let mut proj = doc.clone();
+        proj.layers.retain(|l| !gone.contains(l.layer_id.as_str()));
+        settle(&mut d, &proj);
+        variant_definitions(&mut d, &proj);
+        if d == before {
+            return None;
+        }
+        ventry.design = Some(d);
+        ventry.to_bytes(&doc.document_id).ok()
+    }
+
+    /// F10 (lead ruling 2026-11-11): `writes` duplicate `source` (made by `duplicate_layer`, one write
+    /// per layer in its pre-order). Each authored instance of the subtree gets a copy that is an
+    /// instance of the same main with the same properties and overrides (a new record and binding),
+    /// in the duplicate's one undo step; an instance of the design file's records is refused
+    /// `duplicate_instance_unsupported` (never a silent plain group). `None`: the subtree draws no
+    /// instance (the caller commits the plain duplicate).
+    pub(in crate::view) fn duplicate_instances(&mut self, source: &str, writes: &[PlacementWrite], what: &str) -> Result<Option<u64>, String> {
+        let Some(receipt) = self.design_receipt() else { return Ok(None) };
+        let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
+        let order = preorder(&doc, source);
+        let mut found = Vec::new();
+        for (src, w) in order.iter().zip(writes) {
+            if let Some(b) = receipt.bindings.iter().find(|b| &b.layer_id == src) {
+                if !b.native {
+                    return Err(refused("duplicate_instance_unsupported", format!("{src} draws an instance of the design file's records")));
+                }
+                found.push((b.clone(), w.layer_id.clone()));
+            }
+        }
+        if found.is_empty() {
+            return Ok(None);
+        }
+        if order.len() != writes.len() {
+            return Err(refused("duplicate_instance_unsupported", "the copy does not follow the source's layers"));
+        }
+        if let Some(e) = &receipt.error {
+            return Err(e.clone());
+        }
+        let entry = self.read_design_state(Some(&receipt));
+        let raw = self.run.document_entry(persist::ENTRY).and_then(persist::raw_states);
+        let mut c = self.ctx()?;
+        let mut taken = c.ids();
+        let mut bindings = Vec::new();
+        for (b, copy) in &found {
+            let Some((_, "edited", record, _)) = self.instance_record(&receipt, &entry, &b.layer_id) else {
+                return Err(refused("duplicate_instance_unsupported", format!("{} changed outside the instance commands", b.layer_id)));
+            };
+            let id = mint_record_id(&c.doc, "SCIN", &taken);
+            taken.insert(id.clone());
+            let mut r = record.clone();
+            r.instance_id = id;
+            // A deleted main stays null in the record; the binding keeps the main id the source's state names.
+            let main = record.main_component_id.clone().or_else(|| raw.as_ref().and_then(|s| s.instances.iter().rev().find(|s| s.instance_id == b.instance_id)).map(|s| s.component_id.clone()));
+            c.authored.component_instances.push(r.clone());
+            bindings.push((copy.clone(), r, main));
+        }
+        if !vector::entry_persistable() {
+            return Err(refused("vector_entry_not_persistable", "the session holds no vector entry token"));
+        }
+        persist::room_for(self.run.document_entry(persist::ENTRY), bindings.len()).map_err(|e| e.replacen("design: ", "component: ", 1))?;
+        let Ctx { doc, mut ventry, mut authored, .. } = c;
+        settle(&mut authored, &project(&doc, writes));
+        check_caps(&authored)?;
+        self.check_authored(&doc, writes, &authored)?;
+        ventry.design = Some(authored);
+        let bytes = ventry.to_bytes(&doc.document_id)?;
+        let ok = self.run.restructure_and_entry("duplicate_layer", writes, vector::ENTRY, bytes);
+        let revision = self.after_edit(ok, what.to_owned())?;
+        for (copy, record, main) in bindings {
+            let saved = (|| {
+                let after = self.design_receipt().ok_or("design: records")?;
+                let now = self.run.snapshot().ok_or("nothing open")?.document();
+                let content = persist::content(now, &copy);
+                let variant = persist::native_variant(&record, &after.records);
+                let mut keyed = record.clone();
+                keyed.main_component_id.clone_from(&main);
+                let (state, _) = persist::state_of(&keyed, &copy, content, variant, None)?;
+                let entry = self.read_design_state(Some(&after));
+                self.write_design_state(entry, &after, state, record.main_component_id.is_some())
+            })();
+            if let Err(e) = saved {
+                let undone = if self.run.undo() { Ok(()) } else { Err(self.op_error()) };
+                return Err(super::instance::rollback_error(&e, undone));
+            }
+        }
+        Ok(Some(revision))
     }
 
     /// The owner of a property: an authored standalone component or a set (members' properties are
@@ -1113,5 +1295,39 @@ mod tests {
         assert!(name_ok("Buttons/Primary"));
         assert!(!name_ok("A//B") && !name_ok("") && !name_ok(" /x") && !name_ok("a\u{7}b") && !name_ok(&"x".repeat(129)));
         assert!(label_ok("Show icon") && !label_ok("") && !label_ok("a\nb"));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::{check_caps, mint_in};
+    use hsk_studio_folio::{StudioComponentInstance, StudioDesignRecords};
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    const DOC: &str = "SDOC-019abcde-0000-7000-8000-000000000001";
+
+    #[test]
+    fn ids_are_minted_past_every_id_ever_seen() {
+        let a = mint_in(DOC, "SCIN", &BTreeSet::new());
+        let five = a.replace("000000000000", "000000000005");
+        let next = mint_in(DOC, "SCIN", &BTreeSet::from([a.clone(), five.clone()]));
+        assert_eq!(next, a.replace("000000000000", "000000000006"), "max plus one, never the count");
+        assert_eq!(mint_in(DOC, "SCIN", &BTreeSet::from([five])), next, "an id given up below the max is not reused");
+    }
+
+    #[test]
+    fn a_write_past_the_decode_caps_is_refused_typed() {
+        let mut r = StudioDesignRecords::new(DOC.to_owned());
+        let one: StudioComponentInstance = serde_json::from_value(json!({
+            "schema_id": "hsk.studio.component_instance@1", "instance_id": "SCIN-019abcde-0000-7ede-a000-000000000000", "main_component_id": null,
+            "component_properties": {}, "overrides": [], "scale_factor": 1.0, "is_exposed_instance": false,
+        }))
+        .unwrap();
+        r.component_instances = vec![one; super::style::MAX_ENTRY_INSTANCES];
+        check_caps(&r).unwrap();
+        r.component_instances.push(r.component_instances[0].clone());
+        let e = check_caps(&r).unwrap_err();
+        assert!(e.starts_with("component: instance_over_cap"), "{e}");
     }
 }

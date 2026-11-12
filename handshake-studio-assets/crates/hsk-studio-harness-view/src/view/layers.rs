@@ -126,7 +126,11 @@ impl Viewer {
         let mut writes = Vec::new();
         let mut salt = u64::try_from(doc.layers.len()).unwrap_or(0);
         let copy = self.copy_subtree(&doc, layer_id, parent, Place::Before(layer_id.to_string()), true, &mut salt, &mut writes)?;
-        self.structure("duplicate_layer", writes, format!("duplicated {layer_id} as {copy}"))?;
+        let what = format!("duplicated {layer_id} as {copy}");
+        // Lane SMB-DS-COMPONENTS-AUTHOR-1 (F10): a copied instance is an instance of the same main.
+        if self.duplicate_instances(layer_id, &writes, &what)?.is_none() {
+            self.structure("duplicate_layer", writes, what)?;
+        }
         self.selected = Some(copy.clone());
         Ok(copy)
     }
@@ -230,8 +234,16 @@ impl Viewer {
         }
         let mut order = Vec::new();
         post_order(doc, layer_id, &mut order);
-        let writes = order.into_iter().map(|id| PlacementWrite { layer_id: id, to: None, create: None }).collect();
-        let revision = self.structure("delete_layer", writes, format!("deleted {layer_id}"))?;
+        let writes: Vec<PlacementWrite> = order.iter().map(|id| PlacementWrite { layer_id: id.clone(), to: None, create: None }).collect();
+        // Lane SMB-DS-COMPONENTS-AUTHOR-1 (F5): the component and instance records keyed to a deleted
+        // layer go in the same undo step.
+        let revision = match self.records_after_delete(&order) {
+            Some(bytes) => {
+                let ok = self.run.restructure_and_entry("delete_layer", &writes, super::vector::ENTRY, bytes);
+                self.after_edit(ok, format!("deleted {layer_id}"))?
+            }
+            None => self.structure("delete_layer", writes, format!("deleted {layer_id}"))?,
+        };
         if self.selected.as_deref() == Some(layer_id) {
             self.selected = None;
         }
