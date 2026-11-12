@@ -386,11 +386,9 @@ fn an_adjustment_layer_whose_masks_contribute_nothing_is_unmasked() {
     bounded_case("an_adjustment_layer_whose_masks_contribute_nothing_is_unmasked", || {
         let pixels = Pixels::fixture();
         let whole = inverted(&beneath(), |_, _| 1.0);
-        for (mode, closed) in [("none", true)] {
-            let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"masks":left_half_mask(mode, closed)})), comp_layer(2, json!({}))], None);
-            let got = frame(&rec, &pixels, 0);
-            assert!(max_delta(&got, &whole) <= 1e-6, "mask mode {mode} closed {closed}: {}", max_delta(&got, &whole));
-        }
+        let rec = records(vec![comp_layer(3, json!({"effects":[invert()],"masks":left_half_mask("none", true)})), comp_layer(2, json!({}))], None);
+        let got = frame(&rec, &pixels, 0);
+        assert!(max_delta(&got, &whole) <= 1e-6, "mask mode none: {}", max_delta(&got, &whole));
     });
 }
 
