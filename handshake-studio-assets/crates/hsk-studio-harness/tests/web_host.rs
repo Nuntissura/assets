@@ -92,15 +92,16 @@ fn key_of_tag(run: &mut Run<'_>, tag: &str) -> String {
 #[test]
 fn web_rows_are_in_the_corpus_and_run_through_web_command() {
     let rows: Vec<_> = RUN_COMMANDS.iter().filter(|c| c.run_method == "web_command").collect();
-    // 20 rows of SMB-WEB-HOST-1 plus web.site_report and web.move_file (SMB-WEB-SITE-1).
-    assert_eq!(rows.len(), 22, "{:?}", rows.iter().map(|r| r.command_id).collect::<Vec<_>>());
+    // 20 rows of SMB-WEB-HOST-1 plus web.site_report and web.move_file (SMB-WEB-SITE-1) plus 11 rows of
+    // SMB-WEB-SITE-2 (change link, templates, library items, snippets).
+    assert_eq!(rows.len(), 33, "{:?}", rows.iter().map(|r| r.command_id).collect::<Vec<_>>());
     for r in &rows {
         assert!(r.command_id.starts_with("web."), "{}", r.command_id);
         assert_eq!(web_commands::row(r.command_id).map(|x| x.command_id), Some(r.command_id));
         assert!(!r.recordable, "{}", r.command_id);
     }
     let mutating: Vec<&str> = rows.iter().filter(|r| r.mutates_authority).map(|r| r.command_id).collect();
-    assert_eq!(mutating, ["web.insert_element", "web.insert_fragment", "web.set_text", "web.set_attribute", "web.remove_attribute", "web.remove_node", "web.undo", "web.redo", "web.site", "web.remote_target", "web.export_recipe"]);
+    assert_eq!(mutating, ["web.insert_element", "web.insert_fragment", "web.set_text", "web.set_attribute", "web.remove_attribute", "web.remove_node", "web.undo", "web.redo", "web.site", "web.remote_target", "web.export_recipe", "web.instance_param", "web.instance_repeat", "web.library_item_insert", "web.snippet", "web.snippet_insert"]);
     with_run(|run| {
         assert!(!run.web_command("web.nope", &json!({})));
         assert_eq!(run.ops().last().unwrap()["error"], "unknown_command");

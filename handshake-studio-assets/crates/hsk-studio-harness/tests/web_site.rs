@@ -829,7 +829,8 @@ mod through_the_viewer {
         let seen = saturated.resources.lock().unwrap().clone();
         assert_eq!(&seen[..2], [package_id.clone(), package_id.clone()], "{seen:?}");
         assert!(seen[2] != package_id && seen[2..].iter().all(|r| *r == seen[2]), "site work admits on the site's id: {seen:?}");
-        assert_eq!(*saturated.actions.lock().unwrap(), ["export", "export", "export", "export", "edit"]);
+        // Lane SMB-WEB-SITE-2: the site report is admitted as the session's read class.
+        assert_eq!(*saturated.actions.lock().unwrap(), ["export", "export", "export", "read", "edit"]);
         // An admitting port: one admit and one release per command, and the work runs.
         let open = Arc::new(Port::default());
         v.set_job_port(open.clone());
