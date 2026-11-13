@@ -33,7 +33,7 @@
 //! (`override_target_gone`) and redraws the others (F6); a duplicated instance is an instance of the
 //! same main with its properties and overrides (F10, [`Viewer::duplicate_instances`]).
 #![deny(clippy::arithmetic_side_effects)]
-use super::super::layers::{mint_layer_id, new_layer, operation_for, stack};
+use super::super::layers::{mint_or_refuse, new_layer, operation_for, stack};
 use super::super::vector::{self, VectorEntry, style};
 use super::super::Viewer;
 use super::instance::{NativeJob, Receipt, carries_nothing, settle};
@@ -494,10 +494,10 @@ impl Viewer {
         }
         placed.sort_by_key(|(_, (_, i))| *i);
         let top = placed.last().map(|(id, _)| id.clone()).ok_or_else(|| refused("selection_empty", "no layers"))?;
-        let mut gid = mint_layer_id(doc, *salt);
+        let mut gid = mint_or_refuse(doc, *salt)?;
         while taken.contains(&gid) {
             *salt = salt.saturating_add(1);
-            gid = mint_layer_id(doc, *salt);
+            gid = mint_or_refuse(doc, *salt)?;
         }
         *salt = salt.saturating_add(1);
         let group = new_layer(&gid, name, &parent, "group", json!({"payload_kind": "group"}))?;
@@ -733,7 +733,7 @@ impl Viewer {
         let mut taken = c.ids();
         let instance = mint_record_id(&c.doc, "SCIN", &taken);
         taken.insert(instance.clone());
-        let gid = mint_layer_id(&c.doc, u64::try_from(c.doc.layers.len()).unwrap_or(0));
+        let gid = mint_or_refuse(&c.doc, u64::try_from(c.doc.layers.len()).unwrap_or(0))?;
         let group = new_layer(&gid, &frame_name, &parent_ref, "group", json!({"payload_kind": "group"}))?;
         let place = match parent {
             Some(p) => Place::Inside(p.to_owned()),

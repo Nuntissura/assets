@@ -1599,7 +1599,7 @@ impl Viewer {
             if out.len() == n {
                 break;
             }
-            let id = super::layers::mint_layer_id(doc, salt);
+            let id = super::layers::mint_or_refuse(doc, salt)?;
             salt = salt.wrapping_add(1);
             if !taken(&id, &out) {
                 out.push(id);
@@ -1897,7 +1897,7 @@ impl Viewer {
         let (parent, place) = self.insertion_point()?;
         let mut entry = self.vector_entry()?;
         let doc = self.vdoc()?;
-        let id = super::layers::mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
+        let id = super::layers::mint_or_refuse(doc, u64::try_from(doc.layers.len()).unwrap_or(0))?;
         let path_id = mint_path_id(doc, &entry);
         path.validate().map_err(|e| format!("{op}: {}", e.code()))?;
         if entry.paths.len() >= MAX_PATHS {
@@ -2193,10 +2193,10 @@ impl Viewer {
         let mut salt = u64::try_from(doc.layers.len()).unwrap_or(0);
         for (anchor, path, style) in pieces {
             let base = doc.layers.iter().find(|l| l.layer_id == anchor).ok_or_else(|| format!("{op}: no layer {anchor}"))?;
-            let mut id = super::layers::mint_layer_id(doc, salt);
+            let mut id = super::layers::mint_or_refuse(doc, salt)?;
             while ids.contains(&id) {
                 salt = salt.wrapping_add(1);
-                id = super::layers::mint_layer_id(doc, salt);
+                id = super::layers::mint_or_refuse(doc, salt)?;
             }
             salt = salt.wrapping_add(1);
             let path_id = mint_path_id(doc, &entry);
@@ -2693,10 +2693,10 @@ impl Viewer {
         for piece in &result.pieces {
             let style = piece.sources.iter().max().and_then(|i| operands.get(*i)).map(|(_, _, r)| r.style).ok_or("pathfinder: piece without source")?;
             let path = AnchorPath::from_owned_path(&piece.path).map_err(|e| format!("pathfinder: {}", e.code()))?;
-            let mut id = super::layers::mint_layer_id(doc, salt);
+            let mut id = super::layers::mint_or_refuse(doc, salt)?;
             while ids.contains(&id) {
                 salt = salt.wrapping_add(1);
-                id = super::layers::mint_layer_id(doc, salt);
+                id = super::layers::mint_or_refuse(doc, salt)?;
             }
             salt = salt.wrapping_add(1);
             let path_id = mint_path_id(doc, &entry);

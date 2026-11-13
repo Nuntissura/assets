@@ -50,7 +50,7 @@
 //! `visible` and `characters` fields the component properties drive ([STU-DS-113], resolved by
 //! `resolve_instance`).
 #![deny(clippy::arithmetic_side_effects)]
-use super::super::layers::{mint_layer_id, operation_for, stack};
+use super::super::layers::{mint_or_refuse, operation_for, stack};
 use super::super::text::{self, TextEntry, TextLayerRecord};
 use super::super::vector::live_filters::transform_live_filters;
 use super::super::vector::{self, PathRecord, VectorEntry};
@@ -452,15 +452,16 @@ impl<'d> Redraw<'d> {
         self.minted.insert(id.to_owned());
     }
 
-    fn mint(&mut self) -> String {
-        let mut id = mint_layer_id(self.doc, self.salt);
+    /// A fresh layer id, or the typed `layer_id_space_exhausted` refusal before anything is written (review F3).
+    fn mint(&mut self) -> Result<String, String> {
+        let mut id = mint_or_refuse(self.doc, self.salt)?;
         while self.minted.contains(&id) {
             self.salt = self.salt.saturating_add(1);
-            id = mint_layer_id(self.doc, self.salt);
+            id = mint_or_refuse(self.doc, self.salt)?;
         }
         self.salt = self.salt.saturating_add(1);
         self.minted.insert(id.clone());
-        id
+        Ok(id)
     }
 
     fn fresh(&mut self, prefix: &str, used: &BTreeSet<String>) -> String {
@@ -524,7 +525,7 @@ impl<'d> Redraw<'d> {
         // Creates: each definition layer copied (bottom first, each to the top of its new parent).
         let mut new_id: BTreeMap<String, String> = BTreeMap::new();
         for (l, parent) in &defs {
-            let id = self.mint();
+            let id = self.mint()?;
             new_id.insert(l.layer_id.clone(), id.clone());
             let target = if parent == root { group.to_owned() } else { new_id.get(parent).cloned().ok_or("design: definition parent order")? };
             let mut copy = (*l).clone();

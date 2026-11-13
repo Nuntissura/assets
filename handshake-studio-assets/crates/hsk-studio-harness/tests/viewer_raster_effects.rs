@@ -373,7 +373,7 @@ fn the_develop_dng_xmp_carries_the_crop_keys() {
     assert!(!never.exists());
 }
 
-/// Lead ruling 2026-11-13 (layers.rs mint_layer_id): a layer created after a delete never takes the deleted layer's
+/// Lead ruling 2026-11-13 (the layers.rs layer id mint): a layer created after a delete never takes the deleted layer's
 /// id, so it never inherits the deleted layer's `raster_records` row (its smart filter stack) the entry still holds;
 /// in the session and after save and reopen.
 #[test]
