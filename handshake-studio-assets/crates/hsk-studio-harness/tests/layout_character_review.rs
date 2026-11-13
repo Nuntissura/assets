@@ -195,11 +195,12 @@ fn features_the_font_lacks_are_reported_not_dropped() {
     assert_eq!(host_loss(&r, "case_mapping_incomplete"), [("capitalization".to_owned(), 1)], "{r}");
 }
 
-/// F5: tracking is added once per cluster, after its last spacing glyph; a combining mark stays on its base.
+/// F5: tracking is added once per cluster, on its last glyph; a combining mark stays on its base. The mark is
+/// U+0311, the one combining mark the bundled Ubuntu-Light maps (U+0301 is refused MissingGlyph).
 #[test]
 fn tracking_is_added_once_per_cluster() {
     let s = Scratch::new("review-f5");
-    let (mut v, story) = layout_with(1, "x\u{301}y");
+    let (mut v, story) = layout_with(1, "x\u{311}y");
     let plain = drawn(&mut v, &s.0.join("plain.pdf"));
     assert_eq!(plain.len(), 3, "x, the mark and y: {plain:?}");
     ok(&mut v, "layout.set_character_attributes", json!({"story": story, "start": 0, "end": 4, "attributes": {"tracking": 500}}));
