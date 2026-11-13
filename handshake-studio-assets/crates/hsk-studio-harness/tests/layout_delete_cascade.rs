@@ -488,6 +488,8 @@ fn the_process_drives_the_cascade_and_autoflow() {
     let mut back = Viewer::new(Prefer::Cpu);
     back.open(&saved).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(page_ids(&back), ["page-1", "page-3"]);
-    assert!(!layer_ids(&back).contains(&b));
+    // page-2's frame went with the page; the layout editor mints the first free id, so the new frame may reuse it.
+    let frames: Vec<(String, String)> = document(&back).layers.iter().filter_map(|l| l.text_frame.as_ref().map(|f| (l.layer_id.clone(), f.page_id.clone()))).collect();
+    assert_eq!(frames.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>(), ["page-1", "page-3"], "{frames:?} (deleted frame was {b})");
     assert_eq!(links(&back, &a).1.map(|f| document(&back).layers.iter().find(|l| l.layer_id == f).unwrap().text_frame.as_ref().unwrap().page_id.clone()), Some("page-3".to_owned()), "autoflow placed a frame on page-3");
 }
