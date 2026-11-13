@@ -58,6 +58,23 @@ fn find_query(f: Fields<'_>) -> Result<FindQuery, CommandRefusal> {
     Ok(FindQuery { pattern: f.text("pattern")?, mode, scope })
 }
 
+/// Most `clear` entries one character-attribute edit takes (every field and every feature entry).
+const MAX_CLEAR: usize = folio::CHARACTER_ATTRIBUTE_FIELDS.len().saturating_add(folio::MAX_RECORD_FEATURES);
+
+/// The `attributes` record of a character-attribute row (absent = nothing set).
+fn attributes(f: Fields<'_>) -> Result<folio::StudioCharacterAttributes, CommandRefusal> {
+    if f.has("attributes") { folio_field!(f, "attributes", folio::StudioCharacterAttributes, "Folio character attributes") } else { Ok(folio::StudioCharacterAttributes::default()) }
+}
+
+/// The `clear` list of a character-attribute row (absent = none), bounded before the edit runs.
+fn clear(f: Fields<'_>) -> Result<Vec<String>, CommandRefusal> {
+    let list = if f.has("clear") { f.list("clear")? } else { Vec::new() };
+    if list.len() > MAX_CLEAR {
+        return Err(invalid("clear", "at most one entry per character attribute and feature tag"));
+    }
+    Ok(list)
+}
+
 /// The typed edit of one row; `None` when the row is not an edit.
 fn edit_of(id: &str, f: Fields<'_>) -> Result<Option<LayoutEdit>, CommandRefusal> {
     let opt = |key: &str| f.opt_text(key);
@@ -102,6 +119,14 @@ fn edit_of(id: &str, f: Fields<'_>) -> Result<Option<LayoutEdit>, CommandRefusal
         "layout.table.set_cell_text" => LayoutEdit::Table(TableEdit::SetCellText { table: text("table")?, row: f.count("row")?, column: f.count("column")?, text: text("text")? }),
         "layout.table.merge_cells" => LayoutEdit::Table(TableEdit::MergeCells { table: text("table")?, row: f.count("row")?, column: f.count("column")?, rows: f.count("rows")?, columns: f.count("columns")? }),
         "layout.table.delete_table" => LayoutEdit::Table(TableEdit::DeleteTable { table: text("table")? }),
+        "layout.set_character_attributes" => {
+            LayoutEdit::SetCharacterAttributes { story: text("story")?, start: f.unsigned("start")?, end: f.unsigned("end")?, set: attributes(f)?, clear: clear(f)? }
+        }
+        "layout.style.set_character_attributes" => LayoutEdit::SetStyleCharacterAttributes { style: text("style")?, set: attributes(f)?, clear: clear(f)? },
+        "layout.define_stroke_style" => LayoutEdit::DefineStrokeStyle { stroke_style: folio_field!(f, "stroke_style", folio::StudioStrokeStyleEntry, "a Folio stroke style")? },
+        "layout.delete_stroke_style" => LayoutEdit::DeleteStrokeStyle { name: text("name")? },
+        "layout.define_language" => LayoutEdit::DefineLanguage { language: folio_field!(f, "language", folio::StudioLanguage, "a Folio language record")? },
+        "layout.set_language" => LayoutEdit::SetLanguage { story: text("story")?, start: f.unsigned("start")?, end: f.unsigned("end")?, language: opt("language")? },
         "layout.change" => {
             let only = match (f.opt_text("only_story")?, f.has("only_start")) {
                 (None, false) => None,
@@ -199,6 +224,7 @@ pub(super) fn run(viewer: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value,
             Ok(Value::Null)
         }
         "layout.preflight" => Ok(editor.preflight_json()),
+        "layout.character_attributes" => editor.character_attributes(&f.text("story")?, f.unsigned("start")?, f.unsigned("end")?).map_err(|e| refused(&e)),
         "layout.thread_info" => {
             let t = editor.thread_info(&f.text("frame")?).map_err(|e| refused(&e))?;
             Ok(json!({"frame_id": t.frame_id, "parent_story": t.parent_story, "start_text_frame": t.start_text_frame, "end_text_frame": t.end_text_frame, "previous_text_frame": t.previous_text_frame, "next_text_frame": t.next_text_frame, "text_frame_index": t.text_frame_index}))

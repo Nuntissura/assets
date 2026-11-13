@@ -27,10 +27,11 @@
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    AutoSizing, Bounds, FirstBaseline, GeometryUnit, LayerSchema, LayoutEdges, Length, NodeKind, NodeRef, Parent,
-    Payload, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind, StudioDocument, StudioLayer,
-    StudioLayoutFlowRecords, StudioLongDocRecords, StudioParentPageRecords, StudioTextFrame, StudioTextStory, StudioTypeStyleRecords,
-    TextStorySchema, TypeStyleScope, VerticalJustification,
+    AutoSizing, Bounds, CHARACTER_ATTRIBUTE_FIELDS, CHARACTER_ENUMERATIONS, CHARACTER_PARAMS, Code, FirstBaseline, GeometryUnit, LayerSchema,
+    LayoutEdges, Length, NodeKind, NodeRef, Parent, Payload, StoryContent, StoryDirection, StoryParagraph, StoryRange, StoryTextKind,
+    StudioCharacterAttributes, StudioCharacterOverride, StudioDocument, StudioLanguage, StudioLayer, StudioLayoutFlowRecords,
+    StudioLongDocRecords, StudioParentPageRecords, StudioStrokeStyleEntry, StudioStyleCharacter, StudioTextFrame, StudioTextStory,
+    StudioTypeStyleRecords, TextStorySchema, TypeStyleScope, Unresolved, VerticalJustification, BUILTIN_STROKE_STYLES, DECORATION_OFF, opentype_tag_ok, validate_type_style_records,
 };
 use hsk_studio_layout::{
     Composer, LayoutError, LayoutProposal, Limits, ReflowRequest, ShapedParagraph, SourceSpan, SpaceParams, StyleSource,
@@ -165,6 +166,24 @@ pub enum LayoutEdit {
     Table(TableEdit),
     /// Find/change: `only` = the hit starting at (story, byte), else every hit (one undo step).
     Change { query: FindQuery, replacement: String, only: Option<(String, u64)> },
+    /// Local character attributes over story bytes `[start, end)` (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1,
+    /// STU-TYP-110/112): `set` is merged field by field into every local override the span covers
+    /// (a new override where none is), then the fields `clear` names are unset (a field name of
+    /// Folio `CHARACTER_ATTRIBUTE_FIELDS`, or `opentype_features/<tag>` for one feature entry).
+    /// All-or-nothing (STU-TYP-222).
+    SetCharacterAttributes { story: String, start: u64, end: u64, set: StudioCharacterAttributes, clear: Vec<String> },
+    /// The character attributes a style states (either scope), merged and cleared the same way;
+    /// an entry left empty is removed.
+    SetStyleCharacterAttributes { style: String, set: StudioCharacterAttributes, clear: Vec<String> },
+    /// Adds a member to the stroke-style registry (STU-TYP-192) or replaces the one of its name.
+    DefineStrokeStyle { stroke_style: StudioStrokeStyleEntry },
+    /// Removes a stored stroke style; refused while a decoration names it.
+    DeleteStrokeStyle { name: String },
+    /// Adds a language record (STU-TYP-209) or replaces the one of its name.
+    DefineLanguage { language: StudioLanguage },
+    /// Sets the ranges' `applied_language` over `[start, end)` (STU-TYP-210); `None` clears. The
+    /// name must be a language record of the document.
+    SetLanguage { story: String, start: u64, end: u64, language: Option<String> },
 }
 
 impl LayoutEdit {
@@ -208,6 +227,12 @@ impl LayoutEdit {
                 TableEdit::DeleteTable { .. } => "layout.table.delete_table",
             },
             Self::Change { .. } => "layout.change",
+            Self::SetCharacterAttributes { .. } => "layout.set_character_attributes",
+            Self::SetStyleCharacterAttributes { .. } => "layout.style.set_character_attributes",
+            Self::DefineStrokeStyle { .. } => "layout.define_stroke_style",
+            Self::DeleteStrokeStyle { .. } => "layout.delete_stroke_style",
+            Self::DefineLanguage { .. } => "layout.define_language",
+            Self::SetLanguage { .. } => "layout.set_language",
         }
     }
 }
@@ -255,6 +280,14 @@ pub enum LayoutUiError {
     Table(&'static str),
     /// The preflight engine refused the run (its code).
     Preflight(&'static str),
+    /// A language name the document's language records do not hold (STU-TYP-209/210).
+    UnknownLanguage(String),
+    /// A decoration type that is neither `off`, a built-in nor a stored stroke style.
+    UnknownStrokeStyle(String),
+    /// A stroke style a decoration still names.
+    StrokeStyleInUse(String),
+    /// A `clear` entry that names no character attribute (or a malformed feature tag).
+    UnknownCharacterAttribute(String),
 }
 impl LayoutUiError {
     pub fn code(&self) -> &'static str {
@@ -282,6 +315,10 @@ impl LayoutUiError {
             Self::Style(code) | Self::Grep(code) | Self::Table(code) | Self::Preflight(code) => code,
             Self::NoTextForFind => "no_text_for_find",
             Self::UnknownTable(_) => "unknown_table",
+            Self::UnknownLanguage(_) => "unknown_language",
+            Self::UnknownStrokeStyle(_) => "unknown_stroke_style",
+            Self::StrokeStyleInUse(_) => "stroke_style_in_use",
+            Self::UnknownCharacterAttribute(_) => "unknown_character_attribute",
         }
     }
 }
@@ -1143,38 +1180,297 @@ fn transform(doc: &LayoutDoc, edit: &LayoutEdit) -> Result<LayoutDoc, LayoutUiEr
         }
         LayoutEdit::ApplyCharacterStyle { story, start, end, style } => {
             check_style(&d, style, TypeStyleScope::Character)?;
-            let st = story_mut(&mut d, story)?;
-            let text = story_text(st);
-            let (s, e) = (usize::try_from(*start).unwrap_or(usize::MAX), usize::try_from(*end).unwrap_or(usize::MAX));
-            if start >= end || e > text.len() || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
-                return Err(LayoutUiError::Layout(LayoutError::InvalidInput));
+            rewrite_ranges(story_mut(&mut d, story)?, *start, *end, |r| (style.clone(), r.applied_language.clone()))?;
+        }
+        LayoutEdit::SetLanguage { story, start, end, language } => {
+            if let Some(name) = language
+                && d.styles.language(name).is_none()
+            {
+                return Err(LayoutUiError::UnknownLanguage(name.clone()));
             }
-            let total = text.len() as u64;
-            let base = if st.character_ranges.is_empty() {
-                vec![StoryRange { start: 0, end: total, style_ref: None, applied_language: None }]
-            } else {
-                st.character_ranges.clone()
-            };
-            let mut out = Vec::with_capacity(base.len().saturating_add(2));
-            for r in base {
-                for (a, b, inside) in [(r.start, r.end.min(*start), false), (r.start.max(*start), r.end.min(*end), true), (r.start.max(*end), r.end, false)] {
-                    if a < b {
-                        let style_ref = if inside { style.clone() } else { r.style_ref.clone() };
-                        match out.last_mut() {
-                            Some(StoryRange { end: le, style_ref: ls, applied_language: ll, .. })
-                                if *le == a && *ls == style_ref && *ll == r.applied_language =>
-                            {
-                                *le = b
-                            }
-                            _ => out.push(StoryRange { start: a, end: b, style_ref, applied_language: r.applied_language.clone() }),
-                        }
+            rewrite_ranges(story_mut(&mut d, story)?, *start, *end, |r| (r.style_ref.clone(), language.clone()))?;
+        }
+        LayoutEdit::SetCharacterAttributes { story, start, end, set, clear } => {
+            let st = d.stories.iter().find(|s| s.story_id == *story).ok_or_else(|| LayoutUiError::UnknownStory(story.clone()))?;
+            byte_span(story_text(st), *start, *end)?;
+            known_strokes(&d.styles, set)?;
+            set_overrides(&mut d.styles, story, *start, *end, |a| cleared(&a.overlaid(set), clear))?;
+            validate_character(&d)?;
+        }
+        LayoutEdit::SetStyleCharacterAttributes { style, set, clear } => {
+            d.styles.style(style).ok_or_else(|| LayoutUiError::UnknownStyle(style.clone()))?;
+            known_strokes(&d.styles, set)?;
+            let at = d.styles.style_character.iter().position(|c| c.style_id == *style);
+            let current = at.and_then(|i| d.styles.style_character.get(i)).map(|c| c.attributes.clone()).unwrap_or_default();
+            let next = cleared(&current.overlaid(set), clear)?;
+            match (at, next.is_empty()) {
+                (Some(i), true) => {
+                    d.styles.style_character.remove(i);
+                }
+                (Some(i), false) => {
+                    if let Some(c) = d.styles.style_character.get_mut(i) {
+                        c.attributes = next;
                     }
                 }
+                (None, false) => d.styles.style_character.push(StudioStyleCharacter { style_id: style.clone(), attributes: next }),
+                (None, true) => {}
             }
-            st.character_ranges = out;
+            validate_character(&d)?;
+        }
+        LayoutEdit::DefineStrokeStyle { stroke_style } => {
+            match d.styles.stroke_styles.iter_mut().find(|s| s.name == stroke_style.name) {
+                Some(s) => *s = stroke_style.clone(),
+                None => d.styles.stroke_styles.push(stroke_style.clone()),
+            }
+            validate_character(&d)?;
+        }
+        LayoutEdit::DeleteStrokeStyle { name } => {
+            let at = d.styles.stroke_styles.iter().position(|s| s.name == *name).ok_or_else(|| LayoutUiError::UnknownStrokeStyle(name.clone()))?;
+            let names = |a: &StudioCharacterAttributes| [&a.underline, &a.strikethrough].into_iter().flatten().any(|x| x.stroke_type.as_deref() == Some(name.as_str()));
+            if d.styles.style_character.iter().any(|c| names(&c.attributes)) || d.styles.character_overrides.iter().any(|o| names(&o.attributes)) {
+                return Err(LayoutUiError::StrokeStyleInUse(name.clone()));
+            }
+            d.styles.stroke_styles.remove(at);
+        }
+        LayoutEdit::DefineLanguage { language } => {
+            match d.styles.languages.iter_mut().find(|l| l.name == language.name) {
+                Some(l) => *l = language.clone(),
+                None => d.styles.languages.push(language.clone()),
+            }
+            validate_character(&d)?;
         }
         // Panel edits (SMB-LAYOUT-UI-2) are dispatched by `LayoutEditor::apply` to their submodules.
         _ => return Err(LayoutUiError::Layout(LayoutError::InvalidInput)),
     }
     Ok(d)
+}
+
+/// `[start, end)` is a non-empty span on char boundaries of `text`.
+fn byte_span(text: &str, start: u64, end: u64) -> Result<(), LayoutUiError> {
+    let (s, e) = (usize::try_from(start).unwrap_or(usize::MAX), usize::try_from(end).unwrap_or(usize::MAX));
+    if start >= end || e > text.len() || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+        return Err(LayoutUiError::Layout(LayoutError::InvalidInput));
+    }
+    Ok(())
+}
+
+/// Rewrites the character ranges over `[start, end)`: the part inside takes `inside(range)`
+/// (style, language); neighbours with equal style and language merge. An empty story's empty range
+/// gives way to one range over the whole text.
+fn rewrite_ranges(st: &mut StudioTextStory, start: u64, end: u64, inside: impl Fn(&StoryRange) -> (Option<String>, Option<String>)) -> Result<(), LayoutUiError> {
+    let text = story_text(st);
+    byte_span(text, start, end)?;
+    let total = text.len() as u64;
+    let base = if st.character_ranges.iter().all(|r| r.start == r.end) {
+        vec![StoryRange { start: 0, end: total, style_ref: None, applied_language: None }]
+    } else {
+        st.character_ranges.clone()
+    };
+    let mut out: Vec<StoryRange> = Vec::with_capacity(base.len().saturating_add(2));
+    for r in base {
+        for (a, b, within) in [(r.start, r.end.min(start), false), (r.start.max(start), r.end.min(end), true), (r.start.max(end), r.end, false)] {
+            if a < b {
+                let (style_ref, applied_language) = if within { inside(&r) } else { (r.style_ref.clone(), r.applied_language.clone()) };
+                match out.last_mut() {
+                    Some(last) if last.end == a && last.style_ref == style_ref && last.applied_language == applied_language => last.end = b,
+                    _ => out.push(StoryRange { start: a, end: b, style_ref, applied_language }),
+                }
+            }
+        }
+    }
+    st.character_ranges = out;
+    Ok(())
+}
+
+/// `a` with the fields `clear` names unset (`LayoutEdit::SetCharacterAttributes`).
+fn cleared(a: &StudioCharacterAttributes, clear: &[String]) -> Result<StudioCharacterAttributes, LayoutUiError> {
+    if clear.is_empty() {
+        return Ok(a.clone());
+    }
+    let internal = || LayoutUiError::Layout(LayoutError::InvalidInput);
+    let mut v = serde_json::to_value(a).map_err(|_| internal())?;
+    let map = v.as_object_mut().ok_or_else(internal)?;
+    for name in clear {
+        if let Some(tag) = name.strip_prefix("opentype_features/") {
+            if !opentype_tag_ok(tag) {
+                return Err(LayoutUiError::UnknownCharacterAttribute(name.clone()));
+            }
+            if let Some(Value::Object(features)) = map.get_mut("opentype_features") {
+                features.remove(tag);
+            }
+        } else if CHARACTER_ATTRIBUTE_FIELDS.contains(&name.as_str()) {
+            map.remove(name.as_str());
+        } else {
+            return Err(LayoutUiError::UnknownCharacterAttribute(name.clone()));
+        }
+    }
+    serde_json::from_value(v).map_err(|_| internal())
+}
+
+/// Refuses a decoration type of `set` that is not `off`, a built-in or a stored stroke style.
+fn known_strokes(styles: &StudioTypeStyleRecords, set: &StudioCharacterAttributes) -> Result<(), LayoutUiError> {
+    for d in [&set.underline, &set.strikethrough].into_iter().flatten() {
+        if let Some(t) = &d.stroke_type
+            && t != DECORATION_OFF
+            && !BUILTIN_STROKE_STYLES.contains(&t.as_str())
+            && !styles.stroke_styles.iter().any(|s| s.name == *t)
+        {
+            return Err(LayoutUiError::UnknownStrokeStyle(t.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Rewrites the local overrides of `story` over `[start, end)` with `apply` (on the covered
+/// overrides' attributes, and on an empty record where none covers); parts outside keep theirs;
+/// empty results are dropped, equal neighbours merge, the set stays ordered by story and start.
+fn set_overrides(
+    styles: &mut StudioTypeStyleRecords,
+    story: &str,
+    start: u64,
+    end: u64,
+    apply: impl Fn(&StudioCharacterAttributes) -> Result<StudioCharacterAttributes, LayoutUiError>,
+) -> Result<(), LayoutUiError> {
+    let mut mine: Vec<StudioCharacterOverride> = styles.character_overrides.iter().filter(|o| o.text_id == story).cloned().collect();
+    mine.sort_by_key(|o| o.start);
+    let part = |a: u64, b: u64, attributes: StudioCharacterAttributes| StudioCharacterOverride { text_id: story.to_owned(), start: a, end: b, attributes };
+    let mut out = Vec::with_capacity(mine.len().saturating_add(4));
+    let mut cursor = start;
+    for o in &mine {
+        if o.start < start {
+            out.push(part(o.start, o.end.min(start), o.attributes.clone()));
+        }
+        let (a, b) = (o.start.max(start), o.end.min(end));
+        if a < b {
+            if cursor < a {
+                out.push(part(cursor, a, apply(&StudioCharacterAttributes::default())?));
+            }
+            out.push(part(a, b, apply(&o.attributes)?));
+            cursor = b;
+        }
+        if o.end > end {
+            out.push(part(o.start.max(end), o.end, o.attributes.clone()));
+        }
+    }
+    if cursor < end {
+        out.push(part(cursor, end, apply(&StudioCharacterAttributes::default())?));
+    }
+    out.retain(|o| !o.attributes.is_empty());
+    out.sort_by_key(|o| o.start);
+    let mut merged: Vec<StudioCharacterOverride> = Vec::with_capacity(out.len());
+    for o in out {
+        match merged.last_mut() {
+            Some(last) if last.end == o.start && last.attributes == o.attributes => last.end = o.end,
+            _ => merged.push(o),
+        }
+    }
+    styles.character_overrides.retain(|o| o.text_id != story);
+    styles.character_overrides.extend(merged);
+    styles.character_overrides.sort_by(|a, b| (a.text_id.as_str(), a.start).cmp(&(b.text_id.as_str(), b.start)));
+    Ok(())
+}
+
+/// Folio's type-style validator over the edited records (`folio_<code>`, the record target).
+fn validate_character(d: &LayoutDoc) -> Result<(), LayoutUiError> {
+    validate_type_style_records(&d.styles, &d.document, hsk_studio_folio::Budget::default(), &CancellationToken::default(), &Unresolved).map(|_| ()).map_err(|e| {
+        let code = match e.code {
+            Code::DanglingReference => "folio_dangling_reference",
+            Code::DuplicateIdentity => "folio_duplicate_identity",
+            Code::InvalidField => "folio_invalid_field",
+            Code::InvalidId => "folio_invalid_id",
+            Code::BudgetExceeded => "folio_budget_exceeded",
+            _ => "folio_invalid",
+        };
+        LayoutUiError::Folio(code, e.target)
+    })
+}
+
+/// One segment of [`LayoutEditor::character_attributes`]: bytes, resolved record, applied language.
+type Segment = (u64, u64, Value, Option<String>);
+
+/// The one value of a field over `segments`, or the STU-TYP-222 `mixed` marker with each distinct
+/// value and its extents.
+fn mixed(segments: &[Segment], pick: impl Fn(&Segment) -> Value) -> Value {
+    let mut values: Vec<(Value, Vec<[u64; 2]>)> = Vec::new();
+    for s in segments {
+        let v = pick(s);
+        match values.iter_mut().find(|(x, _)| *x == v) {
+            Some((_, extents)) => extents.push([s.0, s.1]),
+            None => values.push((v, vec![[s.0, s.1]])),
+        }
+    }
+    match values.as_slice() {
+        [(only, _)] => only.clone(),
+        _ => json!({"mixed": true, "values": values.iter().map(|(v, e)| json!({"value": v, "extents": e})).collect::<Vec<_>>()}),
+    }
+}
+
+impl LayoutEditor {
+    /// The resolved character attributes over `[start, end)` of `story` (STU-TYP-112 segment
+    /// projection, STU-TYP-222 mixed protocol): `segments` (each contiguous run of one resolved
+    /// record: bytes, attributes, applied language), per field the one value or
+    /// `{"mixed": true, "values": [{"value", "extents"}]}` (an unset field reads null), the legacy
+    /// boolean projections of the feature map (STU-TYP-174, Type's mapping), and the parameter
+    /// rows, enumerations, stroke styles and languages a model needs to set them (STU-TYP-221).
+    pub fn character_attributes(&self, story: &str, start: u64, end: u64) -> Result<Value, LayoutUiError> {
+        let st = self.doc.stories.iter().find(|s| s.story_id == story).ok_or_else(|| LayoutUiError::UnknownStory(story.to_owned()))?;
+        byte_span(story_text(st), start, end)?;
+        let styles = &self.doc.styles;
+        let mut cuts: std::collections::BTreeSet<u64> = [start, end].into_iter().collect();
+        let bounds = st
+            .paragraphs
+            .iter()
+            .map(|p| (p.start, p.end))
+            .chain(st.character_ranges.iter().map(|r| (r.start, r.end)))
+            .chain(styles.character_overrides.iter().filter(|o| o.text_id == story).map(|o| (o.start, o.end)));
+        for (a, b) in bounds {
+            for at in [a, b] {
+                if at > start && at < end {
+                    cuts.insert(at);
+                }
+            }
+        }
+        let cuts: Vec<u64> = cuts.into_iter().collect();
+        let mut segments: Vec<Segment> = Vec::with_capacity(cuts.len());
+        for w in cuts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let paragraph = st.paragraphs.iter().find(|p| p.start <= a && a < p.end).and_then(|p| p.style_ref.as_deref());
+            let range = st.character_ranges.iter().find(|r| r.start <= a && a < r.end);
+            let resolved = styles.resolved_character(story, a, paragraph, range.and_then(|r| r.style_ref.as_deref()));
+            let value = serde_json::to_value(&resolved).map_err(|_| LayoutUiError::Layout(LayoutError::InvalidInput))?;
+            let language = range.and_then(|r| r.applied_language.clone());
+            match segments.last_mut() {
+                Some(last) if last.1 == a && last.2 == value && last.3 == language => last.1 = b,
+                _ => segments.push((a, b, value, language)),
+            }
+        }
+        let mut fields = serde_json::Map::new();
+        for name in CHARACTER_ATTRIBUTE_FIELDS {
+            fields.insert(name.to_owned(), mixed(&segments, |s| s.2.get(name).cloned().unwrap_or(Value::Null)));
+        }
+        let mut legacy = serde_json::Map::new();
+        for b in hsk_studio_type::LegacyBoolean::ALL {
+            let Ok(tag) = b.tag() else { continue };
+            let bytes = tag.bytes();
+            let Ok(tag) = std::str::from_utf8(&bytes) else { continue };
+            legacy.insert(b.name().to_owned(), mixed(&segments, |s| s.2.get("opentype_features").and_then(|m| m.get(tag)).map_or(Value::Null, |v| json!(v.as_u64() != Some(0)))));
+        }
+        let parameters: Vec<Value> = CHARACTER_PARAMS
+            .iter()
+            .map(|p| json!({"key": p.key, "hard_min": p.hard_min, "hard_max": p.hard_max, "soft_min": p.soft_min, "soft_max": p.soft_max, "default": p.default, "unit": p.unit, "precision": p.precision}))
+            .collect();
+        let enumerations: serde_json::Map<String, Value> = CHARACTER_ENUMERATIONS.iter().map(|(k, m)| ((*k).to_owned(), json!(m))).collect();
+        let strokes: Vec<String> = BUILTIN_STROKE_STYLES.iter().map(|n| (*n).to_owned()).chain(styles.stroke_styles.iter().map(|s| s.name.clone())).collect();
+        Ok(json!({
+            "story": story, "start": start, "end": end,
+            "segments": segments.iter().map(|(a, b, v, l)| json!({"start": a, "end": b, "attributes": v, "applied_language": l})).collect::<Vec<_>>(),
+            "fields": fields,
+            "applied_language": mixed(&segments, |s| json!(s.3)),
+            "legacy_booleans": legacy,
+            "parameters": parameters,
+            "enumerations": enumerations,
+            "stroke_styles": strokes,
+            "languages": styles.languages.iter().map(|l| json!({"name": l.name, "icu_locale_name": l.icu_locale_name})).collect::<Vec<_>>(),
+        }))
+    }
 }

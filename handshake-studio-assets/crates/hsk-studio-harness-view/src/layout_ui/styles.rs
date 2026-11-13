@@ -218,7 +218,9 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
             d.styles.styles.retain(|s| s.style_id != *style);
             // Its composition settings go with it (a record naming no style is refused by Folio).
             d.styles.style_composition.retain(|c| c.style_id != *style);
-            let swap = |v: &mut Option<String>, with: &Option<String>| {
+            // And its character attributes (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1).
+            d.styles.style_character.retain(|c| c.style_id != *style);
+            let swap =|v: &mut Option<String>, with: &Option<String>| {
                 if v.as_deref() == Some(style.as_str()) {
                     *v = with.clone();
                 }
@@ -274,6 +276,8 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
                 }
             }
             st.character_ranges = out;
+            // Local character overrides in the paragraph go too (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1).
+            super::set_overrides(&mut d.styles, story, a, b.max(a), |_| Ok(hsk_studio_folio::StudioCharacterAttributes::default()))?;
         }
     }
     validate(&d)?;

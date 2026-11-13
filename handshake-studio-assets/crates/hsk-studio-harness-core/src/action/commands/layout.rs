@@ -6,6 +6,7 @@ use super::{CommandEntry, ParamSpec, flag as b, index as i, list as l, number as
 const EDIT: &str = "LayoutEditor::apply";
 const PAGE_ITEM: &[ParamSpec] = &[t("page"), t("item")];
 const FIND_SCOPE: &str = "document|story|selection";
+const CHAR_ATTRS: &str = "Folio StudioCharacterAttributes (spec field names and units; opentype_features {tag: value}; underline / strikethrough {type, weight, offset, colour, tint, overprint, gap_colour, gap_tint, gap_overprint, skip_ink}; hyperlink {target_kind url|node}); merged field by field, absent keeps; clear names fields to unset (or opentype_features/<tag>)";
 const FIND: &[ParamSpec] = &[t("pattern"), o("mode", "text|grep").opt(), b("case_sensitive").opt(), b("whole_word").opt(), o("scope", FIND_SCOPE).opt(), t("story").opt(), i("start").opt(), i("end").opt()];
 const CHANGE: &[ParamSpec] = &[t("pattern"), t("replacement"), o("mode", "text|grep").opt(), b("case_sensitive").opt(), b("whole_word").opt(), o("scope", FIND_SCOPE).opt(), t("story").opt(), i("start").opt(), i("end").opt(), t("only_story").opt(), i("only_start").opt()];
 
@@ -41,6 +42,16 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("layout.table.merge_cells", EDIT, "Merge table cells", true, &[t("table"), i("row"), i("column"), i("rows"), i("columns")]),
     typed("layout.table.delete_table", EDIT, "Delete table", true, &[t("table")]),
     typed("layout.change", EDIT, "Find and change", true, CHANGE),
+    // Lane SMB-TYPE-CHARACTER-ATTRIBUTES-1: character attributes, the stroke-style registry and language records
+    // (STU-TYP-155..161, 133, 170, 192, 209, 210); the read gives the mixed-value protocol (STU-TYP-222) and the
+    // parameter rows and enumerations (STU-TYP-221).
+    typed("layout.set_character_attributes", EDIT, "Set character attributes", true, &[t("story"), i("start"), i("end"), r("attributes", CHAR_ATTRS).opt(), l("clear").opt()]),
+    typed("layout.style.set_character_attributes", EDIT, "Set style character attributes", true, &[t("style"), r("attributes", CHAR_ATTRS).opt(), l("clear").opt()]),
+    typed("layout.define_stroke_style", EDIT, "Define stroke style", true, &[r("stroke_style", "Folio StudioStrokeStyleEntry {name, pattern {pattern_kind solid|dash {segments}|stripe {stripes}|dotted|wavy}, end_cap butt|round|projecting, end_join miter|round|bevel}; replaces the style of that name")]),
+    typed("layout.delete_stroke_style", EDIT, "Delete stroke style", true, &[t("name")]),
+    typed("layout.define_language", EDIT, "Define language", true, &[r("language", "Folio StudioLanguage {name, primary_language_name, icu_locale_name, sublanguage_name, untranslated_name, hyphenation_vendor, spelling_vendor, single_quotes, double_quotes {open, close}}; replaces the record of that name")]),
+    typed("layout.set_language", EDIT, "Set applied language", true, &[t("story"), i("start"), i("end"), t("language").opt()]),
+    typed("layout.character_attributes", "LayoutEditor::character_attributes", "Read character attributes", false, &[t("story"), i("start"), i("end")]),
     typed("layout.undo", "LayoutEditor::undo", "Undo layout edit", true, &[]),
     typed("layout.redo", "LayoutEditor::redo", "Redo layout edit", true, &[]),
     typed("layout.find", "LayoutEditor::find", "Find in stories", false, FIND),
