@@ -149,7 +149,9 @@ fn an_implied_anchor_returns_on_disable_while_an_explicit_static_stays_through_u
         cmd(run, "keyframe.set", json!({"layer_id": L2, "property": "anchor", "time": 0, "value": [37.0, 11.0]}));
         let implied = stream(run, "anchor").unwrap();
         assert_eq!(implied["static_implied"], json!(true), "{implied}");
-        assert_eq!(cmd(run, "property.read", json!({"layer_id": L2, "property": "anchor", "time": 0}))["static_implied"], json!(true));
+        // Read reports the flag and no static value (the stored one only fills the record; review Q1).
+        let read = cmd(run, "property.read", json!({"layer_id": L2, "property": "anchor", "time": 0}));
+        assert_eq!((read.get("static_implied"), read.get("static_value")), (Some(&json!(true)), Some(&Value::Null)), "{read}");
         let keyed = comps(run);
         // Round trip with the flag set: it survives, and disabling after reopen still returns to implied.
         reopened(run, |again| {
@@ -171,6 +173,8 @@ fn an_implied_anchor_returns_on_disable_while_an_explicit_static_stays_through_u
         let explicit = stream(run, "anchor").unwrap();
         assert_eq!(explicit.get("static_implied"), None, "an unset flag is not on the wire: {explicit}");
         assert_eq!((&explicit["static_value"], &explicit["keyframes"]), (&implied["static_value"], &implied["keyframes"]));
+        let read = cmd(run, "property.read", json!({"layer_id": L2, "property": "anchor", "time": 0}));
+        assert_eq!((read.get("static_implied"), read.get("static_value")), (None, Some(&json!([37.0, 11.0]))), "{read}");
         // Round trip with the flag unset, the shape a file written before the flag has.
         reopened(run, |again| {
             cmd(again, "property.disable_animation", json!({"layer_id": L2, "property": "anchor"}));
@@ -208,6 +212,23 @@ fn deleting_or_toggling_the_last_key_of_an_implied_stream_returns_it_to_implied(
         cmd(run, "keyframe.set", json!({"layer_id": L2, "property": "opacity", "time": S, "value": [90.0]}));
         cmd(run, "keyframe.delete", json!({"layer_id": L2, "property": "opacity", "time": S}));
         assert_eq!(stream(run, "opacity").unwrap(), json!({"property": "opacity", "static_value": [40.0]}));
+    });
+}
+
+#[test]
+fn a_paste_of_another_dimension_onto_an_absent_anchor_is_a_paste_mismatch() {
+    with_layer(|run| {
+        cmd(run, "keyframe.set", json!({"layer_id": L2, "property": "rotation", "time": 0, "value": [15.0]}));
+        cmd(run, "keyframe.copy", json!({"layer_id": L2, "property": "rotation", "times": [0]}));
+        // The anchor is absent: the one-component keys are refused before a stream would be seeded
+        // from them (review F3), with the code a present anchor gives.
+        let (code, target) = refused(run, "keyframe.paste", json!({"layer_id": L2, "property": "anchor", "time": 0}));
+        assert_eq!((code.as_str(), target), ("paste_property_mismatch", json!("anchor")));
+        assert!(stream(run, "anchor").is_none());
+        let (code, target) = refused(run, "keyframe.paste", json!({"layer_id": L2, "property": "position", "time": S}));
+        assert_eq!((code.as_str(), target), ("paste_property_mismatch", json!("position")));
+        cmd(run, "property.set_value", json!({"layer_id": L2, "property": "anchor", "value": [1.0, 2.0]}));
+        assert_eq!(refused(run, "keyframe.paste", json!({"layer_id": L2, "property": "anchor", "time": 0})).0, "paste_property_mismatch");
     });
 }
 

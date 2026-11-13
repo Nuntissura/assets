@@ -59,11 +59,22 @@
 //! Declared limits: a composition property has no expression store in Folio, so `expression.set_source`
 //! edits the expression field that exists (a text selector's `source`); a `recordable: false` row is
 //! reported `not_recordable` while recording; `set_parent` does not compensate the child's transform
-//! (stated in its result, `transform_compensated: false`); `keyframe.add_at_current` and
-//! `keyframe.toggle_at_current` declare no value (a sent one is `parameter_unknown`) and refuse a property
-//! whose current value composite alone knows (`property_default_unknown`);
+//! (stated in its result, `transform_compensated: false`); `keyframe.add_at_current`,
+//! `keyframe.toggle_at_current` and `property.enable_animation` declare no value (a sent one is
+//! `parameter_unknown`; [STU-MOT-038]: they key the current evaluated value) and refuse a property
+//! whose current value composite alone knows (`property_default_unknown`: an absent anchor or
+//! position, whose implied value derives from the content);
 //! a copy spans one layer (`copy_spans_layers`); no footage or guide kind; spatial tangents are not
 //! stored (Folio).
+//!
+//! Implied static values ([STU-MOT-020b]; lane SMB-FIX-ANIMATION-VALUES-1): `keyframe.set` and
+//! `keyframe.paste` that create a missing anchor or position stream mark it `static_implied` (Folio
+//! `StudioPropertyStream`): its prior static value is the implied one, and its `static_value` only
+//! fills the record. `property.disable_animation`, `keyframe.delete` of the last key and
+//! `keyframe.toggle_at_current` turning the last key off remove that stream, so the property returns to
+//! its implied value; `property.read` reports `static_implied: true` and `static_value: null` for it.
+//! `property.set_value` on an absent anchor or position creates an explicit static value. A paste onto
+//! an absent anchor or position whose keys have another dimension is `paste_property_mismatch`.
 //!
 //! Render queue (lane SMB-DELIVERY-QUEUE-1, [STU-MOT-125]): `composition.queue_reorder` (`index` in the queue),
 //! `composition.queue_duplicate` (a copy after the item, `new_item_id` or `<item_id>-copy`; it keeps the module
@@ -2064,21 +2075,29 @@ fn property_read(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         e.say("value_at", json!(v));
     }
     if implied_stream(e, &id, &prop).is_some_and(|s| s.static_implied) {
-        // The static value only fills the record: the property returns to its implied value.
+        // The stored static value only fills the record: the property returns to its implied value,
+        // which composite derives from the content, so no static value is reported.
         e.say("static_implied", json!(true));
+        e.say("static_value", Value::Null);
+    } else {
+        e.say("static_value", json!(static_value));
     }
-    e.say("static_value", json!(static_value));
     e.say("keyframes", json!(keyframes));
     Ok(())
 }
 
+/// The layer property of an address whose value can be implied (a bare `anchor` or `position`).
+fn implied_property(prop: &str) -> Option<StudioLayerProperty> {
+    match prop {
+        "anchor" => Some(StudioLayerProperty::Anchor),
+        "position" => Some(StudioLayerProperty::Position),
+        _ => None,
+    }
+}
+
 /// The layer stream of an address whose value can be implied (anchor, position).
 fn implied_stream<'e>(e: &'e Edit<'_>, layer_id: &str, prop: &str) -> Option<&'e StudioPropertyStream> {
-    let property = match prop {
-        "anchor" => StudioLayerProperty::Anchor,
-        "position" => StudioLayerProperty::Position,
-        _ => return None,
-    };
+    let property = implied_property(prop)?;
     e.comp.layer(layer_id).and_then(|(_, l)| l.stream(property))
 }
 
@@ -2476,6 +2495,13 @@ fn key_paste(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
                 }
             }
             placed.push(k);
+        }
+        // An absent anchor or position is seeded from the first pasted key, so the keys are checked
+        // against the property's own dimension before the stream exists (review F3).
+        if let Some(property) = implied_property(&prop)
+            && placed.iter().any(|k| k.value.len() != property.dimension())
+        {
+            return no("paste_property_mismatch", &prop);
         }
         let first = placed.first().map(|k| k.value.clone());
         let ((sv, slot_keys), _) = match first.as_deref() {
