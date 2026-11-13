@@ -504,3 +504,35 @@ fn component_authoring_runs_through_the_process() {
     assert_eq!(s.ok("instance.get_main_component", json!({"layer":frame}))["detail"]["result"]["main_component_id"], component.as_str());
     s.close();
 }
+
+/// Lane SMB-DS-VARIABLES-AUTHOR-1: collections, modes, variables, aliases, code syntax and explicit modes
+/// through the process ([STU-DS-132], [STU-DS-133], [STU-DS-162]); each mutating row is one named undo step
+/// with the caller's attribution, a read makes none, and a refusal is typed.
+#[test]
+fn variable_authoring_runs_through_the_process() {
+    let dir = Scratch::new("variables");
+    let package = dir.package("a.handshake");
+    let (mut s, _) = Live::open(&package, "lane-v", &dir.0);
+    let made = s.ok("variable_collection.create", json!({"name":"Tokens","mode_name":"Light"}));
+    assert_eq!(made["attribution"]["actor"]["account_id"], "lane-v", "{made}");
+    assert!(undo_name(&made).starts_with("variable_collection_create"), "{made}");
+    let collection = made["detail"]["result"]["collection_id"].as_str().expect("a collection id").to_string();
+    let dark = s.ok("variable_collection.add_mode", json!({"collection":collection,"name":"Dark"}))["detail"]["result"]["mode_id"].as_str().unwrap().to_string();
+    let created = s.ok("variable.create", json!({"collection":collection,"name":"space/m","resolved_type":"FLOAT","value":{"type":"FLOAT","value":16},"scopes":["GAP","WIDTH_HEIGHT"]}));
+    let variable = created["detail"]["result"]["variable_id"].as_str().expect("a variable id").to_string();
+    s.ok("variable.set_value_for_mode", json!({"variable":variable,"mode":dark,"value":{"type":"FLOAT","value":24}}));
+    s.ok("variable.set_code_syntax", json!({"variable":variable,"platform":"ANDROID","name":"space_m"}));
+    s.refused("variable.set_code_syntax", json!({"variable":variable,"platform":"FLUTTER","name":"x"}), "parameter_invalid");
+    let alias = s.ok("variable.create_alias", json!({"variable":variable}));
+    assert!(alias["detail"]["undo_name"].is_null(), "a read makes no step: {alias}");
+    let group = "SLYR-019abcde-0000-7000-8000-000000000001";
+    s.ok("node.set_explicit_variable_mode_for_collection", json!({"node":group,"collection":collection,"mode":dark}));
+    let resolved = s.ok("variable.resolve_for_consumer", json!({"variable":variable,"node":group,"scope":"GAP"}));
+    assert_eq!(resolved["detail"]["result"]["value"]["value"], 24.0, "{resolved}");
+    s.refused("variable.resolve_for_consumer", json!({"variable":variable,"node":group,"scope":"OPACITY"}), "variable_scope_violation");
+    writeln!(s.stdin, "{}", json!({"command":"undo"})).unwrap();
+    s.stdin.flush().unwrap();
+    let _ = s.read();
+    assert_eq!(s.ok("variable.resolve_for_consumer", json!({"variable":variable,"node":group}))["detail"]["result"]["value"]["value"], 16.0);
+    s.close();
+}
