@@ -11,6 +11,28 @@ use hsk_studio_native_host::scene::{DEFAULT_CLEAR, GuiArgs, Scene, painted};
 use hsk_studio_native_host::window::{self, FocusReport, WindowArgs};
 use std::path::PathBuf;
 use std::time::Duration;
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_native_host::cli::Caller;
+use hsk_studio_native_host::diag::HostRun;
+use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
+
+/// One host entry as the asset-local caller (F-R60-22).
+fn observed<T>(run: impl FnOnce(&mut HostRun<'_>) -> T) -> T {
+    let (cancel, mut frames) = (CancellationToken::default(), Frames::default());
+    let caller = Caller::asset_local();
+    run(&mut HostRun::new(caller.actor, caller.resource, 1, &cancel, &mut frames).expect("host run"))
+}
+
+/// The classes of the frames a host run sent.
+#[derive(Default)]
+struct Frames(Vec<DeliveryClass>);
+
+impl SinkPort for Frames {
+    fn try_send(&mut self, class: DeliveryClass, _: &[u8]) -> Result<(), DeliveryError> {
+        self.0.push(class);
+        Ok(())
+    }
+}
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("hsk-native-host-{}-{name}", std::process::id()));
@@ -48,7 +70,7 @@ fn assert_quiet(f: &FocusReport) {
 fn offscreen_png_then_quiet_window_same_hash_no_focus() {
     let dir = scratch("clear");
     let (w, h) = (96u32, 64u32);
-    let off = offscreen::run(&OffscreenArgs {
+    let off = observed(|host_run| offscreen::run(&OffscreenArgs {
         width: w,
         height: h,
         scene: Scene::Clear(DEFAULT_CLEAR),
@@ -56,7 +78,7 @@ fn offscreen_png_then_quiet_window_same_hash_no_focus() {
         receipt: Some(dir.join("offscreen.json")),
         allow_overlays: false,
         gui: GuiArgs::default(),
-    })
+    }, host_run))
     .expect("offscreen run");
     assert!(off.exact);
     assert_eq!(off.validation, validation::want(&off.receipt));
@@ -73,7 +95,7 @@ fn offscreen_png_then_quiet_window_same_hash_no_focus() {
     let state = format!(r#""validation":"{}""#, validation::want(&off.receipt));
     assert!(std::fs::read_to_string(dir.join("offscreen.json")).unwrap().contains(&state));
 
-    let win = window::run(&quiet(Scene::Clear(DEFAULT_CLEAR), w, h, 3, false, &dir)).expect("quiet window run");
+    let win = observed(|host_run| window::run(&quiet(Scene::Clear(DEFAULT_CLEAR), w, h, 3, false, &dir), host_run)).expect("quiet window run");
     assert_quiet(&win.focus);
     let cap = win.capture.as_ref().expect("swapchain capture");
     assert_eq!((cap.width, cap.height), (w, h));
@@ -92,7 +114,7 @@ fn offscreen_png_then_quiet_window_same_hash_no_focus() {
 fn quiet_exercise_resize_minimise_restore_presents_cpu_buffer() {
     let dir = scratch("exercise");
     let (w, h) = (120u32, 80u32);
-    let win = window::run(&quiet(Scene::Painted, w, h, 4, true, &dir)).expect("exercise run");
+    let win = observed(|host_run| window::run(&quiet(Scene::Painted, w, h, 4, true, &dir), host_run)).expect("exercise run");
     assert_quiet(&win.focus);
     assert_eq!(win.exercised, ["resize_grow", "minimize_no_activate", "restore_no_activate", "resize_back"]);
     let t = win.transitions.join(" ");

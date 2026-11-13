@@ -5,6 +5,7 @@
 //! into the receipt's `ui_pass`; with `--out X.png` the reference and a difference image go beside it (X.cpu.png,
 //! X.diff.png), and `--ui-trace` writes the pass's per-primitive trace.
 use crate::capture::{Json, device_json, layers_json, sha256_hex, validation_json, write_png, write_receipt};
+use crate::diag::HostRun;
 use crate::error::HostError;
 use crate::scene::{CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
 #[cfg(feature = "document")]
@@ -39,8 +40,13 @@ pub struct OffscreenResult {
     pub receipt: Json,
 }
 
-/// Renders `args.scene` into a pane and reads it back.
-pub fn run(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
+/// Renders `args.scene` into a pane and reads it back, as the caller `host` names.
+pub fn run(args: &OffscreenArgs, host: &mut HostRun<'_>) -> Result<OffscreenResult, HostError> {
+    let _ = host;
+    run_scene(args)
+}
+
+fn run_scene(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
     if let Scene::Gui(path) = &args.scene {
         return gui_run(args, path);
     }

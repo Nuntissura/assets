@@ -20,6 +20,28 @@ use hsk_studio_native_host::window::{self, FocusReport, WindowArgs};
 use hsk_studio_vulkan::{GpuClientPort, Owner, OwnerConfig, Refusal, UiPass};
 use std::path::Path;
 use std::time::Duration;
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_native_host::cli::Caller;
+use hsk_studio_native_host::diag::HostRun;
+use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
+
+/// One host entry as the asset-local caller (F-R60-22).
+fn observed<T>(run: impl FnOnce(&mut HostRun<'_>) -> T) -> T {
+    let (cancel, mut frames) = (CancellationToken::default(), Frames::default());
+    let caller = Caller::asset_local();
+    run(&mut HostRun::new(caller.actor, caller.resource, 1, &cancel, &mut frames).expect("host run"))
+}
+
+/// The classes of the frames a host run sent.
+#[derive(Default)]
+struct Frames(Vec<DeliveryClass>);
+
+impl SinkPort for Frames {
+    fn try_send(&mut self, class: DeliveryClass, _: &[u8]) -> Result<(), DeliveryError> {
+        self.0.push(class);
+        Ok(())
+    }
+}
 
 const SIZE: (u32, u32) = (800, 480);
 
@@ -180,14 +202,14 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
     };
     let mut first = off_args("gui-vulkan-offscreen.png", "gui-vulkan-offscreen.json", "gui-vulkan-offscreen-tree.json");
     first.gui.ui_trace = Some(s.0.join("gui-vulkan-trace.json"));
-    let off = offscreen::run(&first).expect("vulkan offscreen");
+    let off = observed(|host_run| offscreen::run(&first, host_run)).expect("vulkan offscreen");
     let trace = std::fs::read_to_string(s.0.join("gui-vulkan-trace.json")).unwrap();
     assert!(trace.starts_with(r#"{"schema":"hsk.studio.native_host.ui_trace@1","records":[{"kind":"#), "{}", &trace[..trace.len().min(200)]);
     assert!(trace.contains(r#""class":"glyph""#) && trace.contains(r#""class":"flat""#));
     for png in ["gui-vulkan-offscreen.cpu.png", "gui-vulkan-offscreen.diff.png"] {
         assert!(s.0.join(png).is_file(), "{png}: the CPU reference and the difference image beside --out");
     }
-    let again = offscreen::run(&off_args("gui-vulkan-offscreen-2.png", "gui-vulkan-offscreen-2.json", "gui-vulkan-offscreen-2-tree.json")).expect("second run");
+    let again = observed(|host_run| offscreen::run(&off_args("gui-vulkan-offscreen-2.png", "gui-vulkan-offscreen-2.json", "gui-vulkan-offscreen-2-tree.json"), host_run)).expect("second run");
     assert_eq!(off.rgba8, again.rgba8, "two runs, equal bytes");
     assert_eq!(off.receipt.get("chrome").map(Json::render), Some(r#""vulkan ui pass""#.into()));
     let ui = off.receipt.get("ui_pass").expect("ui_pass member");
@@ -196,7 +218,7 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
     assert!(ui.get("features").map(Json::render).is_some_and(|f| f.contains("dynamicRendering")), "{}", ui.render());
     assert!(num(ui, &["passes"]) >= 1 && num(ui, &["instances"]) > 0 && num(ui, &["glyph_uploads"]) > 0, "{}", ui.render());
     assert!(num(ui, &["parity", "max"]) == 0 && num(ui, &["parity", "outside_aa_max"]) == 0, "{}", ui.render());
-    let win = window::run(&WindowArgs {
+    let win = observed(|host_run| window::run(&WindowArgs {
         width: SIZE.0,
         height: SIZE.1,
         scene: Scene::Gui(doc.clone()),
@@ -208,7 +230,7 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
         allow_overlays: false,
         deadline: Duration::from_secs(120),
         gui: vulkan_gui(steps.clone(), Some(s.0.join("gui-vulkan-swapchain-tree.json"))),
-    })
+    }, host_run))
     .expect("vulkan quiet window");
     keep(
         &s.0,
@@ -239,7 +261,7 @@ fn vulkan_offscreen_equals_the_quiet_window_and_two_runs_agree() {
 fn vulkan_quiet_exercise_restores_the_frame_without_new_glyph_uploads() {
     let s = Scratch::new("vk-exercise");
     let doc = fixture(&s.0);
-    let off = offscreen::run(&OffscreenArgs {
+    let off = observed(|host_run| offscreen::run(&OffscreenArgs {
         width: SIZE.0,
         height: SIZE.1,
         scene: Scene::Gui(doc.clone()),
@@ -247,9 +269,9 @@ fn vulkan_quiet_exercise_restores_the_frame_without_new_glyph_uploads() {
         receipt: None,
         allow_overlays: false,
         gui: vulkan_gui(Vec::new(), None),
-    })
+    }, host_run))
     .expect("vulkan offscreen");
-    let win = window::run(&WindowArgs {
+    let win = observed(|host_run| window::run(&WindowArgs {
         width: SIZE.0,
         height: SIZE.1,
         scene: Scene::Gui(doc),
@@ -261,7 +283,7 @@ fn vulkan_quiet_exercise_restores_the_frame_without_new_glyph_uploads() {
         allow_overlays: false,
         deadline: Duration::from_secs(120),
         gui: vulkan_gui(Vec::new(), None),
-    })
+    }, host_run))
     .expect("vulkan exercise");
     assert_quiet(&win.focus);
     assert_eq!(win.exercised, ["resize_grow", "minimize_no_activate", "restore_no_activate", "resize_back"]);

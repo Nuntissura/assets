@@ -16,6 +16,28 @@ use hsk_studio_native_host::script::{Step, click};
 use hsk_studio_native_host::window::{self, FocusReport, WindowArgs};
 use std::path::Path;
 use std::time::Duration;
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_native_host::cli::Caller;
+use hsk_studio_native_host::diag::HostRun;
+use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
+
+/// One host entry as the asset-local caller (F-R60-22).
+fn observed<T>(run: impl FnOnce(&mut HostRun<'_>) -> T) -> T {
+    let (cancel, mut frames) = (CancellationToken::default(), Frames::default());
+    let caller = Caller::asset_local();
+    run(&mut HostRun::new(caller.actor, caller.resource, 1, &cancel, &mut frames).expect("host run"))
+}
+
+/// The classes of the frames a host run sent.
+#[derive(Default)]
+struct Frames(Vec<DeliveryClass>);
+
+impl SinkPort for Frames {
+    fn try_send(&mut self, class: DeliveryClass, _: &[u8]) -> Result<(), DeliveryError> {
+        self.0.push(class);
+        Ok(())
+    }
+}
 
 const SIZE: (u32, u32) = (800, 480);
 
@@ -58,7 +80,7 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
     let doc = fixture(&s.0);
     let steps = session(&doc);
     let gui = |tree: &str| GuiArgs { steps: steps.clone(), tree: Some(s.0.join(tree)), scale_milli: Some(1000), ..GuiArgs::default() };
-    let off = offscreen::run(&OffscreenArgs {
+    let off = observed(|host_run| offscreen::run(&OffscreenArgs {
         width: SIZE.0,
         height: SIZE.1,
         scene: Scene::Gui(doc.clone()),
@@ -66,7 +88,7 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
         receipt: Some(s.0.join("gui-offscreen.json")),
         allow_overlays: false,
         gui: gui("gui-offscreen-tree.json"),
-    })
+    }, host_run))
     .expect("gui offscreen");
     assert!(off.exact, "readback equals the painted frame");
     assert_eq!((off.width, off.height), SIZE);
@@ -74,7 +96,7 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
     let g = off.receipt.get("gui").expect("gui member");
     assert_eq!(g.get("last_command").map(|v| v.render()), Some(r#"{"command":"layer.set_visible","code":"ok"}"#.into()));
 
-    let win = window::run(&WindowArgs {
+    let win = observed(|host_run| window::run(&WindowArgs {
         width: SIZE.0,
         height: SIZE.1,
         scene: Scene::Gui(doc.clone()),
@@ -86,7 +108,7 @@ fn gui_offscreen_png_equals_quiet_window_capture_after_a_pointer_session() {
         allow_overlays: false,
         deadline: Duration::from_secs(120),
         gui: gui("gui-swapchain-tree.json"),
-    })
+    }, host_run))
     .expect("gui quiet window");
     keep(&s.0, &["gui-offscreen.png", "gui-offscreen.json", "gui-offscreen-tree.json", "gui-swapchain.png", "gui-swapchain.json", "gui-swapchain-tree.json", "layered.handshake"]);
     assert_quiet(&win.focus);
@@ -111,7 +133,7 @@ fn gui_quiet_exercise_resizes_the_pane_and_restores_the_frame() {
     let s = Scratch::new("exercise");
     let doc = fixture(&s.0);
     let gui = GuiArgs { steps: Vec::new(), tree: None, scale_milli: Some(1000), ..GuiArgs::default() };
-    let off = offscreen::run(&OffscreenArgs {
+    let off = observed(|host_run| offscreen::run(&OffscreenArgs {
         width: SIZE.0,
         height: SIZE.1,
         scene: Scene::Gui(doc.clone()),
@@ -119,9 +141,9 @@ fn gui_quiet_exercise_resizes_the_pane_and_restores_the_frame() {
         receipt: None,
         allow_overlays: false,
         gui: gui.clone(),
-    })
+    }, host_run))
     .expect("gui offscreen");
-    let win = window::run(&WindowArgs {
+    let win = observed(|host_run| window::run(&WindowArgs {
         width: SIZE.0,
         height: SIZE.1,
         scene: Scene::Gui(doc),
@@ -133,7 +155,7 @@ fn gui_quiet_exercise_resizes_the_pane_and_restores_the_frame() {
         allow_overlays: false,
         deadline: Duration::from_secs(120),
         gui,
-    })
+    }, host_run))
     .expect("gui exercise");
     assert_quiet(&win.focus);
     assert_eq!(win.exercised, ["resize_grow", "minimize_no_activate", "restore_no_activate", "resize_back"]);
@@ -155,7 +177,7 @@ fn frame_capture(w: u32, h: u32) {
     let doc = fixture(&s.0);
     let tag = format!("frame-{w}x{h}");
     let gui = |tree: &str| GuiArgs { steps: Vec::new(), tree: Some(s.0.join(tree)), scale_milli: Some(1000), ..GuiArgs::default() };
-    let off = offscreen::run(&OffscreenArgs {
+    let off = observed(|host_run| offscreen::run(&OffscreenArgs {
         width: w,
         height: h,
         scene: Scene::Gui(doc.clone()),
@@ -163,12 +185,12 @@ fn frame_capture(w: u32, h: u32) {
         receipt: Some(s.0.join(format!("{tag}-offscreen.json"))),
         allow_overlays: false,
         gui: gui(&format!("{tag}-offscreen-tree.json")),
-    })
+    }, host_run))
     .expect("frame offscreen");
     assert!(off.exact, "{tag}: readback equals the painted frame");
     let paint = off.receipt.get("gui").and_then(|g| g.get("frame")).and_then(|f| f.get("paint")).map(|p| p.render()).unwrap_or_default();
     assert!(paint.contains(r#""glyph_refusals":0"#) && paint.contains(r#""missing_resources":0"#), "{tag}: {paint}");
-    let win = window::run(&WindowArgs {
+    let win = observed(|host_run| window::run(&WindowArgs {
         width: w,
         height: h,
         scene: Scene::Gui(doc.clone()),
@@ -180,7 +202,7 @@ fn frame_capture(w: u32, h: u32) {
         allow_overlays: false,
         deadline: Duration::from_secs(120),
         gui: gui(&format!("{tag}-swapchain-tree.json")),
-    })
+    }, host_run))
     .expect("frame quiet window");
     let names: Vec<String> = ["offscreen.png", "offscreen.json", "offscreen-tree.json", "swapchain.png", "swapchain.json", "swapchain-tree.json"].iter().map(|k| format!("{tag}-{k}")).collect();
     let mut names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -231,7 +253,7 @@ fn frame_capture_1024x640_edge_state_after_a_script() {
     let (mx, my) = g.centre("shell.module-switch").unwrap();
     let mut steps = vec![Step::Invoke("studio.toolgroup.paint".into()), Step::Invoke(format!("{red}.visibility")), Step::Invoke("studio.tab.masks".into())];
     steps.extend(click(mx, my));
-    let off = offscreen::run(&OffscreenArgs {
+    let off = observed(|host_run| offscreen::run(&OffscreenArgs {
         width: 1024,
         height: 640,
         scene: Scene::Gui(doc.clone()),
@@ -239,7 +261,7 @@ fn frame_capture_1024x640_edge_state_after_a_script() {
         receipt: Some(s.0.join("frame-1024x640-edge-offscreen.json")),
         allow_overlays: false,
         gui: GuiArgs { steps, tree: Some(s.0.join("frame-1024x640-edge-offscreen-tree.json")), scale_milli: Some(1000), ..GuiArgs::default() },
-    })
+    }, host_run))
     .expect("edge offscreen");
     keep(&s.0, &["frame-1024x640-edge-offscreen.png", "frame-1024x640-edge-offscreen.json", "frame-1024x640-edge-offscreen-tree.json"]);
     let gr = off.receipt.get("gui").unwrap().render();

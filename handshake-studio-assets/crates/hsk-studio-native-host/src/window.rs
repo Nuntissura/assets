@@ -10,6 +10,7 @@
 //! the UI pass into the pane (a re-created pane is drawn by the next frame; the pass is dropped before the owner).
 //! The Operator's own window waits for events (ControlFlow::Wait) and presents only when something changed.
 use crate::capture::{Json, device_json, layers_json, sha256_hex, ui_pass_json, ui_trace_json, validation_json, write_png, write_receipt};
+use crate::diag::HostRun;
 use crate::error::HostError;
 use crate::event::{EventLog, HostEvent, Mods, from_winit};
 use crate::offscreen::document_json;
@@ -276,8 +277,13 @@ struct App {
 }
 
 /// Runs a window until `frames` frames were presented (and the exercise finished), the window closes, or the
-/// deadline passes. Builds its own event loop: one window run per process.
-pub fn run(args: &WindowArgs) -> Result<WindowResult, HostError> {
+/// deadline passes. Builds its own event loop: one window run per process. Runs as the caller `host` names.
+pub fn run(args: &WindowArgs, host: &mut HostRun<'_>) -> Result<WindowResult, HostError> {
+    let _ = host;
+    run_window(args)
+}
+
+fn run_window(args: &WindowArgs) -> Result<WindowResult, HostError> {
     if args.quiet && args.frames == 0 {
         return Err(HostError::Usage("quiet_needs_frames"));
     }
