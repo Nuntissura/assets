@@ -372,6 +372,15 @@ fn outline(fields: &StudioBoardNodeFields, rect: &BoardRect) -> Result<OwnedPath
     .map_err(geo_refusal)
 }
 
+/// Where a node's text starts: a shape centres one line vertically (its outline is widest near the middle:
+/// a diamond's or a triangle's top holds no line), a sticky and a section start at the top (Studio reading).
+fn text_baseline(fields: &StudioBoardNodeFields, rect: &BoardRect) -> (folio::StudioFirstBaseline, f64) {
+    match fields {
+        StudioBoardNodeFields::ShapeWithText { .. } => (folio::StudioFirstBaseline::Fixed, ((rect.h - 2.0 * TEXT_INSET - TEXT_PT * 1.3) / 2.0).max(0.0) + TEXT_PT * 0.8),
+        _ => (folio::StudioFirstBaseline::Ascent, 0.0),
+    }
+}
+
 /// The interior lines a node of `fields` draws over its outline (a shape's details), if any.
 fn details(fields: &StudioBoardNodeFields, rect: &BoardRect) -> Result<Option<AnchorPath>, String> {
     match fields {
@@ -406,7 +415,7 @@ impl Viewer {
             BoardCommand::NodeRead { node } => {
                 let c = self.board_ctx()?;
                 let rec = c.node(&node)?;
-                Ok(self.node_json(&c, &rec))
+                Ok(self.node_json(&c, &rec, &self.text_overset()))
             }
             BoardCommand::CreateSticky { board, at, text, author_visible, author_name, is_wide_width, fill } => {
                 let author_name = author_name.unwrap_or_else(|| self.run.actor().account_id().to_owned());
@@ -574,20 +583,27 @@ impl Viewer {
                 json!({"board_id": a.artboard_id, "name": a.name, "bounds": [a.bounds.x.value, a.bounds.y.value, a.bounds.width.value, a.bounds.height.value], "active": active.as_deref() == Some(a.artboard_id.as_str()), "nodes": count})
             })
             .collect();
+        let overset = self.text_overset();
         let nodes: Vec<Value> = c
             .entry
             .records
             .board_nodes
             .iter()
             .filter(|n| board.is_none_or(|b| n.board_id == b) && c.doc.layers.iter().any(|l| l.layer_id == n.layer_id))
-            .map(|n| self.node_json(&c, n))
+            .map(|n| self.node_json(&c, n, &overset))
             .collect();
         let issues: Vec<Value> = nodes.iter().flat_map(|n| n["issues"].as_array().cloned().unwrap_or_default()).collect();
         Ok(json!({"whiteboard_mode": mode, "boards": boards, "nodes": nodes, "issues": issues}))
     }
 
-    /// The reading of one node (module docs).
-    fn node_json(&self, c: &Ctx, n: &StudioBoardNode) -> Value {
+    /// Overset glyphs of every live story as the window draws it (story id -> count); a story the
+    /// renderer could not lay out reads `None` (its code is in the vector text reports).
+    fn text_overset(&self) -> BTreeMap<String, Option<usize>> {
+        self.vector_text_reports().unwrap_or_default().into_iter().map(|s| (s.report.text_id.clone(), s.report.outcome.as_ref().ok().map(|d| d.overset_count))).collect()
+    }
+
+    /// The reading of one node (module docs); `text_overset` is the glyphs its text does not fit.
+    fn node_json(&self, c: &Ctx, n: &StudioBoardNode, overset: &BTreeMap<String, Option<usize>>) -> Value {
         let layer = c.doc.layers.iter().find(|l| l.layer_id == n.layer_id);
         let rect = c.rect(&n.layer_id);
         let style = c.style(&n.layer_id);
@@ -597,7 +613,7 @@ impl Viewer {
         let mut v = json!({
             "node_id": n.layer_id, "kind": n.node.kind(), "board_id": n.board_id, "name": layer.map(|l| l.name.clone()),
             "visible": layer.map(|l| l.visible), "bounds": rect.as_ref().map(rect_json), "fill": rgb_json(style.and_then(|s| s.fill)),
-            "stroke": rgb_json(style.and_then(|s| s.stroke)), "text": text, "text_id": text_id,
+            "stroke": rgb_json(style.and_then(|s| s.stroke)), "text": text, "text_overset": text_id.as_ref().and_then(|id| overset.get(id).copied().flatten()), "text_id": text_id,
             "fields": serde_json::to_value(&n.node).unwrap_or(Value::Null), "issues": [],
         });
         match &n.node {

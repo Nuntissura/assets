@@ -7,7 +7,7 @@ use super::super::render::Prefer;
 use super::super::text::{self, TextEntry};
 use super::super::vector::{self, PathRecord, VectorEntry, VectorStyle};
 use super::{
-    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, fitted_size, geo_refusal, mint_path,
+    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, text_baseline, fitted_size, geo_refusal, mint_path,
     outline, project, rect_json, refused, route_points, text_ok, translated, uuid_parts,
 };
 use crate::PlacementWrite;
@@ -163,13 +163,14 @@ impl Viewer {
         }
         let mut text_entry = self.text_entry()?;
         let story = self.board_story(&doc, &mut text_entry, t, size_pt, align)?;
+        let (first_baseline, first_baseline_min) = text_baseline(&fields, &rect);
         entry.records.area_texts.push(StudioAreaText {
             text_id: story.clone(),
             container_layer_id: id.clone(),
             container_id: path_id.clone(),
             inset,
-            first_baseline: folio::StudioFirstBaseline::Ascent,
-            first_baseline_min: 0.0,
+            first_baseline,
+            first_baseline_min,
             auto_size: folio::StudioAutoSize::Off,
         });
         Self::ensure_board(&mut entry, &board);
@@ -269,8 +270,11 @@ impl Viewer {
         let lines = details(fields, rect)?;
         let style = style.or_else(|| c.style(node)).ok_or_else(|| refused("board_node_unknown", node))?;
         let id = Self::board_path(&c.doc, &mut c.entry, path, style)?;
+        let (first_baseline, first_baseline_min) = text_baseline(fields, rect);
         for a in c.entry.records.area_texts.iter_mut().filter(|a| a.container_layer_id == node) {
             a.container_id.clone_from(&id);
+            a.first_baseline = first_baseline;
+            a.first_baseline_min = first_baseline_min;
         }
         let mut ids = vec![id];
         if let Some(lines) = lines {
@@ -366,7 +370,7 @@ impl Viewer {
         let revision = self.board_commit(op, &doc, &entry, text_entry.as_ref(), &[], &changes, node)?;
         let after = self.board_ctx()?;
         let rec = after.node(node)?;
-        let mut v = self.node_json(&after, &rec);
+        let mut v = self.node_json(&after, &rec, &self.text_overset());
         v["revision"] = json!(revision);
         Ok(v)
     }
