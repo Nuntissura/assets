@@ -3774,8 +3774,12 @@ impl WebHost {
         } else {
             let s = snippet_from(p.0, at.and_then(|i| library.get(i)), true)?;
             let shown = s.json();
-            match at.and_then(|i| library.get_mut(i)) {
-                Some(slot) => *slot = s,
+            match at {
+                Some(i) => {
+                    if let Some(slot) = library.get_mut(i) {
+                        *slot = s;
+                    }
+                }
                 None if library.len() >= MAX_SNIPPETS => return no("snippets_over_limit", &MAX_SNIPPETS.to_string()),
                 None => library.push(s),
             }
