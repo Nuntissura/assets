@@ -292,7 +292,15 @@ fn every_native_shape_and_every_cap_renders_in_a_board_export() {
     let png = scratch.0.join("shapes.png");
     let report = ok(&mut v, "board.export_png", json!({"path": png.to_string_lossy()}));
     assert!(report["bytes"].as_u64().unwrap() > 0, "{report}");
-    assert_eq!(ok(&mut v, "board.read", json!({}))["issues"], json!([]));
+    let read = ok(&mut v, "board.read", json!({}));
+    assert_eq!(read["issues"], json!([]));
+    // A shape's text is centred on its widest band: it fits (a diamond's top held no line).
+    for n in read["nodes"].as_array().unwrap().iter().filter(|n| n["kind"] == "shape_with_text") {
+        println!("TEXT_OVERSET {} {}", n["fields"]["shape_type"]["token"], n["text_overset"]);
+        if ["rectangle", "ellipse", "diamond", "cylinder", "terminator", "hexagon"].contains(&n["text"].as_str().unwrap_or_default()) {
+            assert_eq!(n["text_overset"], 0, "{}", n["text"]);
+        }
+    }
 }
 
 #[test]
@@ -436,7 +444,7 @@ fn the_workshop_board_steps_run_through_the_jsonl_loop() {
         // A package made by `new --profile board` is a board document once its first node is made; a
         // session's document.new lists its board at once.
         // A small board keeps every reply's state projection cheap.
-        s.ok("document.new", json!({"profile": "board", "width": 1400, "height": 900}));
+        s.ok("document.new", json!({"profile": "board", "width": 640, "height": 480}));
         let steps = [
             s.ok("board.add", json!({"name": "Plan"})),
             s.ok("board.section.create", json!({"x": 0, "y": 0, "width": 1200, "height": 800, "name": "Goals"})),
