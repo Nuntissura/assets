@@ -582,3 +582,57 @@ fn the_site_record_carries_every_optional_field() {
         assert_eq!(run.web_state()["site"], saved, "the site record reads back field for field");
     });
 }
+
+/// Sets a file's modification time `secs_ago` seconds before now.
+fn age(path: &Path, secs_ago: u64) {
+    let at = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+    std::fs::File::options().write(true).open(path).unwrap().set_modified(at).unwrap();
+}
+
+/// [STU-WEB-119]: put, get and two-way synchronise compare by size and modification time, list the actions for review
+/// and apply each as its own transaction with a per-file receipt; the files a chosen page loads are an explicit
+/// option, listed by default; a second synchronise finds everything the same.
+#[test]
+fn synchronize_reviews_then_applies_per_file() {
+    let dir = Scratch::new("sync");
+    dir.write("site/index.html", b"<!DOCTYPE html><html><head><title>i</title></head><body><img alt=\"a\" src=\"img/a.png\"><a href=\"other.html\">o</a></body></html>");
+    dir.write("site/other.html", PAGE.as_bytes());
+    dir.write("site/img/a.png", b"png");
+    age(&dir.write("remote/index.html", b"old"), 3600);
+    dir.write("remote/notes.txt", b"remote only");
+    age(&dir.at("site/other.html"), 7200);
+    age(&dir.write("remote/other.html", b"newer remote copy"), 60);
+    with_run(|run| {
+        define(run, &dir);
+        cmd(run, "web.remote_target", json!({"target_id": "local", "root_path": s(&dir.at("remote"))}));
+        assert_eq!(refused(run, "web.synchronize", json!({"direction": "sideways"})), "parameter_invalid");
+        assert_eq!(refused(run, "web.synchronize", json!({"direction": "put", "dependents": "maybe"})), "parameter_invalid");
+        let review = cmd(run, "web.synchronize", json!({"direction": "both"}));
+        assert_eq!(review["schema"], "hsk.studio.web.sync_plan@1");
+        let actions: Vec<(&str, &str)> = review["actions"].as_array().unwrap().iter().map(|a| (a["path"].as_str().unwrap(), a["action"].as_str().unwrap())).collect();
+        assert_eq!(actions, [("img/a.png", "put"), ("index.html", "put"), ("notes.txt", "get"), ("other.html", "get")], "{review}");
+        assert!(!dir.at("remote/img/a.png").exists() && !dir.at("site/notes.txt").exists(), "a review writes nothing");
+        let put = cmd(run, "web.synchronize", json!({"direction": "put"}));
+        let actions: Vec<(&str, &str)> = put["actions"].as_array().unwrap().iter().map(|a| (a["path"].as_str().unwrap(), a["action"].as_str().unwrap())).collect();
+        assert_eq!(actions, [("img/a.png", "put"), ("index.html", "put"), ("notes.txt", "none"), ("other.html", "remote_newer")], "{put}");
+
+        // One page chosen: what it loads is listed (prompt), added (include) or left out (exclude); page links never.
+        let chosen = cmd(run, "web.synchronize", json!({"direction": "put", "files": ["index.html"]}));
+        assert_eq!((chosen["dependents"].clone(), chosen["actions"].as_array().unwrap().len()), (json!(["img/a.png"]), 1), "{chosen}");
+        let with_deps = cmd(run, "web.synchronize", json!({"direction": "put", "files": ["index.html"], "dependents": "include"}));
+        assert_eq!(with_deps["actions"].as_array().unwrap().len(), 2, "{with_deps}");
+
+        let applied = cmd(run, "web.synchronize", json!({"direction": "both", "apply": true}));
+        let receipt = &applied["receipt"];
+        assert_eq!((receipt["schema"].as_str(), receipt["transferred"].as_u64(), receipt["complete"].as_bool()), (Some("hsk.studio.web.sync_receipt@1"), Some(4), Some(true)), "{receipt}");
+        assert!(receipt["files"].as_array().unwrap().iter().all(|f| f["outcome"] == "transferred" && f["time_kept"] == true), "{receipt}");
+        let again = cmd(run, "web.synchronize", json!({"direction": "both"}));
+        assert_eq!(again["counts"], json!({"same": 4}), "{again}");
+        cmd(run, "web.remote_target", json!({"target_id": "inner", "root_path": s(&dir.at("site/inner"))}));
+        assert_eq!(refused(run, "web.synchronize", json!({"target_id": "inner", "direction": "put"})), "target_inside_site");
+    });
+    assert_eq!(dir.read("remote/index.html"), dir.read("site/index.html"));
+    assert_eq!(dir.read("site/notes.txt"), "remote only");
+    assert_eq!(dir.read("site/other.html"), "newer remote copy");
+    assert_eq!(std::fs::read(dir.at("remote/img/a.png")).unwrap(), b"png");
+}
