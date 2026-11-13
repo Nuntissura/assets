@@ -454,21 +454,17 @@ fn unix_us() -> u64 {
 /// error mode (a child at error mode 0x3 was still held 3.2 s to 6.2 s).
 #[cfg(windows)]
 mod win {
+    use std::ffi::c_void;
     /// SEM_NOGPFAULTERRORBOX (errhandlingapi.h): an unhandled exception is not handed to Windows Error Reporting.
     pub const NO_GP_FAULT_ERROR_BOX: u32 = 0x0002;
-    /// `_set_abort_behavior` flags (stdlib.h): the abort message, and handing the abort to the crash reporter.
-    pub const WRITE_ABORT_MSG: u32 = 0x1;
-    pub const CALL_REPORTFAULT: u32 = 0x2;
-    // SAFETY: none of these takes a pointer: they read or set this process's error mode or abort behaviour, or abort.
+    // SAFETY: GetErrorMode, SetErrorMode and GetCurrentProcess take no pointer: they read or set this process's error
+    // mode, or return its pseudo-handle. TerminateProcess is left unsafe: it takes a handle.
     #[link(name = "kernel32")]
     unsafe extern "system" {
         pub safe fn GetErrorMode() -> u32;
         pub safe fn SetErrorMode(mode: u32) -> u32;
-    }
-    unsafe extern "C" {
-        /// The C runtime's `abort`: SIGABRT, then `_exit(3)` when the abort behaviour does not hand it on.
-        pub safe fn abort() -> !;
-        pub safe fn _set_abort_behavior(flags: u32, mask: u32) -> u32;
+        pub safe fn GetCurrentProcess() -> *mut c_void;
+        pub fn TerminateProcess(process: *mut c_void, exit_code: u32) -> i32;
     }
 }
 /// This process's error mode (errhandlingapi.h), on Windows: whether its death is handed to Windows Error Reporting.
@@ -487,21 +483,22 @@ fn keep_the_crash_reporter_out() {
     #[cfg(windows)]
     {
         win::SetErrorMode(win::GetErrorMode() | win::NO_GP_FAULT_ERROR_BOX);
-        win::_set_abort_behavior(0, win::WRITE_ABORT_MSG | win::CALL_REPORTFAULT);
     }
 }
-/// An abort: no hook, no destructor, no `run_end`. On Windows the C runtime's abort (exit code 3), because
-/// `std::process::abort` is a fast fail there, which Windows Error Reporting holds (see `win`); elsewhere
-/// `std::process::abort`, which is the C abort.
+/// The exit code of an abort on Windows: the C runtime abort's.
+const ABORT_EXIT_CODE: u32 = 3;
+/// An abort: an abrupt end with no hook, no destructor and no `run_end`. On Windows the process terminates itself
+/// (`TerminateProcess`, exit code 3): no user-mode code runs after it, no ExitProcess, atexit or DLL detach, as after a
+/// fast fail, and Windows Error Reporting has nothing to hold, because `std::process::abort` is a fast fail there, which
+/// it holds (see `win`; review F1 of 3ea45cdd). Elsewhere `std::process::abort`, which is the C abort (SIGABRT).
 fn abort() -> ! {
     #[cfg(windows)]
     {
-        win::abort()
+        // SAFETY: the pseudo-handle of this very process, which stays valid; the call ends the process.
+        unsafe { win::TerminateProcess(win::GetCurrentProcess(), ABORT_EXIT_CODE) };
     }
-    #[cfg(not(windows))]
-    {
-        std::process::abort()
-    }
+    // Not reached on Windows: were the termination refused, the fast fail would show as exit 0xC0000409, not 3.
+    std::process::abort()
 }
 
 /// One step of a child, on stderr.
@@ -586,6 +583,10 @@ struct Hang {
     after: &'static str,
     /// How long it had shown nothing new when it was killed.
     quiet: Duration,
+    /// Its exit status after the kill, from a wait: none if it was not reaped.
+    status: Option<std::process::ExitStatus>,
+    /// From spawn to that status.
+    ran_for: Duration,
     timeline: String,
 }
 
@@ -648,11 +649,14 @@ fn run_child_guarded(mode: &str, dir: &Path, deadline: Duration, step: Duration)
         if quiet > deadline {
             let killed_us = unix_us();
             let _ = child.kill();
-            let _ = child.wait();
+            let status = child.wait().ok();
+            let ran_for = spawned.elapsed();
             let _ = reader.join();
             stderr.extend(received.try_iter());
             let after = steps.checked_sub(1).map_or("spawn", |last| CHILD_STEPS[last]);
-            return Err(Hang { after, quiet, timeline: timeline(mode, pid, spawned_us, &stderr, "killed", killed_us) });
+            let timeline = timeline(mode, pid, spawned_us, &stderr, "killed", killed_us);
+            println!("{timeline} code={:?}", status.map(|s| s.code()));
+            return Err(Hang { after, quiet, status, ran_for, timeline });
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -744,8 +748,8 @@ fn an_abort_leaves_the_lines_written_and_no_end_of_run() {
     let child = run_child("abort", &scratch.0);
     assert_died_without_a_record(&child, &scratch.0);
     if cfg!(windows) {
-        // The C runtime's abort with no crash reporter: exit code 3, not some other way to die (see `abort`).
-        assert_eq!(child.code, Some(3), "{}", child.stderr);
+        // The abrupt end of `abort`: exit code 3, not some other way to die.
+        assert_eq!(child.code.map(|c| c as u32), Some(ABORT_EXIT_CODE), "{}", child.stderr);
     }
 }
 
@@ -773,7 +777,16 @@ fn a_child_that_hangs_is_killed_and_named_by_the_guard() {
         Ok(child) => panic!("a hung child ended by itself: {:?} {}", child.code, child.stderr),
     };
     assert_eq!(hang.after, "ending", "{}", hang.timeline);
-    assert!(hang.quiet > deadline, "{:?} {}", hang.quiet, hang.timeline);
+    // Killed and reaped by the guard (review F2 of 3ea45cdd): a status from a wait, so no orphan is left, and not
+    // success, which the hang child's own end after its 300 s sleep would be; on Windows the kill's exit code 1.
+    let status = hang.status.unwrap_or_else(|| panic!("the guard left the child unreaped: {}", hang.timeline));
+    assert!(!status.success(), "{status:?} {}", hang.timeline);
+    if cfg!(windows) {
+        assert_eq!(status.code(), Some(1), "{}", hang.timeline);
+    }
+    // One deadline after its last step, within a small margin, never its sleep.
+    let margin = Duration::from_secs(5);
+    assert!(hang.ran_for > deadline && hang.ran_for < deadline + margin, "{:?} {}", hang.ran_for, hang.timeline);
     let all = lines(&scratch.0);
     assert_ran_in_order(&all);
     assert_eq!(all.last().unwrap()["kind"], "op", "{all:?}");
