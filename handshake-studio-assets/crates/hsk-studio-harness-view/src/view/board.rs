@@ -460,7 +460,7 @@ impl Viewer {
     }
 
     fn board_inner(&mut self, command: BoardCommand) -> Result<Value, String> {
-        let op = command.id().replace('.', "_");
+        let op: &'static str = command.id();
         match command {
             BoardCommand::Add { name, size, at } => self.board_add(name, size, at),
             BoardCommand::Read { board } => self.board_read(board.as_deref()),
@@ -479,7 +479,7 @@ impl Viewer {
                 }
                 let fields = StudioBoardNodeFields::Sticky { author_visible, author_name, is_wide_width };
                 let style = VectorStyle { fill: Some(fill.unwrap_or(STICKY_FILL)), stroke: None, stroke_width: 0.0 };
-                self.create_text_node(&op, board.as_deref(), at, fields, &text, [None, None], style)
+                self.create_text_node(op, board.as_deref(), at, fields, &text, [None, None], style)
             }
             BoardCommand::CreateShape { board, at, shape_type, text, size, corner_radius, fill } => {
                 if !size.iter().flatten().all(|v| side_ok(*v)) || corner_radius.is_some_and(|r| !(r.is_finite() && (0.0..=folio::MAX_BOARD_CORNER_RADIUS).contains(&r))) {
@@ -487,7 +487,7 @@ impl Viewer {
                 }
                 let fields = StudioBoardNodeFields::ShapeWithText { shape_type, corner_radius };
                 let style = VectorStyle { fill: Some(fill.unwrap_or(SHAPE_FILL)), stroke: Some(SHAPE_STROKE), stroke_width: 2.0 };
-                self.create_text_node(&op, board.as_deref(), at, fields, &text, size, style)
+                self.create_text_node(op, board.as_deref(), at, fields, &text, size, style)
             }
             BoardCommand::CreateSection { board, rect, name, corner_radius, fill } => {
                 if !(side_ok(rect[2]) && side_ok(rect[3])) || corner_radius.is_some_and(|r| !(r.is_finite() && (0.0..=folio::MAX_BOARD_CORNER_RADIUS).contains(&r))) {
@@ -495,14 +495,14 @@ impl Viewer {
                 }
                 let fields = StudioBoardNodeFields::Section { section_contents_hidden: false, corner_radius, dev_status: None };
                 let style = VectorStyle { fill: Some(fill.unwrap_or(SECTION_FILL)), stroke: Some(SECTION_STROKE), stroke_width: 1.0 };
-                self.create_text_node(&op, board.as_deref(), [rect[0], rect[1]], fields, &name, [Some(rect[2]), Some(rect[3])], style)
+                self.create_text_node(op, board.as_deref(), [rect[0], rect[1]], fields, &name, [Some(rect[2]), Some(rect[3])], style)
             }
-            BoardCommand::CreateConnector { board, start, end, line_type, caps, stroke, width } => self.create_connector(&op, board.as_deref(), start, end, line_type, caps, stroke, width),
+            BoardCommand::CreateConnector { board, start, end, line_type, caps, stroke, width } => self.create_connector(op, board.as_deref(), start, end, line_type, caps, stroke, width),
             BoardCommand::SetSticky { node, author_visible, author_name, is_wide_width } => {
                 if author_name.as_ref().is_some_and(|n| n.len() > folio::MAX_AUTHOR_NAME_BYTES || n.chars().any(char::is_control)) {
                     return Err(refused("author_name_invalid", format!("at most {} bytes, no control character", folio::MAX_AUTHOR_NAME_BYTES)));
                 }
-                self.edit_node(&op, &node, |fields| match fields {
+                self.edit_node(op, &node, |fields| match fields {
                     StudioBoardNodeFields::Sticky { author_visible: v, author_name: n, is_wide_width: w } => {
                         if let Some(x) = author_visible {
                             *v = x;
@@ -522,7 +522,7 @@ impl Viewer {
                 if corner_radius.is_some_and(|r| !(r.is_finite() && (0.0..=folio::MAX_BOARD_CORNER_RADIUS).contains(&r))) {
                     return Err(refused("board_size_invalid", "corner radius in [0, 100000]"));
                 }
-                self.edit_node(&op, &node, |fields| match fields {
+                self.edit_node(op, &node, |fields| match fields {
                     StudioBoardNodeFields::ShapeWithText { shape_type: s, corner_radius: r } => {
                         if let Some(x) = shape_type {
                             *s = x;
@@ -542,7 +542,7 @@ impl Viewer {
                 if !matches!(self.board_ctx()?.node(&node)?.node, StudioBoardNodeFields::Section { .. }) {
                     return Err(refused("board_node_kind_mismatch", "not a section"));
                 }
-                self.edit_node_text(&op, &node, name.as_deref(), |fields| {
+                self.edit_node_text(op, &node, name.as_deref(), |fields| {
                     if let StudioBoardNodeFields::Section { section_contents_hidden, dev_status: d, .. } = fields {
                         if let Some(x) = contents_hidden {
                             *section_contents_hidden = x;
@@ -554,7 +554,7 @@ impl Viewer {
                     Ok(())
                 })
             }
-            BoardCommand::SetConnector { node, start, end, line_type, caps } => self.set_connector(&op, &node, start, end, line_type, caps),
+            BoardCommand::SetConnector { node, start, end, line_type, caps } => self.set_connector(op, &node, start, end, line_type, caps),
             BoardCommand::SetText { node, text } => {
                 let section = match self.board_ctx()?.node(&node)?.node {
                     StudioBoardNodeFields::Connector { .. } => return Err(refused("board_node_kind_mismatch", "a connector has no text in this build")),
@@ -562,16 +562,16 @@ impl Viewer {
                     _ => false,
                 };
                 text_ok(&text, !section)?;
-                self.edit_node_text(&op, &node, Some(&text), |_| Ok(()))
+                self.edit_node_text(op, &node, Some(&text), |_| Ok(()))
             }
             BoardCommand::SetFill { node, fill } => {
                 if matches!(self.board_ctx()?.node(&node)?.node, StudioBoardNodeFields::Connector { .. }) {
                     return Err(refused("board_node_kind_mismatch", "a connector's colour is its stroke"));
                 }
-                self.board_restyle(&op, &node, fill)
+                self.board_restyle(op, &node, fill)
             }
-            BoardCommand::Move { node, to } => self.move_node(&op, &node, to),
-            BoardCommand::Delete { node } => self.delete_node(&op, &node),
+            BoardCommand::Move { node, to } => self.move_node(op, &node, to),
+            BoardCommand::Delete { node } => self.delete_node(op, &node),
             BoardCommand::ExportPng { board, path, overwrite, content_bounds } => self.board_export_png(board.as_deref(), &path, overwrite, content_bounds),
         }
     }

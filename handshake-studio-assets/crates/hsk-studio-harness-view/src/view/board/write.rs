@@ -13,6 +13,7 @@ use super::{
     fitted_size, mint_path, outline, project, rect_json, rects_of, refused, route_points, story_form, text_baseline, text_ok, translated, uuid_parts,
 };
 use crate::PlacementWrite;
+use hsk_studio_accord::StudioBusinessEventId;
 use hsk_studio_composite::board::{self as geo, BoardRect};
 use hsk_studio_folio::{self as folio, Payload, StudioAreaText, StudioBoardNode, StudioBoardNodeFields, StudioBoardPoint, StudioConnectorCap, StudioConnectorEndpoint, StudioConnectorLineType, StudioDocument};
 use hsk_studio_nib::anchor_path::AnchorPath;
@@ -84,6 +85,34 @@ impl Viewer {
         Ok(story_id)
     }
 
+    /// Writes `t` over the story `story_id` of `entry` in place (review F2 of e4d033aa: the story keeps its id
+    /// and styles; the step's text entry snapshot keeps the old text, so nothing grows with text writes): one
+    /// paragraph and one character range over the new text, with the story's own style references.
+    pub(super) fn board_story_set(&self, doc: &StudioDocument, entry: &mut TextEntry, story_id: &str, t: &str) -> Result<(), String> {
+        let story = entry.stories.iter_mut().find(|s| s.story_id == story_id).ok_or_else(|| refused("board_text_invalid", format!("story {story_id}")))?;
+        let mut v = serde_json::to_value(&*story).map_err(|e| refused("board_text_invalid", e))?;
+        let stored = story_form(t);
+        let len = stored.len();
+        let first = |key: &str| v[key].as_array().and_then(|a| a.first()).cloned().unwrap_or(Value::Null);
+        let (paragraph, character) = (first("paragraphs"), first("character_ranges"));
+        v["content"] = json!({"content_kind": "inline", "text_utf8": stored});
+        v["paragraphs"] = json!([{"start": 0, "end": len, "style_ref": paragraph["style_ref"], "paragraph_direction": paragraph["paragraph_direction"]}]);
+        v["character_ranges"] = json!([{"start": 0, "end": len, "style_ref": character["style_ref"], "applied_language": character["applied_language"]}]);
+        *story = serde_json::from_value(v).map_err(|e| refused("board_text_invalid", e))?;
+        entry.validate(doc, self.cancel)
+    }
+
+    /// Removes the story `story_id` from `entry` with the styles no other story uses (a deleted node's text
+    /// leaves in the delete's own step).
+    pub(super) fn board_story_drop(entry: &mut TextEntry, story_id: &str) {
+        let Some(at) = entry.stories.iter().position(|s| s.story_id == story_id) else { return };
+        let gone = entry.stories.remove(at);
+        let refs = |s: &folio::StudioTextStory| -> Vec<String> { s.paragraphs.iter().filter_map(|p| p.style_ref.clone()).chain(s.character_ranges.iter().filter_map(|r| r.style_ref.clone())).collect() };
+        let used: BTreeSet<String> = entry.stories.iter().flat_map(&refs).collect();
+        let own: BTreeSet<String> = refs(&gone).into_iter().filter(|r| !used.contains(r)).collect();
+        entry.styles.styles.retain(|st| !own.contains(&st.style_id));
+    }
+
     /// The text size, alignment and inset of a node kind's story.
     pub(super) const fn text_setting(fields: &StudioBoardNodeFields) -> (f64, &'static str, f64) {
         match fields {
@@ -139,11 +168,13 @@ impl Viewer {
         Self::board_path(doc, entry, path, style)
     }
 
-    /// Validates the entries on the document the step produces, writes the text entry (when given),
-    /// then commits the structure writes or path changes and the vector entry as ONE step (entry-only
-    /// when neither is given).
+    /// Validates the entries on the document the step produces, then commits ONE step named by the catalog id
+    /// `op` (review F3 of e4d033aa, common rule UNDO NAMES): the structure writes or path changes, the vector
+    /// entry and the text entry (when given; review F7: a create's story, a text write and a delete's story
+    /// removal undo with their node). A structure or path step goes through `Run::catalog_step`, an entry-only
+    /// one through `Run::set_entry_step`; its record, attribution and undo name are `op`.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn board_commit(&mut self, op: &str, doc: &StudioDocument, entry: &VectorEntry, text_entry: Option<&TextEntry>, writes: &[PlacementWrite], changes: &[(String, Vec<String>)], target: &str) -> Result<u64, String> {
+    pub(super) fn board_commit(&mut self, op: &'static str, doc: &StudioDocument, entry: &VectorEntry, text_entry: Option<&TextEntry>, writes: &[PlacementWrite], changes: &[(String, Vec<String>)], target: &str) -> Result<u64, String> {
         if !vector::entry_persistable() {
             return Err(refused("vector_entry_not_persistable", "the session holds no vector entry token"));
         }
@@ -153,18 +184,27 @@ impl Viewer {
         entry.validate(&proj, self.cancel)?;
         entry.validate_records(&proj, self.cancel)?;
         let bytes = entry.to_bytes(&doc.document_id)?;
+        let mut more: Vec<(&str, Vec<u8>)> = Vec::new();
         if let Some(t) = text_entry {
             t.validate(&proj, self.cancel)?;
-            self.run.set_document_entry(text::ENTRY, Some(t.to_bytes()?)).map_err(|e| refused("board_text_entry", e))?;
+            more.push((text::ENTRY, t.to_bytes()?));
         }
-        let ok = if writes.is_empty() { self.run.set_vector_paths_and_entry(op, changes, Some((vector::ENTRY, bytes))) } else { self.run.restructure_and_entry(op, writes, vector::ENTRY, bytes) };
+        let ok = if !writes.is_empty() {
+            let mut entries = vec![(vector::ENTRY, bytes)];
+            entries.extend(more);
+            self.run.catalog_step(op, |run| run.restructure_and_entries(op, writes, entries))
+        } else if !changes.is_empty() {
+            self.run.catalog_step(op, |run| run.set_vector_paths_and_entry(op, changes, Some((vector::ENTRY, bytes))) && (more.is_empty() || run.entries_into_newest_step(op, more)))
+        } else {
+            self.run.set_entry_step(op, Some(StudioBusinessEventId::VectorPathEdited), vector::ENTRY, bytes) && (more.is_empty() || self.run.entries_into_newest_step(op, more))
+        };
         self.after_edit(ok, format!("{op} {target}"))
     }
 
     // ----- create ------------------------------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn create_text_node(&mut self, op: &str, board: Option<&str>, at: [f64; 2], fields: StudioBoardNodeFields, t: &str, asked: [Option<f64>; 2], style: VectorStyle) -> Result<Value, String> {
+    pub(super) fn create_text_node(&mut self, op: &'static str, board: Option<&str>, at: [f64; 2], fields: StudioBoardNodeFields, t: &str, asked: [Option<f64>; 2], style: VectorStyle) -> Result<Value, String> {
         text_ok(t, !matches!(fields, StudioBoardNodeFields::Section { .. }))?;
         if !at.iter().all(|v| finite_coordinate(*v)) {
             return Err(refused("board_position_invalid", format!("coordinates within +-{}", folio::BOARD_COORDINATE_LIMIT)));
@@ -254,7 +294,7 @@ impl Viewer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn create_connector(&mut self, op: &str, board: Option<&str>, start: StudioConnectorEndpoint, end: StudioConnectorEndpoint, line_type: StudioConnectorLineType, caps: [StudioConnectorCap; 2], stroke: Option<[u8; 3]>, width: Option<f64>) -> Result<Value, String> {
+    pub(super) fn create_connector(&mut self, op: &'static str, board: Option<&str>, start: StudioConnectorEndpoint, end: StudioConnectorEndpoint, line_type: StudioConnectorLineType, caps: [StudioConnectorCap; 2], stroke: Option<[u8; 3]>, width: Option<f64>) -> Result<Value, String> {
         let width = width.unwrap_or(CONNECTOR_WIDTH);
         if !(width.is_finite() && width > 0.0 && width <= vector::MAX_STROKE_WIDTH) {
             return Err(refused("board_stroke_width_invalid", format!("in (0, {}]", vector::MAX_STROKE_WIDTH)));
@@ -362,12 +402,12 @@ impl Viewer {
 
     /// Changes a node's fields with `edit`, then redraws it fitted to its text in its place (top-left
     /// kept; a section keeps its size): ONE step.
-    pub(super) fn edit_node(&mut self, op: &str, node: &str, edit: impl FnOnce(&mut StudioBoardNodeFields) -> Result<(), String>) -> Result<Value, String> {
+    pub(super) fn edit_node(&mut self, op: &'static str, node: &str, edit: impl FnOnce(&mut StudioBoardNodeFields) -> Result<(), String>) -> Result<Value, String> {
         self.edit_node_text(op, node, None, edit)
     }
 
     /// [`Self::edit_node`] with a new text (a fresh story bound in the same step).
-    pub(super) fn edit_node_text(&mut self, op: &str, node: &str, new_text: Option<&str>, edit: impl FnOnce(&mut StudioBoardNodeFields) -> Result<(), String>) -> Result<Value, String> {
+    pub(super) fn edit_node_text(&mut self, op: &'static str, node: &str, new_text: Option<&str>, edit: impl FnOnce(&mut StudioBoardNodeFields) -> Result<(), String>) -> Result<Value, String> {
         let mut c = self.board_ctx()?;
         let rec = c.node(node)?;
         let mut fields = rec.node.clone();
@@ -393,9 +433,15 @@ impl Viewer {
         let mut text_entry = None;
         if let Some(t) = new_text {
             let mut te = text_entry_now;
-            let story = self.board_story(&c.doc, &mut te, t, size_pt, align)?;
-            for a in c.entry.records.area_texts.iter_mut().filter(|a| a.container_layer_id == node) {
-                a.text_id.clone_from(&story);
+            // Review F2: the node's own story is rewritten in place; a node without one gets a fresh story.
+            match c.text_id(node).filter(|id| te.stories.iter().any(|s| &s.story_id == id)) {
+                Some(id) => self.board_story_set(&c.doc, &mut te, &id, t)?,
+                None => {
+                    let story = self.board_story(&c.doc, &mut te, t, size_pt, align)?;
+                    for a in c.entry.records.area_texts.iter_mut().filter(|a| a.container_layer_id == node) {
+                        a.text_id.clone_from(&story);
+                    }
+                }
             }
             text_entry = Some(te);
         }
@@ -417,7 +463,7 @@ impl Viewer {
         Ok(v)
     }
 
-    pub(super) fn board_restyle(&mut self, op: &str, node: &str, fill: [u8; 3]) -> Result<Value, String> {
+    pub(super) fn board_restyle(&mut self, op: &'static str, node: &str, fill: [u8; 3]) -> Result<Value, String> {
         let mut c = self.board_ctx()?;
         let rec = c.node(node)?;
         let rect = c.rect(node).ok_or_else(|| refused("board_node_unknown", node))?;
@@ -430,7 +476,7 @@ impl Viewer {
         Ok(json!({"node_id": node, "fill": fill, "revision": revision}))
     }
 
-    pub(super) fn set_connector(&mut self, op: &str, node: &str, start: Option<StudioConnectorEndpoint>, end: Option<StudioConnectorEndpoint>, line_type: Option<StudioConnectorLineType>, caps: [Option<StudioConnectorCap>; 2]) -> Result<Value, String> {
+    pub(super) fn set_connector(&mut self, op: &'static str, node: &str, start: Option<StudioConnectorEndpoint>, end: Option<StudioConnectorEndpoint>, line_type: Option<StudioConnectorLineType>, caps: [Option<StudioConnectorCap>; 2]) -> Result<Value, String> {
         if line_type == Some(StudioConnectorLineType::Curved) {
             return Err(refused(geo::BoardGeometryError::LineTypeNotAvailable.code(), "CURVED is not drawn in this build"));
         }
@@ -473,7 +519,7 @@ impl Viewer {
 
     /// `board.node.move`: the node (a section with its members) translated over its own path records, and
     /// its connectors rerouted, as ONE entry step (review F2, F5).
-    pub(super) fn move_node(&mut self, op: &str, node: &str, to: [f64; 2]) -> Result<Value, String> {
+    pub(super) fn move_node(&mut self, op: &'static str, node: &str, to: [f64; 2]) -> Result<Value, String> {
         if !to.iter().all(|v| finite_coordinate(*v)) {
             return Err(refused("board_position_invalid", format!("coordinates within +-{}", folio::BOARD_COORDINATE_LIMIT)));
         }
@@ -504,14 +550,24 @@ impl Viewer {
         Ok(json!({"node_id": node, "moved": moving, "rerouted": rerouted, "bounds": rect_json(&BoardRect { x: to[0], y: to[1], ..rect }), "revision": revision}))
     }
 
-    pub(super) fn delete_node(&mut self, op: &str, node: &str) -> Result<Value, String> {
+    pub(super) fn delete_node(&mut self, op: &'static str, node: &str) -> Result<Value, String> {
         let c = self.board_ctx()?;
         c.node(node)?;
+        let story = c.text_id(node);
         let Ctx { doc, mut entry, .. } = c;
         entry.records.board_nodes.retain(|n| n.layer_id != node);
         entry.records.area_texts.retain(|a| a.container_layer_id != node);
+        // Review F2/F7: the node's story leaves with it, in the same step.
+        let text_entry = match story {
+            Some(id) => {
+                let mut te = self.text_entry()?;
+                Self::board_story_drop(&mut te, &id);
+                Some(te)
+            }
+            None => None,
+        };
         let writes = [PlacementWrite { layer_id: node.to_owned(), to: None, create: None }];
-        let revision = self.board_commit(op, &doc, &entry, None, &writes, &[], node)?;
+        let revision = self.board_commit(op, &doc, &entry, text_entry.as_ref(), &writes, &[], node)?;
         let broken: Vec<&String> = entry
             .records
             .board_nodes
