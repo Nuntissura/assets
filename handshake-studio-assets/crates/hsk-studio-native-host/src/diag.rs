@@ -45,7 +45,9 @@ pub fn emit_terminal(
 /// The caller's side of one host run (HOST INTEGRATION (4), (5)): who runs it, on which resource, under which
 /// correlation and cancellation, and the sink its one terminal frame goes to. A run entry sends that frame;
 /// [`HostRun::terminal`] then holds what its delivery returned. A delivery error never changes the run's result
-/// (tests/fix_host_terminal_frame.rs `a_refused_delivery_never_changes_the_run_result`).
+/// (tests/fix_host_terminal_frame.rs `a_refused_delivery_never_changes_the_run_result`). A HostRun carries one run:
+/// a run entry given a finished one refuses with usage `host_run_reused` before any work, sends nothing and keeps the
+/// first run's terminal (`a_finished_host_run_refuses_the_next_run_before_any_work`).
 pub struct HostRun<'a> {
     observe: Observe,
     correlation_id: u64,
@@ -99,6 +101,10 @@ pub const PANIC_OUTCOME: Outcome = Outcome::Failure(FailureCode::Unavailable);
 /// callbacks and resumes it out of `run_app` (winit 0.30 windows `event_loop.rs`), so the window path is covered; a
 /// `panic = "abort"` build runs no unwinding and leaves no frame.
 pub(crate) fn observed<T>(host: &mut HostRun<'_>, run: impl FnOnce() -> Result<T, HostError>) -> Result<T, HostError> {
+    // One run per HostRun (review fc7f4215 F3): a finished one refuses before any of the next run's work.
+    if host.terminal.is_some() {
+        return Err(HostError::Usage("host_run_reused"));
+    }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
         Ok(result) => {
             // The delivery result stays readable through `terminal()`; it never changes the run's result.
@@ -146,8 +152,9 @@ pub fn observe_line(class: DeliveryClass, bytes: &[u8], caller_default: bool) ->
 }
 
 /// studio-vk's sink: one [`observe_line`] per delivered frame, appended to the caller's `--observe` file, else
-/// written to stderr. Nothing is buffered: a file that does not open is `Unavailable` (no byte left the process), a
-/// failed write `Indeterminate` (part of the line may be out).
+/// written to stderr. A `--observe` file that does not open sends the line to stderr after an
+/// `observe_unavailable <code>` note ([`open_reason`]). Nothing is buffered; a failed write is `Indeterminate` (part of
+/// the line may be out).
 pub struct LineSink {
     path: Option<PathBuf>,
     caller_default: bool,
@@ -163,14 +170,34 @@ impl SinkPort for LineSink {
     fn try_send(&mut self, class: DeliveryClass, bytes: &[u8]) -> Result<(), DeliveryError> {
         let mut line = observe_line(class, bytes, self.caller_default);
         line.push('\n');
-        match &self.path {
-            Some(path) => {
-                let mut file =
-                    std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|_| DeliveryError::Unavailable)?;
-                file.write_all(line.as_bytes()).map_err(|_| DeliveryError::Indeterminate)
+        let opened = self.path.as_ref().map(|path| std::fs::OpenOptions::new().create(true).append(true).open(path));
+        match opened {
+            Some(Ok(mut file)) => file.write_all(line.as_bytes()).map_err(|_| DeliveryError::Indeterminate),
+            other => {
+                let mut stderr = std::io::stderr().lock();
+                if let Some(Err(e)) = other {
+                    // The caller's file does not open: the line goes to stderr after a note naming why (lead
+                    // 2026-11-13); the note's own write may fail like any stderr write.
+                    let _ = writeln!(stderr, "observe_unavailable {}", open_reason(e.kind()));
+                }
+                stderr.write_all(line.as_bytes()).map_err(|_| DeliveryError::Indeterminate)
             }
-            None => std::io::stderr().lock().write_all(line.as_bytes()).map_err(|_| DeliveryError::Indeterminate),
         }
+    }
+}
+
+/// Why a file did not open, as a code (never the OS text).
+pub fn open_reason(kind: std::io::ErrorKind) -> &'static str {
+    use std::io::ErrorKind as K;
+    match kind {
+        K::NotFound => "not_found",
+        K::PermissionDenied => "permission_denied",
+        K::IsADirectory => "is_a_directory",
+        K::NotADirectory => "not_a_directory",
+        K::InvalidFilename => "invalid_filename",
+        K::ReadOnlyFilesystem => "read_only_filesystem",
+        K::StorageFull => "storage_full",
+        _ => "open_failed",
     }
 }
 

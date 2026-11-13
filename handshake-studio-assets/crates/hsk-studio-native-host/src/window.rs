@@ -153,7 +153,9 @@ pub struct FocusReport {
 /// Foreground watcher: samples until stopped and returns (samples, foreground changes, takes by this process).
 struct Watch {
     stop: Arc<AtomicBool>,
-    handle: std::thread::JoinHandle<(u64, u64, u64)>,
+    /// Taken by `finish`. A Watch dropped without it (an unwind out of the run, a `run_app` error) stops and joins the
+    /// thread in `Drop` (review fc7f4215 F5).
+    handle: Option<std::thread::JoinHandle<(u64, u64, u64)>>,
 }
 
 impl Watch {
@@ -181,12 +183,22 @@ impl Watch {
                 (samples, changes, takes)
             })
             .map_err(|_| HostError::Window("watch"))?;
-        Ok(Self { stop, handle })
+        Ok(Self { stop, handle: Some(handle) })
     }
-    fn finish(self) -> (u64, u64, u64) {
+    fn finish(mut self) -> (u64, u64, u64) {
         self.stop.store(true, Ordering::Release);
         // A panicked watcher proves nothing: report one take so a quiet run fails rather than passes.
-        self.handle.join().unwrap_or((0, 0, 1))
+        self.handle.take().map_or((0, 0, 1), |h| h.join().unwrap_or((0, 0, 1)))
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            // The thread sleeps 1 ms between samples, so the join is short; a panicked watcher is ignored here.
+            let _ = handle.join();
+        }
     }
 }
 

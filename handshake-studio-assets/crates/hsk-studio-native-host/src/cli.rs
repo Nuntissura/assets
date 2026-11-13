@@ -8,6 +8,7 @@ use crate::script::{self, Step};
 use crate::window::{MAX_FRAMES, WindowArgs};
 use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_vulkan::rgba_len;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -67,25 +68,26 @@ const VALUE_FLAGS: [&str; 19] = [
 
 #[derive(Default)]
 struct RunFlags<'a> {
-    actor: Option<&'a str>,
-    session: Option<&'a str>,
-    resource: Option<&'a str>,
-    observe: Option<&'a str>,
+    actor: Option<&'a OsStr>,
+    session: Option<&'a OsStr>,
+    resource: Option<&'a OsStr>,
+    observe: Option<&'a OsStr>,
     /// The first refusal: a caller or observe flag given twice or without a value.
     refusal: Option<HostError>,
 }
 
-/// The caller and observe flags after the command word, read whatever else the command line holds.
-fn run_flags<S: AsRef<str>>(args: &[S]) -> RunFlags<'_> {
+/// The caller and observe flags after the command word, read whatever else the command line holds. Arguments are OS
+/// strings: a non-Unicode argument elsewhere never stops the `--observe` path from being read (review fc7f4215 F1).
+fn run_flags<S: AsRef<OsStr>>(args: &[S]) -> RunFlags<'_> {
     let mut flags = RunFlags::default();
     let mut it = args.iter().map(AsRef::as_ref).skip(1);
     while let Some(flag) = it.next() {
-        let slot = match flag {
-            "--actor" => &mut flags.actor,
-            "--session" => &mut flags.session,
-            "--resource" => &mut flags.resource,
-            "--observe" => &mut flags.observe,
-            f if VALUE_FLAGS.contains(&f) => {
+        let slot = match flag.to_str() {
+            Some("--actor") => &mut flags.actor,
+            Some("--session") => &mut flags.session,
+            Some("--resource") => &mut flags.resource,
+            Some("--observe") => &mut flags.observe,
+            Some(f) if VALUE_FLAGS.contains(&f) => {
                 it.next();
                 continue;
             }
@@ -102,25 +104,33 @@ fn run_flags<S: AsRef<str>>(args: &[S]) -> RunFlags<'_> {
 
 /// The caller of a run: all three caller flags, or none of them ([`Caller::asset_local`]). Anything else is a usage
 /// refusal: `caller_incomplete`, `actor_invalid` (accord bounds: 1..=128 bytes, no control character),
-/// `resource_invalid` (an accord domain id), `flag_repeated`, `missing_value`.
-pub fn caller<S: AsRef<str>>(args: &[S]) -> Result<Caller, HostError> {
+/// `resource_invalid` (an accord domain id), `argument_encoding` (a caller flag value that is not Unicode),
+/// `flag_repeated`, `missing_value`.
+pub fn caller<S: AsRef<OsStr>>(args: &[S]) -> Result<Caller, HostError> {
     let flags = run_flags(args);
     if let Some(refusal) = flags.refusal {
         return Err(refusal);
     }
+    fn text(v: &OsStr) -> Result<&str, HostError> {
+        v.to_str().ok_or(HostError::Usage("argument_encoding"))
+    }
     match (flags.actor, flags.session, flags.resource) {
         (None, None, None) => Ok(Caller::asset_local()),
-        (Some(actor), Some(session), Some(resource)) => Ok(Caller {
-            actor: ActorContext::new(actor, actor, actor, actor, actor, session).map_err(|_| HostError::Usage("actor_invalid"))?,
-            resource: DomainId::parse(resource).map_err(|_| HostError::Usage("resource_invalid"))?,
-            caller_default: false,
-        }),
+        (Some(actor), Some(session), Some(resource)) => {
+            let (actor, session, resource) = (text(actor)?, text(session)?, text(resource)?);
+            Ok(Caller {
+                actor: ActorContext::new(actor, actor, actor, actor, actor, session).map_err(|_| HostError::Usage("actor_invalid"))?,
+                resource: DomainId::parse(resource).map_err(|_| HostError::Usage("resource_invalid"))?,
+                caller_default: false,
+            })
+        }
         _ => Err(HostError::Usage("caller_incomplete")),
     }
 }
 
-/// The caller's `--observe` file, when the command line names one (a refused command line included).
-pub fn observe<S: AsRef<str>>(args: &[S]) -> Option<PathBuf> {
+/// The caller's `--observe` file, when the command line names one (a refused command line included; the path may be
+/// any OS string).
+pub fn observe<S: AsRef<OsStr>>(args: &[S]) -> Option<PathBuf> {
     run_flags(args).observe.map(PathBuf::from)
 }
 
