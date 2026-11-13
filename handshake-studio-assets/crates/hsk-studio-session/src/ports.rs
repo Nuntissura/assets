@@ -7,20 +7,27 @@ use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_chronicle::RevisionUpdate;
 use std::time::Instant;
 
-/// What a grant is checked for.
+/// What a grant is checked for. `Read` (lane SMB-WEB-SITE-2) is a read-only verb such as a site report: it writes
+/// nothing. It is its own member with its own token, so a port is asked for exactly `read`, never for another
+/// member's token (`read_is_its_own_member`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Edit,
     Save,
     Export,
+    Read,
 }
 
 impl Action {
+    /// Every member, in declaration order.
+    pub const ALL: [Action; 4] = [Self::Edit, Self::Save, Self::Export, Self::Read];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Edit => "edit",
             Self::Save => "save",
             Self::Export => "export",
+            Self::Read => "read",
         }
     }
 }
@@ -169,5 +176,22 @@ impl Default for MonotonicClock {
 impl Clock for MonotonicClock {
     fn now_ms(&self) -> u64 {
         u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Action;
+
+    /// Lane SMB-WEB-SITE-2: `Read` is a member of its own with the token `read`; every member's token is distinct.
+    #[test]
+    fn read_is_its_own_member() {
+        let tokens: Vec<&str> = Action::ALL.iter().map(|a| a.as_str()).collect();
+        assert_eq!(tokens, ["edit", "save", "export", "read"]);
+        let mut unique = tokens.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), Action::ALL.len());
+        assert!(Action::ALL.iter().filter(|a| **a == Action::Read).count() == 1);
     }
 }

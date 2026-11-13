@@ -114,12 +114,15 @@ impl std::error::Error for WireError {}
 
 // ----- vocabulary ------------------------------------------------------------------------------
 
+/// The session's `Action` on the wire, one member each (`read` added by lane SMB-WEB-SITE-2, additive): a token
+/// that names no member is refused at decode, never read as another member (`every_action_maps_one_to_one`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionWire {
     Edit,
     Save,
     Export,
+    Read,
 }
 
 impl From<Action> for ActionWire {
@@ -128,6 +131,7 @@ impl From<Action> for ActionWire {
             Action::Edit => Self::Edit,
             Action::Save => Self::Save,
             Action::Export => Self::Export,
+            Action::Read => Self::Read,
         }
     }
 }
@@ -138,6 +142,7 @@ impl From<ActionWire> for Action {
             ActionWire::Edit => Self::Edit,
             ActionWire::Save => Self::Save,
             ActionWire::Export => Self::Export,
+            ActionWire::Read => Self::Read,
         }
     }
 }
@@ -651,4 +656,26 @@ pub fn decode_reply(bytes: &[u8], limits: &Limits) -> Result<Reply, WireError> {
     let reply: Reply = decode(bytes, limits)?;
     reply.validate()?;
     Ok(reply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ActionWire;
+    use hsk_studio_session::Action;
+
+    /// Lane SMB-WEB-SITE-2: every session action has exactly one wire token (its own `as_str`) and maps back to
+    /// itself; `read` is the new member; a token in another letter case or of no member is refused.
+    #[test]
+    fn every_action_maps_one_to_one() {
+        for action in Action::ALL {
+            let wire = ActionWire::from(action);
+            assert_eq!(Action::from(wire), action);
+            assert_eq!(serde_json::to_string(&wire).unwrap(), format!("\"{}\"", action.as_str()));
+            assert_eq!(serde_json::from_str::<ActionWire>(&format!("\"{}\"", action.as_str())).unwrap(), wire);
+        }
+        assert_eq!(ActionWire::from(Action::Read), ActionWire::Read);
+        for token in ["\"Read\"", "\"reed\"", "\"\"", "\"read \""] {
+            assert!(serde_json::from_str::<ActionWire>(token).is_err(), "{token}");
+        }
+    }
 }

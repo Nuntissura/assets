@@ -159,6 +159,8 @@ struct Site {
     link_base: &'static str,
     cache_enabled: bool,
     targets: Vec<Target>,
+    /// The optional fields of [STU-WEB-113] and the snippet library (module `web_site`, lane SMB-WEB-SITE-2).
+    depth: web_site::SiteDepth,
 }
 
 /// A remote target ([STU-WEB-114] subset: no passive mode, IPv6, encryption, proxy, timeouts or check-in/out).
@@ -404,7 +406,7 @@ impl WebHost {
                     "key": key_text(doc, r.node), "source": source_token(&r.source), "reference": row_text(&r.reference), "outcome": outcome_json(&r.outcome), "data_depth": r.data_depth,
                 })).collect::<Vec<_>>(), "total": refs.len()}))
             }
-            _ => no("unknown_command", row.command_id),
+            _ => self.site_command(row, &p, ctx, cancel),
         }
     }
 
@@ -1264,7 +1266,8 @@ fn link_base(key: &str, value: &str) -> R<&'static str> {
 }
 
 fn site_from(current: Option<&Site>, p: &P<'_>) -> R<Site> {
-    let mut site = current.cloned().unwrap_or(Site { site_id: "site".into(), display_name: String::new(), local_root: String::new(), default_images_folder: None, link_base: "document", cache_enabled: false, targets: Vec::new() });
+    let mut site = current.cloned().unwrap_or(Site { site_id: "site".into(), display_name: String::new(), local_root: String::new(), default_images_folder: None, link_base: "document", cache_enabled: false, targets: Vec::new(), depth: web_site::SiteDepth::default() });
+    web_site::depth_into(&mut site.depth, p)?;
     if let Some(id) = p.opt_text("site_id")? {
         site.site_id = checked_id("site_id", id)?.to_string();
     }
@@ -1393,13 +1396,13 @@ fn recipe_from(current: Option<&Recipe>, p: &P<'_>) -> R<Recipe> {
 }
 
 fn site_json(site: &Site) -> Value {
-    json!({
+    web_site::with_depth(&site.depth, json!({
         "site_id": site.site_id, "display_name": site.display_name, "local_root": site.local_root, "default_images_folder": site.default_images_folder,
         "site_relative_link_base": site.link_base, "cache_enabled": site.cache_enabled,
         "remote_targets": site.targets.iter().map(|t| json!({
             "target_id": t.target_id, "display_name": t.display_name, "transport": t.transport, "host": t.host, "port": t.port, "root_path": t.root_path, "credentials_ref": t.credentials_ref,
         })).collect::<Vec<_>>(),
-    })
+    }))
 }
 
 fn recipe_json(recipe: &Recipe) -> Value {

@@ -16,6 +16,12 @@
 //! unparsed file and its reason (`detail.file`, `detail.reason`); a file needing more than the engine's 1024 edits
 //! (`Limits::max_edits`) refuses a move with the engine's code. Parameter and state refusals come before job
 //! admission, never `overloaded`. `web.save` of a file inside `local_root` also refuses `site_locked`.
+//! Lane SMB-WEB-SITE-2 ([STU-WEB-090] to [STU-WEB-093], [STU-WEB-096] to [STU-WEB-099], [STU-WEB-113],
+//! [STU-WEB-118]): `web.change_link` (change-link-site-wide), `web.template_regions`, `web.template_instance`,
+//! `web.instance_param`, `web.instance_repeat`, `web.template_update`, `web.library_item_insert`,
+//! `web.library_item_update`, `web.snippet`, `web.snippets`, `web.snippet_insert`, and the optional site-record
+//! fields of `web.site`. No spec command id is verified for these rows either; they follow the `web.*` naming. Their
+//! parameters, outcomes and refusals: the module manual of `web_commands::web_site`.
 
 use super::super::ValueType;
 use super::{CommandEntry, ParamSpec, entry, p};
@@ -29,6 +35,9 @@ const PATH: ParamSpec = p("path", ValueType::String).opt();
 const OVERWRITE: ParamSpec = p("overwrite", ValueType::Boolean).opt();
 const TARGET_ID: ParamSpec = p("target_id", ValueType::String);
 const LINK_BASE: ParamSpec = p("site_relative_link_base", ValueType::Enumerated).opt();
+const TEMPLATE: ParamSpec = p("template", ValueType::String);
+const ITEM: ParamSpec = p("item", ValueType::String);
+const TRIGGER: ParamSpec = p("trigger", ValueType::String).opt();
 
 pub(super) const ROWS: &[CommandEntry] = &[
     entry("web.open", "web_command", "Open Web Document", false, false, &[PATH, p("source", ValueType::String).opt(), p("doctype", ValueType::Enumerated).opt()]),
@@ -48,7 +57,21 @@ pub(super) const ROWS: &[CommandEntry] = &[
         "Site Definition",
         false,
         true,
-        &[p("site_id", ValueType::String).opt(), p("display_name", ValueType::String).opt(), p("local_root", ValueType::String).opt(), p("default_images_folder", ValueType::String).opt(), LINK_BASE, p("cache_enabled", ValueType::Boolean).opt()],
+        &[
+            p("site_id", ValueType::String).opt(),
+            p("display_name", ValueType::String).opt(),
+            p("local_root", ValueType::String).opt(),
+            p("default_images_folder", ValueType::String).opt(),
+            LINK_BASE,
+            p("cache_enabled", ValueType::Boolean).opt(),
+            p("testing_target", ValueType::Class).opt(),
+            p("server_model_id", ValueType::Enumerated).opt(),
+            p("preprocessor_config", ValueType::Class).opt(),
+            p("framework_pin", ValueType::Class).opt(),
+            p("linter_overrides", ValueType::Class).opt(),
+            p("browser_baseline", ValueType::List).opt(),
+            p("version_control_binding", ValueType::Class).opt(),
+        ],
     ),
     entry(
         "web.remote_target",
@@ -74,4 +97,40 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("web.assets", "web_command", "Asset References", false, false, &[]),
     entry("web.site_report", "web_command", "Site Report", false, false, &[]),
     entry("web.move_file", "web_command", "Move File", false, false, &[p("from", ValueType::String), p("to", ValueType::String)]),
+    // Lane SMB-WEB-SITE-2 (module docs of `web_commands::web_site`).
+    entry("web.change_link", "web_command", "Change Link Sitewide", false, false, &[p("from", ValueType::String), p("to", ValueType::String)]),
+    entry("web.template_regions", "web_command", "Template Regions", false, false, &[PATH]),
+    entry("web.template_instance", "web_command", "New From Template", false, false, &[TEMPLATE, p("path", ValueType::String), p("params", ValueType::Class).opt()]),
+    entry("web.instance_param", "web_command", "Set Instance Parameter", false, true, &[NAME, p("value", ValueType::String)]),
+    entry("web.instance_repeat", "web_command", "Edit Repeating Region", false, true, &[p("region", ValueType::String), p("op", ValueType::Enumerated), INDEX, p("to", ValueType::Number).opt()]),
+    entry("web.template_update", "web_command", "Update Template Instances", false, false, &[TEMPLATE, p("resolve", ValueType::Class).opt()]),
+    entry("web.library_item_insert", "web_command", "Insert Library Item", false, true, &[ITEM, PARENT, INDEX]),
+    entry("web.library_item_update", "web_command", "Update Library Item", false, false, &[ITEM]),
+    entry(
+        "web.snippet",
+        "web_command",
+        "Snippet",
+        false,
+        true,
+        &[
+            p("folder_path", ValueType::String),
+            p("snippet_name", ValueType::String),
+            p("description", ValueType::String).opt(),
+            p("snippet_kind", ValueType::Enumerated).opt(),
+            p("preview_mode", ValueType::Enumerated).opt(),
+            p("inserts_before_selection", ValueType::String).opt(),
+            p("inserts_after_selection", ValueType::String).opt(),
+            TRIGGER,
+            p("remove", ValueType::Boolean).opt(),
+        ],
+    ),
+    entry("web.snippets", "web_command", "Snippets", false, false, &[]),
+    entry(
+        "web.snippet_insert",
+        "web_command",
+        "Insert Snippet",
+        false,
+        true,
+        &[p("folder_path", ValueType::String).opt(), p("snippet_name", ValueType::String).opt(), TRIGGER, p("offset", ValueType::Number), p("end", ValueType::Number).opt()],
+    ),
 ];
