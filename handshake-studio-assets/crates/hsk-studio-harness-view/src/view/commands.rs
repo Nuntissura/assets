@@ -11,6 +11,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 mod audio;
+// Lane SMB-BOARD-1: whiteboard nodes, connectors and the board export.
+mod board;
 mod component;
 mod decode;
 mod design;
@@ -164,6 +166,7 @@ impl Viewer {
             "layout" if layout_flow::owns(id) => return layout_flow::run(self, id, f),
             // Lane SMB-DS-VARIABLES-AUTHOR-1: design variables and explicit modes ([STU-DS-132], [STU-DS-133]).
             "variable" | "variable_collection" | "node" => return variable::run(self, id, f, before),
+            "board" => return board::run(self, id, f, before),
             "layout" => return layout::run(self, id, f),
             "panel" => return panel::run(self, id, f),
             "vector" => vector::run_vector(self, id, f)?,

@@ -36,6 +36,10 @@ impl Viewer {
         }
         self.reset_document_surfaces();
         self.assets = self.run.render_assets().map_err(|e| format!("new_document: tiles {e}"))?;
+        // Lane SMB-BOARD-1 ([STU-WB-001]): a board document lists its first artboard as its board.
+        if spec.profile == hsk_studio_harness_core::document_new::DocumentProfile::Board {
+            self.register_new_board()?;
+        }
         self.dirty = true;
         if let Some(name) = name {
             self.save_input = format!("{name}.handshake");

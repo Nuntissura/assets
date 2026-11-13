@@ -124,6 +124,8 @@ pub mod place;
 pub mod menu_tree;
 /// Smart filter effects and adjustment layers as typed commands (lane SMB-PS-FILTER-ADJUST-COMMANDS-1; egui-free).
 pub mod raster_effects;
+/// Whiteboard mode: boards, board nodes, connectors and the board export (lane SMB-BOARD-1; egui-free).
+pub mod board;
 
 use crate::harness::{Harness, References, Run, Selection};
 use hsk_studio_harness_core::RunContext;
