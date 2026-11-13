@@ -43,8 +43,17 @@ fn entry(v: &Viewer, token: &str) -> Vec<u8> {
     v.run().document_entry(token).map(<[u8]>::to_vec).unwrap_or_default()
 }
 
+/// Every layer (its record and its place in its parent's stack), by id: undo re-creates deleted layers at
+/// another index of the document's layer array, which carries no meaning (the stack order is the placement).
 fn layers(v: &Viewer) -> String {
-    serde_json::to_string(&v.run().snapshot().unwrap().document().layers).unwrap()
+    let doc = v.run().snapshot().unwrap().document();
+    let mut all: Vec<(String, String, String)> = doc
+        .layers
+        .iter()
+        .map(|l| (l.layer_id.clone(), serde_json::to_string(l).unwrap(), format!("{:?}", v.run().placement(&l.layer_id))))
+        .collect();
+    all.sort();
+    format!("{all:?}")
 }
 
 /// (text entry, vector entry, layers): what one history step must restore together.

@@ -169,7 +169,7 @@ fn layer_name(doc: &StudioDocument, id: &str) -> String {
 }
 
 /// The document as `writes` leave it (parents only; Folio's design checks read nothing else).
-fn project(doc: &StudioDocument, writes: &[PlacementWrite]) -> StudioDocument {
+pub(super) fn project(doc: &StudioDocument, writes: &[PlacementWrite]) -> StudioDocument {
     let mut d = doc.clone();
     for w in writes {
         match (&w.create, &w.to) {

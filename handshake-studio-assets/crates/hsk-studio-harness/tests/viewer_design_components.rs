@@ -543,28 +543,27 @@ fn r1_text_records_an_undo_can_reach_are_never_compacted() {
     }
 }
 
-/// F7 under R1: in a session the text entry's cap refuses typed; a save and reopen (no history) compacts
-/// the records of copies no history can return to, and the redraws run again.
+/// F7 under R1, lead ruling P2 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): each sync compacts the copies'
+/// records inside its own undo step, so 140 syncs are never refused in the session and the text entry stays
+/// at what the document draws; a save and reopen (no history) keeps it, and the redraws run again.
 #[test]
 fn r1_reopen_compacts_unreachable_copy_text_and_redraws_run_again() {
     let scratch = Scratch::new("ds-r1-reopen-text");
     let mut v = design_doc();
     let (a, label, one) = label_component(&mut v);
-    let mut refused_at = None;
-    for i in 0..140 {
+    let start = text_records(&v).len();
+    for _ in 0..140 {
         if let Err((code, detail)) = call(&mut v, "component.sync_instances", json!({"component": a})) {
-            assert_eq!(code, "text_layer_over_cap", "{detail}");
-            refused_at = Some(i);
-            break;
+            panic!("a sync is never refused in the session now: {code} {detail}");
         }
     }
-    assert!(refused_at.is_some(), "a sync past the text entry's cap is refused in the session");
+    assert_eq!(text_records(&v).len(), start, "each sync compacts in its own step");
     let path = scratch.0.join("text.handshake");
     v.save(&path, false).unwrap();
     let mut w = Viewer::new(Prefer::Cpu);
     w.add_font("Inter-Regular", INTER.to_vec());
     w.open(&path).unwrap();
-    assert!(text_records(&w).len() < text_records(&v).len(), "the reopen compacts the copies' records");
+    assert_eq!(text_records(&w), text_records(&v), "nothing is left for the reopen to compact");
     ok(&mut w, "component.sync_instances", json!({"component": a}));
     ok(&mut w, "design.instance.set_override", json!({"layer": one, "node_id": label, "field": "characters", "value": "Go"}));
 }

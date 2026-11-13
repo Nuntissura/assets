@@ -38,10 +38,14 @@
 //! layers together; a binding is never pruned by a later write ([`super::persist`]). A native redraw
 //! drops, in its own step, the node entries, live filter stacks and paths of the copies it deletes;
 //! a copy carries its definition layer's live filter stack (moved with the copy). Text records of
-//! copies (the `text` entry is outside the history) are never dropped while an undo can return to
-//! them (lead ruling R1): a redraw past the entry's cap is refused `text_layer_over_cap`, and the
-//! records of copies no longer in the document are compacted when it is opened with no history
-//! ([`compact_copy_text`]). Native origins are the layers' bounds at command time (Studio reading: the
+//! copies (lead ruling P2 2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1, superseding R1's in-session cap):
+//! a native redraw compacts the `text` records of the copies the document no longer draws and writes the
+//! text entry INSIDE its own history step (`Run::restructure_and_entries`, with the vector entry), so its
+//! undo brings them back byte for byte and redo compacts again; no record an undo can reach is lost and
+//! the per-session sync cap is gone (a redraw still past the entry's cap after compaction is refused
+//! `text_layer_over_cap`). A design file instance's redraw ([`Viewer::design_command`]) keeps its text
+//! writes outside the history and so never compacts (R1); the records of copies no longer in the document
+//! are compacted when it is opened with no history ([`compact_copy_text`]). Native origins are the layers' bounds at command time (Studio reading: the
 //! top-left of the vector bounds and text origins under the layer); a native redraw also draws the
 //! `visible` and `characters` fields the component properties drive ([STU-DS-113], resolved by
 //! `resolve_instance`).
@@ -592,23 +596,29 @@ impl<'d> Redraw<'d> {
         Ok(())
     }
 
-    /// F7 under lead ruling R1 (2026-11-12): the `text` entry is outside the history, so no record an
-    /// undo can return to is dropped in a session; a redraw that would pass the entry's cap is refused
-    /// `text_layer_over_cap`. The records of copies no history can return to are compacted on open
-    /// ([`compact_copy_text`]).
-    fn compact_text(&mut self) -> Result<(), String> {
+    /// Lead ruling P2 (2026-11-13; F7 and R1 before it): with `in_step` (the text entry is written in the
+    /// redraw's own history step, [`Viewer::native_redraw`]) the records of copies the document no longer
+    /// draws after this redraw are compacted first: the step's undo restores them. Without it (the text
+    /// entry is written outside the history) nothing is compacted. A redraw still past the entry's cap is
+    /// refused `text_layer_over_cap`.
+    fn compact_text(&mut self, in_step: bool) -> Result<(), String> {
+        if in_step {
+            let after = super::component::project(self.doc, &self.writes);
+            compact_copy_text(&mut self.tentry, &after);
+        }
         if self.tentry.layers.len() > text::MAX_TEXT_LAYERS || self.tentry.stories.len() > text::MAX_TEXT_LAYERS {
             return Err(format!(
-                "design: text_layer_over_cap (the redraw passes the window's {} text records; save and reopen the document to compact the records of instance copies no undo can return to)",
+                "design: text_layer_over_cap (the redraw passes the window's {} text records; a design file instance's copies are compacted when the document is saved and reopened)",
                 text::MAX_TEXT_LAYERS
             ));
         }
         Ok(())
     }
 
-    /// The entries with the copies' records, the writes and the notes.
-    pub(super) fn finish(mut self) -> Result<(VectorEntry, TextEntry, Vec<PlacementWrite>, Vec<String>), String> {
-        self.compact_text()?;
+    /// The entries with the copies' records, the writes and the notes; `in_step`: the text entry goes into
+    /// the redraw's history step, so the copies' records it no longer needs are compacted ([`Self::compact_text`]).
+    pub(super) fn finish(mut self, in_step: bool) -> Result<(VectorEntry, TextEntry, Vec<PlacementWrite>, Vec<String>), String> {
+        self.compact_text(in_step)?;
         self.ventry.paths.extend(self.new_paths);
         if !self.new_nodes.is_empty() {
             let mut d2 = self.design;
@@ -1079,7 +1089,7 @@ impl Viewer {
     fn redraw(&mut self, doc: &StudioDocument, group: &str, root: &str, record: &StudioComponentInstance, d: [f64; 2]) -> Result<Vec<String>, String> {
         let mut r = Redraw::new(self, doc)?;
         r.instance(group, root, &drawn_overrides(record), d)?;
-        let (ventry, tentry, writes, mut notes) = r.finish()?;
+        let (ventry, tentry, writes, mut notes) = r.finish(false)?;
         // Entries first (append-only records; the layers then render at once), then the layers.
         let vbytes = ventry.to_bytes(&doc.document_id)?;
         self.run.set_document_entry(vector::ENTRY, Some(vbytes)).map_err(|e| format!("design: vector entry {e}"))?;
@@ -1098,7 +1108,8 @@ impl Viewer {
     /// member's, both from layer bounds), with the overrides and the property-driven `visible` and
     /// `characters` fields drawn; `create` (a new group write) goes first. The structure edit and the
     /// vector entry (paths and every job's instance record) are one step (`Run::restructure_and_entry`);
-    /// copied stories go to the text entry before it (append-only, like [`Self::redraw`]); each job's
+    /// copied stories go to the text entry in the same step, which drops the records of copies the document
+    /// no longer draws (`Run::restructure_and_entries`, lead ruling P2); each job's
     /// binding state is written to the `design` entry after it (a refusal undoes the step). The node
     /// entries, live filter stacks and paths of the copies the step deletes leave the vector entry in
     /// the same step (F3), and the record caps are checked before the write. Returns the notes, the
@@ -1136,7 +1147,7 @@ impl Viewer {
             r.instance(&job.group, &member.layer_id, &drawn, d)?;
             members.push(member.component_id.clone());
         }
-        let (mut ventry, tentry, more, mut notes) = r.finish()?;
+        let (mut ventry, tentry, more, mut notes) = r.finish(true)?;
         writes.extend(more);
         let authored = ventry.design.get_or_insert_with(|| StudioDesignRecords::new(doc.document_id.clone()));
         for job in jobs {
@@ -1152,13 +1163,16 @@ impl Viewer {
         super::component::check_caps(authored)?;
         self.check_authored(&doc, &writes, authored)?;
         drop_deleted_copies(&mut ventry, &doc, &writes, &deleted);
-        if tentry != text_before {
-            let tbytes = TextEntry::to_bytes(&tentry)?;
-            self.run.set_document_entry(text::ENTRY, Some(tbytes)).map_err(|e| format!("design: text entry {e}"))?;
-        }
         let vbytes = ventry.to_bytes(&doc.document_id)?;
         let target = jobs.first().map_or_else(String::new, |j| j.group.clone());
-        let ok = self.run.restructure_and_entry(op, &writes, vector::ENTRY, vbytes);
+        // Lead ruling P2: the text entry (copies added, copies no longer drawn compacted) is in the same
+        // history step as the structure edit and the vector entry.
+        let ok = if tentry == text_before {
+            self.run.restructure_and_entry(op, &writes, vector::ENTRY, vbytes)
+        } else {
+            let tbytes = TextEntry::to_bytes(&tentry)?;
+            self.run.restructure_and_entries(op, &writes, vec![(vector::ENTRY, vbytes), (text::ENTRY, tbytes)])
+        };
         let revision = self.after_edit(ok, format!("{op} {target}"))?;
         for (job, member) in jobs.iter().zip(&members) {
             let saved = (|| {
