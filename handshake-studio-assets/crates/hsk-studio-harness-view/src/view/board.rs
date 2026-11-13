@@ -669,3 +669,49 @@ impl Viewer {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{BoardCommand, Viewer};
+    use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
+
+    fn board_viewer() -> Viewer {
+        use hsk_studio_accord::{ActorContext, ClientSessionId, TransientCorrelation};
+        let actor = ActorContext::new("board-unit", "principal", "owner", "owner-principal", "space", "session").unwrap();
+        let context = hsk_studio_harness_core::RunContext::new(actor, ClientSessionId::parse("board-unit").unwrap(), std::sync::Arc::new(TransientCorrelation::new()));
+        let mut v = Viewer::with_context(super::super::render::Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context);
+        v.new_document(&NewDocument::new(DocumentProfile::Board, Some((640.0, 480.0))), None).unwrap();
+        for (i, t) in ["A", "B", "C"].iter().enumerate() {
+            let x = 260.0 * f64::from(u8::try_from(i).unwrap());
+            v.board_command(BoardCommand::CreateSticky { board: None, at: [x, 0.0], text: (*t).to_owned(), author_visible: true, author_name: None, is_wide_width: false, fill: None }).unwrap();
+        }
+        v
+    }
+
+    /// Review F9: a board read checks the token per node and refuses `canceled`.
+    #[test]
+    fn a_board_read_refuses_canceled() {
+        let v = &mut board_viewer();
+        v.cancel.cancel();
+        let e = v.board_command(BoardCommand::Read { board: None }).unwrap_err();
+        assert!(e.starts_with("board: canceled"), "{e}");
+    }
+
+    /// Review F13: an export canceled after its admission settles its job `canceled`, not `failed`, and writes
+    /// nothing.
+    #[test]
+    fn a_canceled_board_export_settles_its_job_canceled() {
+        let v = &mut board_viewer();
+        let dir = std::env::temp_dir().join(format!("hsk-board-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("canceled.png");
+        let job = v.admit_export_job().unwrap();
+        v.cancel.cancel();
+        let r = v.board_export_admitted(job, None, &path, true);
+        assert!(r.is_err(), "{r:?}");
+        let counts = v.job_counts();
+        assert_eq!((counts.canceled, counts.failed), (1, 0), "{counts:?}");
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

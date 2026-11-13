@@ -44,10 +44,29 @@ fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_else(|| panic!("no {key} in {v}")).to_string()
 }
 
-/// The document's layers and its vector entry bytes (what an undo must restore).
-fn snapshot(v: &Viewer) -> (String, Vec<u8>) {
+/// The document's layers and its vector and text entry bytes (what an undo must restore; review F7).
+fn snapshot(v: &Viewer) -> (String, Vec<u8>, Vec<u8>) {
     let doc = v.run().snapshot().unwrap().document();
-    (serde_json::to_string(&doc.layers).unwrap(), v.run().document_entry("vector").map(<[u8]>::to_vec).unwrap_or_default())
+    let entry = |token: &str| v.run().document_entry(token).map(<[u8]>::to_vec).unwrap_or_default();
+    (serde_json::to_string(&doc.layers).unwrap(), entry("vector"), entry("text"))
+}
+
+/// The vector entry as JSON.
+fn vector_entry(v: &Viewer) -> Value {
+    serde_json::from_slice(v.run().document_entry("vector").expect("a vector entry")).unwrap()
+}
+
+/// The text entry as JSON.
+fn text_entry(v: &Viewer) -> Value {
+    v.run().document_entry("text").map_or(Value::Null, |b| serde_json::from_slice(b).unwrap())
+}
+
+/// Board node records and area-text bindings of the vector entry naming `layer`.
+fn records_naming(v: &Viewer, layer: &str) -> usize {
+    let e = vector_entry(v);
+    let r = &e["vector_records"];
+    let count = |key: &str, field: &str| r[key].as_array().map_or(0, |a| a.iter().filter(|x| x[field] == layer).count());
+    count("board_nodes", "layer_id") + count("area_texts", "container_layer_id")
 }
 
 fn node(v: &mut Viewer, id: &str) -> Value {
@@ -94,13 +113,208 @@ fn a_board_document_starts_in_whiteboard_mode_and_board_add_is_one_undo_step() {
     assert_eq!(s["board_id"], json!(board));
     let r = ok(&mut v, "board.read", json!({"board": board}));
     assert_eq!(r["nodes"].as_array().unwrap().len(), 1, "{r}");
-    // A vector document is not in whiteboard mode until a board node is made in it.
+    // Review F4 (lead ruling 2026-11-13): a vector document is never switched into whiteboard mode silently;
+    // a board node or a board in it is refused typed.
     let mut w = Viewer::new(Prefer::Cpu);
     w.new_document(&NewDocument::new(DocumentProfile::Vector, Some((800.0, 600.0))), None).unwrap();
     assert_eq!(ok(&mut w, "board.read", json!({}))["whiteboard_mode"], false);
-    refused(&mut w, "board.add", json!({"name": "B"}), "not_a_board_document");
-    ok(&mut w, "board.sticky.create", json!({"x": 10, "y": 10, "text": "first"}));
-    assert_eq!(ok(&mut w, "board.read", json!({}))["whiteboard_mode"], true);
+    refused(&mut w, "board.add", json!({"name": "B"}), "not_whiteboard_document");
+    refused(&mut w, "board.sticky.create", json!({"x": 10, "y": 10, "text": "first"}), "not_whiteboard_document");
+    assert_eq!(ok(&mut w, "board.read", json!({}))["whiteboard_mode"], false);
+}
+
+/// Review F4 (lead ruling, option B): `new --profile board` from the command line and `document.new` in a
+/// session both write whiteboard mode at creation, and it survives save and reopen.
+#[test]
+fn whiteboard_mode_is_written_at_creation_by_the_cli_and_the_viewer_and_survives_reopen() {
+    let scratch = Scratch::new("board-cli");
+    let package = scratch.0.join("cli.handshake");
+    let args: Vec<String> = ["new", package.to_str().unwrap(), "--profile", "board", "--size", "800x600", "--actor", "board-cli", "--session", "s"].iter().map(|s| (*s).to_string()).collect();
+    let out = hsk_studio_harness::cli::run(&args);
+    assert_eq!(out.exit, 0, "{}", out.stdout);
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&package).unwrap();
+    assert_eq!(ok(&mut v, "board.read", json!({}))["whiteboard_mode"], true, "the CLI writes the mode");
+    ok(&mut v, "board.add", json!({"name": "Plan"}));
+    ok(&mut v, "board.sticky.create", json!({"x": 10, "y": 10, "text": "first"}));
+    let mut w = board_doc();
+    let saved = scratch.0.join("viewer.handshake");
+    w.save(&saved, false).unwrap();
+    let mut r = Viewer::new(Prefer::Cpu);
+    r.open(&saved).unwrap();
+    assert_eq!(ok(&mut r, "board.read", json!({}))["whiteboard_mode"], true, "the viewer's mode survives save and reopen");
+    ok(&mut r, "board.add", json!({"name": "Plan"}));
+}
+
+/// Review F1 (lead ruling): the plain layer delete drops the node's board record and text binding in its own
+/// undo step, so a layer made afterwards never meets a stale record; undo brings both back.
+#[test]
+fn a_layer_delete_drops_the_board_record_in_the_same_step_and_the_board_stays_readable() {
+    let scratch = Scratch::new("board-delete");
+    let mut v = board_doc();
+    let s = text(&ok(&mut v, "board.sticky.create", json!({"x": 0, "y": 0, "text": "A"})), "node_id");
+    assert_eq!(records_naming(&v, &s), 2, "a record and a text binding");
+    let before = snapshot(&v);
+    v.delete_layer(&s).unwrap();
+    assert_eq!(records_naming(&v, &s), 0, "the delete drops the record and the binding");
+    v.draw_shape(hsk_studio_harness::view::vector::ShapeKind::Rectangle, [0.0, 0.0], [50.0, 50.0], false).unwrap();
+    ok(&mut v, "board.read", json!({}));
+    v.render_if_dirty();
+    assert!(v.render_error().is_none(), "{:?}", v.render_error());
+    let path = scratch.0.join("after-delete.handshake");
+    v.save(&path, false).unwrap();
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&path).unwrap();
+    ok(&mut w, "board.read", json!({}));
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert_eq!(snapshot(&v), before, "undo of the delete brings the record back");
+}
+
+/// Review F2 (lead ruling): a move replaces the node's path records in place; nothing grows with moves, and
+/// one undo returns the state before the last move exactly.
+#[test]
+fn five_thousand_moves_keep_the_vector_entry_bounded_and_undo_exact() {
+    let mut v = board_doc();
+    let a = text(&ok(&mut v, "board.sticky.create", json!({"x": 0, "y": 0, "text": "A"})), "node_id");
+    let b = text(&ok(&mut v, "board.sticky.create", json!({"x": 600, "y": 0, "text": "B"})), "node_id");
+    ok(&mut v, "board.connector.create", json!({"start": {"endpoint_node_id": a, "magnet": "AUTO"}, "end": {"endpoint_node_id": b, "magnet": "AUTO"}}));
+    let paths = vector_entry(&v)["paths"].as_array().unwrap().len();
+    let started = std::time::Instant::now();
+    let mut last = snapshot(&v);
+    for i in 0..5000_u32 {
+        if i == 4999 {
+            last = snapshot(&v);
+        }
+        ok(&mut v, "board.node.move", json!({"node": a, "x": f64::from(i % 50), "y": f64::from(i % 7) * 10.0}));
+    }
+    println!("5000 moves in {:?}", started.elapsed());
+    assert_eq!(vector_entry(&v)["paths"].as_array().unwrap().len(), paths, "a move adds no path record");
+    v.undo().unwrap();
+    assert_eq!(snapshot(&v), last, "one undo returns the state before the last move");
+}
+
+/// Review F2 (lead ruling): a text write rewrites the node's own story in place, inside the undo step; nothing
+/// grows with edits, no cap is met, and undo restores the text entry exactly.
+#[test]
+fn a_thousand_text_writes_keep_the_text_entry_bounded_and_undo_exact() {
+    let mut v = board_doc();
+    let s = text(&ok(&mut v, "board.sticky.create", json!({"x": 0, "y": 0, "text": "A"})), "node_id");
+    let stories = text_entry(&v)["stories"].as_array().unwrap().len();
+    let mut last = snapshot(&v);
+    for i in 0..1000_u32 {
+        if i == 999 {
+            last = snapshot(&v);
+        }
+        ok(&mut v, "board.node.set_text", json!({"node": s, "text": format!("edit {i}")}));
+    }
+    assert_eq!(text_entry(&v)["stories"].as_array().unwrap().len(), stories, "a text write adds no story");
+    assert_eq!(node(&mut v, &s)["text"], "edit 999");
+    v.undo().unwrap();
+    assert_eq!(snapshot(&v), last, "one undo restores the layers, the vector entry and the text entry");
+    assert_eq!(node(&mut v, &s)["text"], "edit 998");
+}
+
+/// Review F5 (lead ruling): a connector collapsed to one point never blocks a node move; it reads unroutable
+/// with a connector_route_degenerate warning until its nodes separate.
+#[test]
+fn moving_a_node_against_its_connected_neighbour_is_not_refused() {
+    let mut v = board_doc();
+    let a = text(&ok(&mut v, "board.sticky.create", json!({"x": 0, "y": 0, "text": "A"})), "node_id");
+    let b = text(&ok(&mut v, "board.sticky.create", json!({"x": 600, "y": 0, "text": "B"})), "node_id");
+    let c = text(&ok(&mut v, "board.connector.create", json!({"start": {"endpoint_node_id": a, "magnet": "AUTO"}, "end": {"endpoint_node_id": b, "magnet": "AUTO"}})), "node_id");
+    let before = snapshot(&v);
+    ok(&mut v, "board.node.move", json!({"node": b, "x": 240, "y": 0}));
+    let n = node(&mut v, &c);
+    assert_eq!(n["state"], "unroutable", "{n}");
+    assert_eq!(n["issues"][0]["code"], "connector_route_degenerate", "{n}");
+    assert_eq!(n["issues"][0]["severity"], "warning", "{n}");
+    v.undo().unwrap();
+    assert_eq!(snapshot(&v), before);
+    ok(&mut v, "board.node.move", json!({"node": b, "x": 240, "y": 0}));
+    ok(&mut v, "board.node.move", json!({"node": b, "x": 700, "y": 0}));
+    let n = node(&mut v, &c);
+    assert_eq!((n["state"].clone(), n["route_current"].clone()), (json!("attached"), json!(true)), "{n}");
+}
+
+/// Review F6 (lead ruling): an arrange transform keeps the board: the node's text follows its outline and its
+/// connectors reroute in the same step; pathfinder and outlines on a board node are refused typed.
+#[test]
+fn arrange_keeps_board_nodes_and_vector_rewrites_refuse_them() {
+    use hsk_studio_harness::view::vector::TransformOp;
+    use hsk_studio_harness::view::vector::arrange::ReferencePoint;
+    let mut v = board_doc();
+    let a = shape(&mut v, 100.0, 100.0, "Discover");
+    let b = shape(&mut v, 600.0, 100.0, "Visit");
+    let c = text(&ok(&mut v, "board.connector.create", json!({"start": {"endpoint_node_id": a, "magnet": "RIGHT"}, "end": {"endpoint_node_id": b, "magnet": "LEFT"}})), "node_id");
+    v.transform_layers(&[b.clone()], TransformOp::Move { dx: 0.0, dy: 200.0 }, ReferencePoint::Centre).unwrap();
+    let e = vector_entry(&v);
+    let doc = v.run().snapshot().unwrap().document().clone();
+    let layer = doc.layers.iter().find(|l| l.layer_id == b).unwrap();
+    let paths: Vec<String> = serde_json::to_value(&layer.payload).unwrap()["path_ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_owned()).collect();
+    let container = e["vector_records"]["area_texts"].as_array().unwrap().iter().find(|t| t["container_layer_id"] == json!(b)).unwrap()["container_id"].as_str().unwrap().to_owned();
+    assert!(paths.contains(&container), "the text follows the outline: {container} in {paths:?}");
+    let n = node(&mut v, &c);
+    assert_eq!((n["state"].clone(), n["route_current"].clone()), (json!("attached"), json!(true)), "{n}");
+    assert_eq!(bounds(&node(&mut v, &b))[1], 300.0);
+    let before = snapshot(&v);
+    let unite = v.pathfinder_layers(hsk_studio_nib::pathfinder::PathfinderOp::Union, &[a.clone(), b.clone()]);
+    assert!(unite.err().unwrap_or_default().contains("board_node_not_vector_editable"));
+    let outlines = v.create_outlines(&a);
+    assert!(outlines.err().unwrap_or_default().contains("board_node_not_vector_editable"));
+    assert_eq!(snapshot(&v), before, "a refused rewrite changes nothing");
+}
+
+/// Review F8: the ERD zero is a hollow ring: its centre shows the background.
+#[test]
+fn an_erd_zero_ring_is_hollow() {
+    let scratch = Scratch::new("board-erd");
+    let mut v = board_doc();
+    let a = text(&ok(&mut v, "board.sticky.create", json!({"x": 0, "y": 0, "text": "A"})), "node_id");
+    let b = text(&ok(&mut v, "board.sticky.create", json!({"x": 600, "y": 0, "text": "B"})), "node_id");
+    ok(&mut v, "board.connector.create", json!({"start": {"endpoint_node_id": a, "magnet": "RIGHT"}, "end": {"endpoint_node_id": b, "magnet": "LEFT"}, "connector_line_type": "STRAIGHT", "connector_end_stroke_cap": "ERD_ZERO_OR_MORE"}));
+    let png = scratch.0.join("erd.png");
+    let report = ok(&mut v, "board.export_png", json!({"path": png.to_string_lossy()}));
+    let origin = [report["bounds"][0].as_f64().unwrap(), report["bounds"][1].as_f64().unwrap()];
+    let img = raster::decode(&std::fs::read(&png).unwrap(), &raster::Limits::default(), &CancellationToken::default()).unwrap();
+    let raster::Samples::U8(px) = &img.samples else { panic!("8-bit PNG") };
+    let channels = px.len() / (img.width as usize * img.height as usize);
+    let at = |x: f64, y: f64| {
+        let i = (((y - origin[1]) as usize) * img.width as usize + (x - origin[0]) as usize) * channels;
+        px[i..i + channels].to_vec()
+    };
+    // The ring centre at stroke width 2 (composite board.rs: cap size 12, ring radius 6, centre 12 + 6 + 2 back
+    // from the tip) and a background point beside it.
+    let back = 20.0;
+    assert_eq!(at(600.0 - back, 120.0), at(600.0 - back, 90.0), "the ring centre is background");
+}
+
+/// Review F11: every native shape's text fits it.
+#[test]
+fn every_native_shape_fits_its_text() {
+    let mut v = board_doc();
+    let tokens = ["rectangle", "rounded_rectangle", "ellipse", "diamond", "triangle", "parallelogram", "hexagon", "cylinder", "cloud", "document", "predefined_process", "terminator"];
+    for (i, token) in tokens.iter().enumerate() {
+        let made = ok(&mut v, "board.shape_with_text.create", json!({"x": 300.0 * (i % 4) as f64, "y": 200.0 * (i / 4) as f64, "shape_type": format!("studio_declared:{token}"), "text": format!("{token} text")}));
+        let n = node(&mut v, &text(&made, "node_id"));
+        assert_eq!(n["text_overset"], 0, "{token}: {n}");
+    }
+}
+
+/// Review F12: a sticky wraps text over several lines (an ordinary story); a connector reads no fill.
+#[test]
+fn a_sticky_holds_several_lines_and_a_connector_reads_no_fill() {
+    let mut v = board_doc();
+    let s = ok(&mut v, "board.sticky.create", json!({"x": 0, "y": 0, "text": "Goals\nParking at night\nShuttle"}));
+    let sticky = text(&s, "node_id");
+    let n = node(&mut v, &sticky);
+    assert_eq!(n["text"], "Goals\nParking at night\nShuttle");
+    assert_eq!(n["text_overset"], 0, "{n}");
+    let a = shape(&mut v, 400.0, 0.0, "A");
+    let c = ok(&mut v, "board.connector.create", json!({"start": {"endpoint_node_id": sticky, "magnet": "AUTO"}, "end": {"endpoint_node_id": a, "magnet": "AUTO"}}));
+    let n = node(&mut v, &text(&c, "node_id"));
+    assert_eq!(n["fill"], Value::Null, "STU-WB-106: a connector carries no fill: {n}");
+    assert!(n["stroke"].is_array(), "{n}");
 }
 
 #[test]
@@ -335,6 +549,7 @@ fn hostile_board_commands_are_typed_refusals_that_change_nothing() {
         ("board.sticky.set", json!({"node": a, "is_wide_width": true}), "board_node_kind_mismatch"),
         ("board.section.set", json!({"node": a, "name": "S"}), "board_node_kind_mismatch"),
         ("board.export_png", json!({"path": ""}), "export_path_missing"),
+        ("board.connector.create", json!({"start": {"endpoint_node_id": a, "magnet": "TOP"}, "end": {"endpoint_node_id": a, "magnet": "TOP"}}), "board_geometry_invalid"),
     ];
     for (id, params, code) in cases {
         refused(&mut v, id, params.clone(), code);
@@ -392,21 +607,25 @@ struct Live {
 }
 
 impl Live {
-    fn read(&mut self) -> Value {
+    /// One reply within 30 s (review F10: a hang names its step, well inside nextest's 120 s cap).
+    fn read(&mut self, step: &str) -> Value {
         loop {
             if let Some(at) = self.pending.iter().position(|b| *b == b'\n') {
                 let line: Vec<u8> = self.pending.drain(..=at).collect();
-                return serde_json::from_slice(&line).unwrap_or_else(|e| panic!("reply is not JSON ({e}): {}", String::from_utf8_lossy(&line)));
+                return serde_json::from_slice(&line).unwrap_or_else(|e| panic!("{step}: reply is not JSON ({e}): {}", String::from_utf8_lossy(&line)));
             }
-            let more = self.rx.recv_timeout(Duration::from_secs(120)).expect("a reply line within 120 s");
+            let more = self.rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| panic!("{step}: no reply within 30 s"));
             self.pending.extend(more);
         }
     }
 
     fn call(&mut self, id: &str, parameters: Value) -> Value {
         let line = json!({"command": "command", "command_id": id, "parameters": parameters}).to_string();
+        let started = std::time::Instant::now();
         self.tx.as_ref().expect("open session").send(format!("{line}\n").into_bytes()).unwrap();
-        self.read()
+        let reply = self.read(id);
+        println!("REPLY {id} {:?}", started.elapsed());
+        reply
     }
 
     fn ok(&mut self, id: &str, parameters: Value) -> Value {
@@ -416,21 +635,32 @@ impl Live {
     }
 }
 
-/// The workshop steps of `workflows/scenario-board-slides-web.json` (1, 3, 6, 8 to 13, 26) as a model runs them:
-/// the JSONL loop of `cli/drive.rs`, every parameter as text, every edit a named undo step attributed to the
-/// caller, to a saved document and a PNG of the board.
+/// Review F3 (common rule UNDO NAMES): a mutating row's undo name is its catalog id, and its own record names
+/// that id with the caller's actor (the reply's `attribution` is the session's and cannot fail).
+fn assert_committed_as(reply: &Value, id: &str, actor: &str) {
+    assert_eq!(reply["detail"]["undo_name"], id, "the undo name is the catalog id: {reply}");
+    let record = reply["state"]["ops"].as_array().and_then(|o| o.last()).cloned().unwrap_or_default();
+    assert_eq!((record["op"].as_str(), record["command_id"].as_str()), (Some(id), Some(id)), "{record}");
+    assert_eq!(record["actor"]["account_id"], actor, "{record}");
+}
+
+/// The workshop steps of `workflows/scenario-board-slides-web.json` (1, 6, 8, 10, 11, 12, 26) as a model runs
+/// them: `new --profile board`, then the JSONL loop of `cli/drive.rs` with only what needs the wire (one create
+/// per kind, a connector, a move, save, export; review F10), every parameter as text and every edit named by
+/// its catalog id with the caller's actor (review F3).
 #[test]
 fn the_workshop_board_steps_run_through_the_jsonl_loop() {
     let scratch = Scratch::new("board-jsonl");
     let package = scratch.0.join("start.handshake").to_string_lossy().into_owned();
     let who = ["--actor", "board-lane", "--session", "board-session"];
-    let mut args: Vec<String> = ["new", package.as_str(), "--profile", "board"].iter().map(|s| (*s).to_string()).collect();
+    let mut args: Vec<String> = ["new", package.as_str(), "--profile", "board", "--size", "640x480"].iter().map(|s| (*s).to_string()).collect();
     args.extend(who.iter().map(|s| (*s).to_string()));
     let out = hsk_studio_harness::cli::run(&args);
     assert_eq!(out.exit, 0, "{}", out.stdout);
     let saved = scratch.0.join("workshop.handshake").to_string_lossy().into_owned();
     let png = scratch.0.join("plan.png").to_string_lossy().into_owned();
     let args: Vec<String> = ["command", package.as_str(), "--stdin"].iter().chain(who.iter()).map(|s| (*s).to_string()).collect();
+    let started = std::time::Instant::now();
     let exit = std::thread::scope(|scope| {
         let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>();
         let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
@@ -440,43 +670,32 @@ fn the_workshop_board_steps_run_through_the_jsonl_loop() {
             hsk_studio_harness::cli::run_streams(args, &mut input, &mut ChanWriter(out_tx))
         });
         let mut s = Live { tx: Some(in_tx), rx: out_rx, pending: Vec::new() };
-        assert_eq!(s.read()["ok"], true, "the session opens");
-        // A package made by `new --profile board` is a board document once its first node is made; a
-        // session's document.new lists its board at once.
-        // A small board keeps every reply's state projection cheap.
-        s.ok("document.new", json!({"profile": "board", "width": 640, "height": 480}));
-        let steps = [
-            s.ok("board.add", json!({"name": "Plan"})),
-            s.ok("board.section.create", json!({"x": 0, "y": 0, "width": 1200, "height": 800, "name": "Goals"})),
-            s.ok("board.sticky.create", json!({"x": 40, "y": 60, "text": "Night-time parking is the blocker", "author_visible": true, "is_wide_width": false})),
-        ];
-        let a = s.ok("board.shape_with_text.create", json!({"x": 400, "y": 80, "shape_type": "studio_declared:rectangle", "text": "Discover"}));
-        let b = s.ok("board.shape_with_text.create", json!({"x": 800, "y": 300, "shape_type": "studio_declared:ellipse", "text": "Visit"}));
-        let (shape_a, shape_b) = (a["detail"]["result"]["node_id"].as_str().unwrap().to_owned(), b["detail"]["result"]["node_id"].as_str().unwrap().to_owned());
-        let c = s.ok(
-            "board.connector.create",
-            json!({"start": {"endpoint_node_id": shape_a, "magnet": "RIGHT"}, "end": {"endpoint_node_id": shape_b, "magnet": "AUTO"}, "connector_line_type": "ELBOWED", "connector_end_stroke_cap": "ARROW_EQUILATERAL"}),
-        );
-        let moved = s.ok("board.node.move", json!({"node": shape_b, "x": 800, "y": 500}));
-        for reply in steps.iter().chain([&a, &b, &c, &moved]) {
-            assert!(reply["detail"]["undo_name"].is_string(), "names its undo step: {reply}");
-            assert_eq!(reply["attribution"]["actor"]["account_id"], "board-lane", "{reply}");
-        }
+        assert_eq!(s.read("open")["ok"], true, "the session opens");
+        let section = s.ok("board.section.create", json!({"x": 0, "y": 0, "width": 600, "height": 440, "name": "Goals"}));
+        assert_committed_as(&section, "board.section.create", "board-lane");
+        let sticky = s.ok("board.sticky.create", json!({"x": 20, "y": 40, "text": "Night-time parking is the blocker", "author_visible": true, "is_wide_width": false}));
+        assert_committed_as(&sticky, "board.sticky.create", "board-lane");
+        let a = s.ok("board.shape_with_text.create", json!({"x": 300, "y": 40, "shape_type": "studio_declared:rectangle", "text": "Discover"}));
+        assert_committed_as(&a, "board.shape_with_text.create", "board-lane");
+        let shape_a = a["detail"]["result"]["node_id"].as_str().unwrap().to_owned();
+        let shape_b = sticky["detail"]["result"]["node_id"].as_str().unwrap().to_owned();
+        let c = s.ok("board.connector.create", json!({"start": {"endpoint_node_id": shape_a, "magnet": "BOTTOM"}, "end": {"endpoint_node_id": shape_b, "magnet": "AUTO"}, "connector_end_stroke_cap": "ARROW_EQUILATERAL"}));
+        assert_committed_as(&c, "board.connector.create", "board-lane");
+        let moved = s.ok("board.node.move", json!({"node": shape_a, "x": 320, "y": 300}));
+        assert_committed_as(&moved, "board.node.move", "board-lane");
         assert_eq!(moved["detail"]["result"]["rerouted"].as_array().unwrap().len(), 1, "{moved}");
-        let read = s.ok("board.read", json!({}));
-        assert_eq!(read["detail"]["result"]["boards"].as_array().unwrap().len(), 2, "{read}");
-        assert_eq!(read["detail"]["result"]["nodes"].as_array().unwrap().len(), 5, "{read}");
         s.ok("document.save", json!({"path": saved}));
         s.ok("board.export_png", json!({"path": png}));
         drop(s.tx.take());
         handle.join().unwrap()
     });
+    println!("JSONL steps in {:?}", started.elapsed());
     assert_eq!(exit, 0);
     assert!(std::fs::metadata(&png).unwrap().len() > 0);
     // The saved document reopens in whiteboard mode with its nodes.
     let mut w = Viewer::new(Prefer::Cpu);
     w.open(std::path::Path::new(&saved)).unwrap();
     let again = ok(&mut w, "board.read", json!({}));
-    assert_eq!(again["nodes"].as_array().unwrap().len(), 5);
+    assert_eq!(again["nodes"].as_array().unwrap().len(), 4);
     assert_eq!(again["whiteboard_mode"], true);
 }

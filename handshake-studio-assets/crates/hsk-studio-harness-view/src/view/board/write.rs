@@ -497,6 +497,11 @@ impl Viewer {
             return Err(refused("overwrite_required", path.display()));
         }
         let job = self.admit_export_job().map_err(|r| refused(r.code, r.detail))?;
+        self.board_export_admitted(job, board, path, content_bounds)
+    }
+
+    /// The export of an admitted `job`, settled once with its outcome.
+    pub(super) fn board_export_admitted(&mut self, job: hsk_studio_session::AdmittedJob, board: Option<&str>, path: &Path, content_bounds: bool) -> Result<Value, String> {
         let result = self.board_export_inner(board, path, content_bounds);
         self.settle_export_text(job, result, "board_export_failed")
     }
