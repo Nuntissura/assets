@@ -24,7 +24,22 @@
 //!   every story placed in a text frame is shaped by hsk-studio-type with the viewer's fonts (the
 //!   character style's family and size, else the paragraph style's, else the bundled
 //!   `Ubuntu-Light` 12 pt; a family the viewer does not have is drawn in the bundled font and
-//!   reported `font_substituted`; a paragraph terminator inside one Folio paragraph splits the
+//!   reported `font_substituted`; lane SMB-TYPE-CHARACTER-ATTRIBUTES-1: each span carries its resolved
+//!   Folio character attributes (paragraph style, character style, local override): `size`,
+//!   `leading` (the paragraph's line height is its largest), `tracking` and `kerning_manual` (added
+//!   to every glyph advance), `baseline_shift`, the OpenType feature map plus the `kerning_mode`,
+//!   `capitalization` and OpenType `position` projections as Type features, `all_caps` and
+//!   `lower_case` as a one-to-one case mapping of the shaped copy only (stored text unchanged,
+//!   STU-TYP-158), and synthesised superscript and subscript when their size and position are
+//!   stated; the span is split at Type's script runs (`script_runs`) and shaped with its run's
+//!   script and the language of its range's `applied_language` record (else the key itself when it
+//!   is a locale name, else `und`, reported `applied_language_unresolved`; no stated language is
+//!   `und`; a paragraph with no strong character is declared `Latn`; the result's `itemization`
+//!   counts spans per script and language). Attributes the PDF does not draw yet are reported per field as
+//!   `character_attribute_not_rendered` (scales, rotation, skew, aki, tsume, stroke weight,
+//!   anti-aliasing, alignment, alternate forms, baseline direction and option, digits type, the
+//!   booleans set true, underline, strikethrough, hyperlink, optical kerning, an unsynthesisable
+//!   position); a paragraph terminator inside one Folio paragraph splits the
 //!   shaping only: layout sets it as a line break, the paragraph boundary is lost (the text after
 //!   it keeps the first paragraph's style), reported `paragraph_break_inside_paragraph_set_as_line_break`), composed by layout (`reflow_flow`, first-fit, line height 1.25
 //!   em and ascent 0.75 em of the paragraph's largest size: the editor's convention), and lowered by
@@ -61,7 +76,8 @@
 //! - Not done here (declared gaps): vector paths of the layout and raster layers without a graphic
 //!   frame (the engine reports them as losses), path-shaped frames, tables (`table_not_exported`
 //!   per table), design records, outlines, tagged PDF, CMYK image numbers and CMYK conversion of
-//!   RGB fills, script and language detection (every span shapes as Latin, English). The PDF's
+//!   RGB fills, paired-bracket script resolution. IDML export reports the character attributes,
+//!   stroke styles and language records it does not write (`*_not_exported`). The PDF's
 //!   line breaks can differ from the editor's preview, whose shaping is a fixed-advance placeholder.
 //!
 //! Hostile input (V4-01/02): page sizes and counts are bounded before allocation; text over
@@ -76,7 +92,11 @@ use super::shell::{Panel, blank_layout_doc};
 use super::text::{self, DEFAULT_FONT, FontFile};
 use crate::layout_ui::{LayoutDoc, LayoutEditor, LayoutRecords};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
-use hsk_studio_folio::{self as folio, Bounds, GeometryUnit, Length, PageSide, PageSpreadSchema, Parent, Payload, StudioPage, StudioPageSpread, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope};
+use hsk_studio_folio::{
+    self as folio, Bounds, GeometryUnit, Length, PageSide, PageSpreadSchema, Parent, Payload, StudioAlternateGlyphForm, StudioBaselineDirection, StudioCapitalization,
+    StudioCharacterAlignment, StudioCharacterAttributes, StudioCharacterPosition, StudioDecoration, StudioDigitsType, StudioFontBaselineOption, StudioKerningMode, StudioPage,
+    StudioPageSpread, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
+};
 use hsk_studio_interop_layout::{
     self as il, ExportNames, FolioExportInput, LongDocExportInput, PdfExportInput, PdfFont, PdfGlyph, PdfLongDoc, PdfStory,
     StoryInput, export_folio_longdoc, export_pdf_with, page_labels_from_sections, pdf_glyphs_from_type,
@@ -205,6 +225,170 @@ struct Span {
     end: u64,
     font: usize,
     size_pt: f64,
+    /// ISO 15924 script of the span (Type `script_runs`).
+    script: [u8; 4],
+    /// Index of the span's [`Character`] in the export's list.
+    character: usize,
+}
+
+/// What the export applies of one span's resolved character attributes (module docs).
+#[derive(Clone, Debug, Default)]
+struct Character {
+    /// OpenType features by tag (STU-TYP-170 map plus the kerning, capitalization and position
+    /// projections).
+    features: BTreeMap<[u8; 4], u32>,
+    /// Added to every glyph advance: (tracking + kerning_manual) / 1000 of the size, in pt.
+    extra_advance_pt: f64,
+    baseline_shift_pt: f64,
+    leading_pt: Option<f64>,
+    /// One-to-one case mapping of the shaped copy: `Some(true)` upper, `Some(false)` lower.
+    upper: Option<bool>,
+    /// BCP 47 shaping language.
+    language: String,
+}
+
+/// A language key's shaping tag: its record's ICU name as BCP 47, else the key when it is a
+/// locale name, else `None` (module docs).
+fn shaping_language(styles: &StudioTypeStyleRecords, key: &str) -> Option<String> {
+    if let Some(l) = styles.language(key) {
+        return Some(l.language_tag());
+    }
+    let mut parts = key.split(['_', '-']);
+    let locale = key.len() <= 63
+        && parts.next().is_some_and(|p| (2..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphabetic()))
+        && parts.all(|p| (1..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()));
+    locale.then(|| key.replace('_', "-"))
+}
+
+/// The export's reading of one span's resolved attributes at the style size `size_pt`, and the
+/// span's size (module docs). Fields it cannot draw count in `not_rendered`.
+fn character_of(a: &StudioCharacterAttributes, size_pt: f64, script: [u8; 4], language: String, not_rendered: &mut BTreeMap<&'static str, u32>) -> (Character, f64) {
+    let mut miss = |field: &'static str| {
+        let n = not_rendered.entry(field).or_insert(0);
+        *n = n.saturating_add(1);
+    };
+    let mut c = Character { language, leading_pt: a.leading, ..Character::default() };
+    for (tag, value) in &a.opentype_features {
+        if let Ok(t) = <[u8; 4]>::try_from(tag.as_bytes()) {
+            c.features.insert(t, *value);
+        }
+    }
+    match a.kerning_mode {
+        Some(StudioKerningMode::None) => {
+            c.features.insert(*b"kern", 0);
+        }
+        Some(StudioKerningMode::MetricsRomanOnly) if script != *b"Latn" => {
+            c.features.insert(*b"kern", 0);
+        }
+        Some(StudioKerningMode::Optical) => miss("kerning_mode"),
+        _ => {}
+    }
+    match a.capitalization {
+        Some(StudioCapitalization::SmallCaps) => {
+            c.features.entry(*b"smcp").or_insert(1);
+        }
+        Some(StudioCapitalization::AllSmallCaps) => {
+            c.features.entry(*b"smcp").or_insert(1);
+            c.features.entry(*b"c2sc").or_insert(1);
+        }
+        Some(StudioCapitalization::AllCaps) => c.upper = Some(true),
+        Some(StudioCapitalization::LowerCase) => c.upper = Some(false),
+        Some(StudioCapitalization::Normal) | None => {}
+    }
+    let mut size = size_pt;
+    let mut shift = a.baseline_shift.unwrap_or(0.0);
+    match a.position {
+        Some(StudioCharacterPosition::OtSuperscript) => {
+            c.features.entry(*b"sups").or_insert(1);
+        }
+        Some(StudioCharacterPosition::OtSubscript) => {
+            c.features.entry(*b"subs").or_insert(1);
+        }
+        Some(StudioCharacterPosition::OtNumerator) => {
+            c.features.entry(*b"numr").or_insert(1);
+        }
+        Some(StudioCharacterPosition::OtDenominator) => {
+            c.features.entry(*b"dnom").or_insert(1);
+        }
+        Some(p @ (StudioCharacterPosition::Superscript | StudioCharacterPosition::Subscript)) => {
+            let up = p == StudioCharacterPosition::Superscript;
+            let (scale, position) = if up { (a.superscript_size, a.superscript_position) } else { (a.subscript_size, a.subscript_position) };
+            match (scale, position) {
+                // Sizes are percent of the type size, positions percent of the leading (STU-TYP-158);
+                // a subscript position moves down. UNVERIFIED against the source applications (D5).
+                (Some(scale), Some(position)) if scale > 0.0 => {
+                    let leading = a.leading.unwrap_or(size_pt * 1.25);
+                    size = size_pt * scale / 100.0;
+                    shift += if up { leading * position / 100.0 } else { -(leading * position / 100.0) };
+                }
+                _ => miss("position"),
+            }
+        }
+        Some(StudioCharacterPosition::Normal) | None => {}
+    }
+    c.baseline_shift_pt = shift;
+    c.extra_advance_pt = (a.tracking.unwrap_or(0.0) + a.kerning_manual.unwrap_or(0.0)) / 1000.0 * size;
+    let stated = |v: Option<f64>, default: f64| v.is_some_and(|v| v != default);
+    for (field, drawn_wrong) in [
+        ("horizontal_scale", stated(a.horizontal_scale, 100.0)),
+        ("vertical_scale", stated(a.vertical_scale, 100.0)),
+        ("character_rotation", stated(a.character_rotation, 0.0)),
+        ("skew", stated(a.skew, 0.0)),
+        ("aki_left", stated(a.aki_left, 0.0)),
+        ("aki_right", stated(a.aki_right, 0.0)),
+        ("tsume", stated(a.tsume, 0.0)),
+        ("stroke_weight", stated(a.stroke_weight, 0.0)),
+        ("anti_alias_method", a.anti_alias_method.is_some()),
+        ("character_alignment", a.character_alignment.is_some_and(|v| v != StudioCharacterAlignment::Baseline)),
+        ("alternate_glyph_form", a.alternate_glyph_form.is_some_and(|v| v != StudioAlternateGlyphForm::None)),
+        ("baseline_direction", a.baseline_direction.is_some_and(|v| v != StudioBaselineDirection::Standard)),
+        ("font_baseline_option", a.font_baseline_option.is_some_and(|v| v != StudioFontBaselineOption::Normal)),
+        ("digits_type", a.digits_type.is_some_and(|v| v != StudioDigitsType::Default)),
+        ("no_break", a.no_break == Some(true)),
+        ("faux_bold", a.faux_bold == Some(true)),
+        ("faux_italic", a.faux_italic == Some(true)),
+        ("fractional_widths", a.fractional_widths == Some(false)),
+        ("overlap_swash", a.overlap_swash == Some(true)),
+        ("stretched_alternate", a.stretched_alternate == Some(true)),
+        ("connection_forms", a.connection_forms == Some(true)),
+        ("kana", a.kana == Some(true)),
+        ("italics", a.italics == Some(true)),
+        ("rotate_single_byte_characters", a.rotate_single_byte_characters == Some(true)),
+        ("cjk_grid_tracking", a.cjk_grid_tracking == Some(true)),
+        ("overprint_fill", a.overprint_fill == Some(true)),
+        ("overprint_stroke", a.overprint_stroke == Some(true)),
+        ("underline", a.underline.as_ref().is_some_and(StudioDecoration::draws)),
+        ("strikethrough", a.strikethrough.as_ref().is_some_and(StudioDecoration::draws)),
+        ("hyperlink", a.hyperlink.is_some()),
+    ] {
+        if drawn_wrong {
+            miss(field);
+        }
+    }
+    (c, size)
+}
+
+/// The shaped copy of `text` (bytes relative to it): every span with a case mapping maps its
+/// characters one to one where the mapped character has the same UTF-8 length (a character whose
+/// case form differs in length, or is several characters, is kept).
+fn case_mapped(text: &str, spans: &[Span], characters: &[Character]) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        let at = i as u64;
+        let upper = spans.iter().find(|s| s.start <= at && at < s.end).and_then(|s| characters.get(s.character)).and_then(|c| c.upper);
+        let mapped = match upper {
+            Some(true) => one(c.to_uppercase()),
+            Some(false) => one(c.to_lowercase()),
+            None => None,
+        };
+        out.push(mapped.filter(|m| m.len_utf8() == c.len_utf8()).unwrap_or(c));
+    }
+    out
+}
+
+fn one(mut it: impl Iterator<Item = char>) -> Option<char> {
+    let first = it.next()?;
+    it.next().is_none().then_some(first)
 }
 
 /// One paragraph before shaping: its story byte range, the visible range inside it (paragraph
@@ -256,6 +440,7 @@ fn shape_paragraph(
     fonts: &[FontFile],
     text: &str,
     spans: &[Span],
+    characters: &[Character],
     offset: u64,
     line: (f64, f64),
     pdf_fonts: &[PdfFont<'_>],
@@ -264,6 +449,15 @@ fn shape_paragraph(
     cancel: &CancellationToken,
 ) -> Result<(ShapedParagraph, Vec<PdfGlyph>)> {
     let internal = |what: &str| LayoutExportRefusal::new("layout_internal", what.to_string());
+    let mapped = case_mapped(text, spans, characters);
+    let text = mapped.as_str();
+    let features: Vec<Vec<ty::Feature>> = spans
+        .iter()
+        .map(|s| {
+            let range = ty::SourceRange { start: s.start, end: s.end };
+            characters.get(s.character).map_or_else(Vec::new, |c| c.features.iter().map(|(tag, value)| ty::Feature { tag: *tag, value: *value, range, declared: false }).collect())
+        })
+        .collect();
     let (document, story, layer, style_owner) = (
         DomainId::parse(PROBE_DOC).map_err(|_| internal("probe id"))?,
         DomainId::parse(PROBE_STORY).map_err(|_| internal("probe id"))?,
@@ -282,8 +476,9 @@ fn shape_paragraph(
     let styles: Vec<ty::Style<'_>> = spans
         .iter()
         .zip(&candidates)
+        .zip(&features)
         .enumerate()
-        .map(|(i, (s, c))| {
+        .map(|(i, ((s, c), f))| {
             let read_index = u32::try_from(i).ok().and_then(|v| v.checked_add(1)).ok_or_else(|| internal("span count"))?;
             Ok(ty::Style {
                 read_index,
@@ -292,10 +487,10 @@ fn shape_paragraph(
                 requested_identity: c[0].identity,
                 candidates: c,
                 substitution: None,
-                script: *b"Latn",
-                language: "en",
+                script: s.script,
+                language: characters.get(s.character).map_or("und", |c| c.language.as_str()),
                 character_override: ty::CharacterOverride::Default,
-                features: &[],
+                features: f,
                 axes: &[],
             })
         })
@@ -340,8 +535,18 @@ fn shape_paragraph(
         let prepared = ty::TextEngine.shaped_runs(request, &ports).map_err(|r| LayoutExportRefusal::new("text_shaping_refused", format!("{:?}", r.error)))?;
         let p = prepared.paragraphs().first().ok_or_else(|| internal("no shaped paragraph"))?;
         let mut shaped = ShapedParagraph::from_type(p, line.0, line.1);
-        let glyphs = pdf_glyphs_from_type(p, pdf_fonts).map_err(|e| LayoutExportRefusal::new(e.code(), e.to_string()))?;
-        for g in &mut shaped.glyphs {
+        let mut glyphs = pdf_glyphs_from_type(p, pdf_fonts).map_err(|e| LayoutExportRefusal::new(e.code(), e.to_string()))?;
+        // Tracking, manual kerning and baseline shift of the glyph's span (module docs).
+        for (i, g) in shaped.glyphs.iter_mut().enumerate() {
+            if let Some(c) = spans.iter().find(|s| s.start <= g.cluster.start && g.cluster.start < s.end).and_then(|s| characters.get(s.character)) {
+                g.advance_pt += c.extra_advance_pt;
+                if let Some(pdf) = glyphs.get_mut(i) {
+                    pdf.y_offset_pt += c.baseline_shift_pt;
+                }
+                if let Some(a) = shaped.line_end_advances.iter_mut().find(|a| a.glyph == i) {
+                    a.advance_pt += c.extra_advance_pt;
+                }
+            }
             g.cluster = SourceSpan { start: g.cluster.start.saturating_add(offset), end: g.cluster.end.saturating_add(offset) };
         }
         for l in &mut shaped.ligature_parts {
@@ -353,9 +558,22 @@ fn shape_paragraph(
     Ok(out)
 }
 
+/// What [`plan_story`] collects over every story of one export.
+struct Plan<'a> {
+    fonts: &'a [FontFile],
+    fallback: usize,
+    used: BTreeSet<usize>,
+    substituted: BTreeMap<String, u32>,
+    characters: Vec<Character>,
+    not_rendered: BTreeMap<&'static str, u32>,
+    languages_unresolved: u32,
+    /// Spans per (script, shaping language): the itemization receipt.
+    itemized: BTreeMap<(String, String), u32>,
+}
+
 /// The paragraphs of `story` with their spans (module docs: character style, else paragraph
-/// style, else the bundled font); `used` collects the font indices, `host_loss` the substitutions.
-fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, fonts: &[FontFile], fallback: usize, used: &mut BTreeSet<usize>, substituted: &mut BTreeMap<String, u32>) -> Result<Vec<Planned>> {
+/// style, else the bundled font; the resolved character attributes; one script per span).
+fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut Plan<'_>) -> Result<Vec<Planned>> {
     let text = story_text(st);
     let total = text.len() as u64;
     let mut out = Vec::with_capacity(st.paragraphs.len());
@@ -368,10 +586,14 @@ fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, fonts: &[Fo
         let trail = body.len().saturating_sub(body.trim_end_matches(TERMINATORS).len()) as u64;
         let visible_start = p.start.saturating_add(lead).min(p.end);
         let visible_end = p.end.saturating_sub(trail).max(visible_start);
+        let visible = text.get(usize::try_from(visible_start).unwrap_or(usize::MAX)..usize::try_from(visible_end).unwrap_or(usize::MAX)).unwrap_or("");
+        let runs = ty::script_runs(visible, visible.len().saturating_add(1)).map_err(|e| LayoutExportRefusal::new("text_itemization_refused", format!("{e:?}")))?;
         let (para_family, para_size) = style_font(styles, p.style_ref.as_deref(), TypeStyleScope::Paragraph);
         let mut cuts: BTreeSet<u64> = [visible_start, visible_end].into_iter().collect();
-        for r in &st.character_ranges {
-            for at in [r.start, r.end] {
+        let overrides = styles.character_overrides.iter().filter(|o| o.text_id == st.story_id).map(|o| (o.start, o.end));
+        let script_cuts = runs.iter().map(|r| (visible_start.saturating_add(r.range.start), visible_start.saturating_add(r.range.end)));
+        for (a, b) in st.character_ranges.iter().map(|r| (r.start, r.end)).chain(overrides).chain(script_cuts) {
+            for at in [a, b] {
                 if at > visible_start && at < visible_end {
                     cuts.insert(at);
                 }
@@ -381,23 +603,40 @@ fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, fonts: &[Fo
         let mut spans = Vec::new();
         for w in cuts.windows(2) {
             let (a, b) = (w[0], w[1]);
-            let range = st.character_ranges.iter().find(|r| r.start <= a && r.end >= b && r.style_ref.is_some());
+            let range = st.character_ranges.iter().find(|r| r.start <= a && a < r.end);
             let (cf, cs) = style_font(styles, range.and_then(|r| r.style_ref.as_deref()), TypeStyleScope::Character);
+            let attributes = styles.resolved_character(&st.story_id, a, p.style_ref.as_deref(), range.and_then(|r| r.style_ref.as_deref()));
             let family = cf.or_else(|| para_family.clone());
-            let size_pt = cs.or(para_size).unwrap_or(DEFAULT_SIZE_PT);
+            let size_pt = attributes.size.or(cs).or(para_size).unwrap_or(DEFAULT_SIZE_PT);
+            let rel = a.saturating_sub(visible_start);
+            // A paragraph with no strong character is one `Zyyy` run; the engine shapes `Zyyy` only
+            // for default-ignorables, so such text is declared Latin (as before this lane).
+            let script = runs.iter().find(|r| r.range.start <= rel && rel < r.range.end).map_or(*b"Latn", |r| if r.script == *b"Zyyy" { *b"Latn" } else { r.script });
+            let language = match range.and_then(|r| r.applied_language.as_deref()) {
+                None => "und".to_string(),
+                Some(key) => shaping_language(styles, key).unwrap_or_else(|| {
+                    plan.languages_unresolved = plan.languages_unresolved.saturating_add(1);
+                    "und".to_string()
+                }),
+            };
+            let key = (String::from_utf8_lossy(&script).into_owned(), language.clone());
+            let n = plan.itemized.entry(key).or_insert(0);
+            *n = n.saturating_add(1);
+            let (character, size_pt) = character_of(&attributes, size_pt, script, language, &mut plan.not_rendered);
             let font = match family.as_deref() {
-                None => fallback,
-                Some(name) => match fonts.iter().position(|f| f.family == name) {
+                None => plan.fallback,
+                Some(name) => match plan.fonts.iter().position(|f| f.family == name) {
                     Some(i) => i,
                     None => {
-                        let n = substituted.entry(name.to_string()).or_insert(0);
+                        let n = plan.substituted.entry(name.to_string()).or_insert(0);
                         *n = n.saturating_add(1);
-                        fallback
+                        plan.fallback
                     }
                 },
             };
-            used.insert(font);
-            spans.push(Span { start: a.saturating_sub(visible_start), end: b.saturating_sub(visible_start), font, size_pt });
+            plan.used.insert(font);
+            spans.push(Span { start: a.saturating_sub(visible_start), end: b.saturating_sub(visible_start), font, size_pt, script, character: plan.characters.len() });
+            plan.characters.push(character);
         }
         out.push(Planned { start: p.start, end: p.end, visible_start, visible_end, spans });
     }
@@ -581,13 +820,13 @@ impl Viewer {
         if text_bytes > MAX_EXPORT_TEXT_BYTES {
             return Err(LayoutExportRefusal::new("layout_text_over_budget", format!("{text_bytes} bytes of story text; at most {MAX_EXPORT_TEXT_BYTES}")));
         }
-        let mut used = BTreeSet::new();
-        let mut substituted = BTreeMap::new();
+        let mut plan = Plan { fonts, fallback, used: BTreeSet::new(), substituted: BTreeMap::new(), characters: Vec::new(), not_rendered: BTreeMap::new(), languages_unresolved: 0, itemized: BTreeMap::new() };
         let mut plans = Vec::with_capacity(framed.len());
         for i in &framed {
             let st = doc.stories.get(*i).ok_or_else(|| LayoutExportRefusal::new("layout_internal", "story index"))?;
-            plans.push((*i, plan_story(st, &doc.styles, fonts, fallback, &mut used, &mut substituted)?));
+            plans.push((*i, plan_story(st, &doc.styles, &mut plan)?));
         }
+        let Plan { used, substituted, characters, not_rendered, languages_unresolved, itemized, .. } = plan;
         let used: Vec<usize> = used.into_iter().collect();
         let pdf_fonts: Vec<PdfFont<'_>> = used
             .iter()
@@ -604,7 +843,9 @@ impl Viewer {
             let mut glyphs = Vec::with_capacity(planned.len());
             for p in planned {
                 let size = if p.spans.is_empty() { DEFAULT_SIZE_PT } else { p.spans.iter().map(|s| s.size_pt).fold(0.0, f64::max) };
-                let line = (size * 1.25, size * 0.75);
+                // The largest stated leading, else 1.25 em of each span's size (module docs).
+                let height = if p.spans.is_empty() { size * 1.25 } else { p.spans.iter().map(|s| characters.get(s.character).and_then(|c| c.leading_pt).unwrap_or(s.size_pt * 1.25)).fold(0.0, f64::max) };
+                let line = (height, (size * 0.75).min(height));
                 let visible = text.get(usize::try_from(p.visible_start).unwrap_or(usize::MAX)..usize::try_from(p.visible_end).unwrap_or(usize::MAX)).unwrap_or("");
                 let mut shaped = ShapedParagraph::from_fixed_advance(text, SourceSpan { start: p.start, end: p.start }, 0.0, line.0, line.1).ok_or_else(|| LayoutExportRefusal::new("story_paragraph_range", st.story_id.clone()))?;
                 let mut g = Vec::new();
@@ -617,7 +858,7 @@ impl Viewer {
                 for (k, (a, b)) in pieces.into_iter().enumerate() {
                     let spans: Vec<Span> = p.spans.iter().filter(|s| s.end > a && s.start < b).map(|s| Span { start: s.start.max(a).saturating_sub(a), end: s.end.min(b).saturating_sub(a), ..*s }).collect();
                     let piece = visible.get(usize::try_from(a).unwrap_or(usize::MAX)..usize::try_from(b).unwrap_or(usize::MAX)).unwrap_or("");
-                    let (part, part_glyphs) = shape_paragraph(fonts, piece, &spans, p.visible_start.saturating_add(a), line, &pdf_fonts, composition, &actor, cancel)?;
+                    let (part, part_glyphs) = shape_paragraph(fonts, piece, &spans, &characters, p.visible_start.saturating_add(a), line, &pdf_fonts, composition, &actor, cancel)?;
                     if k == 0 {
                         shaped = part;
                     } else {
@@ -715,6 +956,10 @@ impl Viewer {
         if inner_breaks > 0 {
             host_loss.push(json!({"code": "paragraph_break_inside_paragraph_set_as_line_break", "element": "stories", "count": inner_breaks}));
         }
+        host_loss.extend(not_rendered.iter().map(|(field, n)| json!({"code": "character_attribute_not_rendered", "element": field, "count": n})));
+        if languages_unresolved > 0 {
+            host_loss.push(json!({"code": "applied_language_unresolved", "element": "character_ranges", "count": languages_unresolved}));
+        }
         let tables = rec.longdoc.tables.len();
         if tables > 0 {
             host_loss.push(json!({"code": "table_not_exported", "element": "tables", "count": tables}));
@@ -727,7 +972,8 @@ impl Viewer {
             "default_fill": match default_fill { Colour::DeviceCmyk(_) => "device_cmyk", Colour::DeviceGray(_) => "device_gray", _ => "device_rgb" },
             "glyphs_drawn": out.glyphs_drawn, "paths_drawn": out.paths_drawn, "tiles_drawn": out.tiles_drawn, "placements": placements, "lines": lines, "overset_stories": overset,
             "fonts": used.iter().filter_map(|i| fonts.get(*i)).map(|f| f.family.as_str()).collect::<Vec<_>>(), "page_labels": labels.len(),
-            "loss": loss_json(&out.loss), "host_loss": host_loss, "preflight": report_json(&report, MAX_LISTED_FINDINGS), "pdfx": pdfx,
+            "loss": loss_json(&out.loss), "host_loss": host_loss,
+            "itemization": itemized.iter().map(|((script, language), n)| json!({"script": script, "language": language, "spans": n})).collect::<Vec<_>>(), "preflight": report_json(&report, MAX_LISTED_FINDINGS), "pdfx": pdfx,
             "receipt": {"version": receipt.version, "pages": receipt.pages, "fonts_embedded": receipt.fonts_embedded, "conformance": receipt.conformance,
                         "effective_output_condition": receipt.effective_output_condition, "effective_destination_profile_sha256": receipt.effective_destination_profile_sha256,
                         "effective_pdfx_profile": receipt.effective_pdfx_profile},
@@ -772,6 +1018,7 @@ impl Viewer {
             let mut out = export_folio_longdoc(&input, &LongDocExportInput { records: &rec.longdoc, stories: &note_stories }, &il::Limits::default(), v.cancel)
                 .map_err(|e| LayoutExportRefusal::new(e.code(), "idml export"))?;
             out.loss.extend(il::type_style_composition_loss(&doc.styles));
+            out.loss.extend(character_idml_loss(&doc.styles));
             write_atomic(path, &out.bytes).map_err(|code| LayoutExportRefusal::new(code, path.display().to_string()))?;
             Ok(json!({"path": path.to_string_lossy(), "bytes": out.bytes.len(), "sha256": hex(&hsk_studio_prism::profile_hash(&out.bytes)), "stories": stories.len(), "note_stories": note_stories.len(), "pages": pages_json(doc), "loss": loss_json(&out.loss)}))
         })
@@ -799,6 +1046,23 @@ impl Viewer {
                       "notes": page_image.notes, "font_warnings": page_image.font_warnings, "image_warnings": page_image.image_warnings}))
         })
     }
+}
+
+/// STU-IO-012 receipts for the lane SMB-TYPE-CHARACTER-ATTRIBUTES-1 records IDML export does not
+/// write yet: character attributes of styles and local overrides, stored stroke styles, language
+/// records (one `unsupported` entry per kind that holds anything).
+fn character_idml_loss(styles: &StudioTypeStyleRecords) -> Vec<il::LossEntry> {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    [
+        ("Resources/Styles.xml", "CharacterStyle", "character_attributes_not_exported", styles.style_character.len()),
+        ("Stories", "CharacterStyleRange", "character_overrides_not_exported", styles.character_overrides.len()),
+        ("Resources/Styles.xml", "StrokeStyle", "stroke_styles_not_exported", styles.stroke_styles.len()),
+        ("Resources/Preferences.xml", "Language", "languages_not_exported", styles.languages.len()),
+    ]
+    .into_iter()
+    .filter(|e| e.3 > 0)
+    .map(|(part, element, code, n)| il::LossEntry { part: part.into(), element: element.into(), kind: il::LossKind::Unsupported, code, count: count(n) })
+    .collect()
 }
 
 /// An existing destination needs `overwrite`.
