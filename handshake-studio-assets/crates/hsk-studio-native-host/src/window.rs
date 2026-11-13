@@ -228,6 +228,8 @@ struct Live {
     pass: Option<UiPass>,
 }
 
+/// What the presenter reported at the end of a run: counters, final state code, transitions and swapchain extent.
+type PresentReport = (PresentCounters, &'static str, Vec<String>, (u32, u32));
 
 struct App {
     args: WindowArgs,
@@ -265,7 +267,7 @@ struct App {
     target: (u32, u32),
     capture: Option<Capture>,
     scale_milli: u32,
-    report: Option<(PresentCounters, &'static str, Vec<String>, (u32, u32))>,
+    report: Option<PresentReport>,
     device: Option<Json>,
     layers: Option<Json>,
     validation: &'static str,
@@ -808,10 +810,11 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
-        if self.window.is_none() && self.error.is_none() {
-            if let Err(e) = self.start(el) {
-                self.fail(el, e);
-            }
+        if self.window.is_none()
+            && self.error.is_none()
+            && let Err(e) = self.start(el)
+        {
+            self.fail(el, e);
         }
     }
 
