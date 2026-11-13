@@ -2,6 +2,7 @@
 //! Temporal/effect providers attach through typed ports; no unconditional motion/pulse engine
 //! dependency in the static render closure.
 #![forbid(unsafe_code)]
+pub mod board;
 pub mod camera_solve;
 pub mod clip_finishing;
 pub mod composition;
