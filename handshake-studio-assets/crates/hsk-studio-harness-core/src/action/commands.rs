@@ -34,6 +34,7 @@ mod vector;
 mod video;
 mod waveform;
 mod web;
+mod web_code;
 
 pub use layer::{CMD_PANEL_SET, CMD_RENAME, CMD_RESTRUCTURE, CMD_SET_BLEND_MODE, CMD_SET_OPACITY, CMD_SET_VISIBLE};
 
@@ -194,6 +195,8 @@ const DOMAINS: &[&[CommandEntry]] = &[
     transform::ROWS,
     // Lane SMB-DS-COMPONENTS-AUTHOR-1: component, variant set, property and instance authoring.
     component::ROWS,
+    // Lane SMB-WEB-CODE-1: web code intelligence.
+    web_code::ROWS,
 ];
 
 const ROW_COUNT: usize = {

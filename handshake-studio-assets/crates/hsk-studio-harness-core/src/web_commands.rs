@@ -119,6 +119,9 @@ const MISSING_PREFIX: &str = "missing:";
 #[path = "web_site.rs"]
 mod web_site;
 pub use web_site::LOCK_FILE;
+/// Code intelligence: document types, vocabulary, CSS rules, hints, validation, lint, format (lane SMB-WEB-CODE-1).
+#[path = "web_code.rs"]
+mod web_code;
 const TEXT_EXTENSIONS: [&str; 29] = [
     "as", "ascx", "asmx", "asp", "aspx", "cfm", "cfml", "cgi", "cs", "css", "dwt", "htm", "html", "inc", "js", "lbi", "mxml", "php", "php3", "php4", "php5", "pl", "shtm", "shtml", "text", "txt", "vb", "xhtm", "xhtml",
 ];
@@ -408,6 +411,7 @@ impl WebHost {
                     "key": key_text(doc, r.node), "source": source_token(&r.source), "reference": row_text(&r.reference), "outcome": outcome_json(&r.outcome), "data_depth": r.data_depth,
                 })).collect::<Vec<_>>(), "total": refs.len()}))
             }
+            id if web_code::owns(id) => self.code_command(row, &p, ctx, cancel),
             _ => self.site_command(row, &p, ctx, cancel),
         }
     }
