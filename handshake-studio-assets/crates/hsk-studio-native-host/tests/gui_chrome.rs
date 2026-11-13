@@ -77,7 +77,8 @@ fn frame_regions_panels_and_ids() {
             "studio.dock.bottom",
             "studio.status",
             "studio.dock.state",
-            "studio.tool.active"
+            "studio.tool.active",
+            "studio.gesture.active"
         ]
     );
     let nodes = all_nodes(&f);

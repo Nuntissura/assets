@@ -30,9 +30,22 @@
 //! hover dwell only when the host feeds its clock ([`GuiFrame::advance`]; no script step does, STU-SHL-235 rule 5) or
 //! through the explicit accessibility request [`GuiFrame::show_tip`]. Menu outcomes are codes and counters in the
 //! receipt's `frame.menu` member.
+//!
+//! Pointer arbitration (SMB-GUI-GESTURE-GATE-1, STU-SHL-100..109): the [`gesture`] arbiter. The first ScrubValue is the
+//! selected layer's opacity ([`OPACITY_ID`]) in the Properties body: a press claims the pointer for the whole drag
+//! (no other control gets hover, a tip, the wheel or an accelerator; a release over another control activates
+//! nothing); the drag ends in ONE `Viewer::set_opacity` (catalog id `layer.set_opacity`, the viewer's actor), Escape and
+//! an unchanged value in none. The field shows the in-gesture value; the canvas updates at release only (no
+//! non-committing preview in harness-view: STU-SHL-194 private draft NOT_PROVEN). Wheel notches over the field coalesce
+//! into one transaction closed by the host clock ([`GuiFrame::advance`]) after 400 ms idle, by the pointer leaving, by
+//! focus loss or by the next action; [`GuiFrame::set_value`] is the accessibility SetValue through the same clamp and
+//! commit. studio.gesture.active ([`GESTURE_ID`]) states the owner and kind; the cursor request ([`GuiFrame::cursor`])
+//! is for the host to apply. An agent-driven frame ([`GuiFrame::set_agent_driven`]) shows no dwell tip (STU-SHL-235
+//! rule 5); its clock still closes gestures. The host opens the frame as its caller ([`GuiFrame::open_as`]).
 use crate::capture::Json;
 use crate::error::HostError;
-use crate::event::{Button, HostEvent, Key, Mods};
+use crate::event::{Button, CursorRequest, HostEvent, Key, Mods};
+use gesture::{Arbiter, Commit, OPACITY};
 use crate::scene::DocumentFacts;
 use crate::script::Step;
 use hsk_studio_accord::ActorContext;
@@ -59,6 +72,7 @@ use std::path::{Path, PathBuf};
 
 pub mod chrome;
 pub mod frame;
+pub mod gesture;
 pub mod preset;
 pub mod view;
 
@@ -276,6 +290,8 @@ pub fn parity(want: &[u8], got: &[u8], width: u32, trace: &[TraceRecord]) -> (u8
 
 enum Cmd {
     SetVisible { layer: String, visible: bool },
+    /// A gesture's one commit (catalog id `layer.set_opacity`).
+    SetOpacity { layer: String, percent: f64 },
     Select(Option<String>),
     Undo,
     Redo,
@@ -527,6 +543,12 @@ pub struct GuiFrame {
     fits: Option<(String, Fits)>,
     /// Menus and tooltips (B6).
     menu: Menus,
+    /// Pointer arbitration and the field gestures (SMB-GUI-GESTURE-GATE-1).
+    gesture: Arbiter,
+    /// The last pointer position in physical client px, also outside the window (a drag follows it there).
+    raw: Option<(i32, i32)>,
+    /// Agent-driven (quiet window, offscreen): no dwell tip (STU-SHL-235 rule 5).
+    agent: bool,
 }
 
 /// The scale for thousandths `milli`: outside 0.5..=8 it is clamped and reported (`true`).
@@ -602,10 +624,22 @@ struct Fits {
 
 impl GuiFrame {
     /// Opens `path` with the Viewer on render-cpu and lays the frame out at `width x height` physical px. `scale_milli`
-    /// fixes the UI scale (window ScaleFactor events are then ignored); None starts at 1 and follows them.
+    /// fixes the UI scale (window ScaleFactor events are then ignored); None starts at 1 and follows them. The viewer
+    /// runs on the asset-local test host's fixed context: a test constructor, not for host runs (they use
+    /// [`GuiFrame::open_as`]).
     pub fn open(path: &Path, width: u32, height: u32, scale_milli: Option<u32>) -> Result<Self, HostError> {
         rgba_len(width, height).map_err(|_| HostError::Usage("size"))?;
-        let viewer = crate::document::open_viewer(path)?;
+        Self::with_viewer(crate::document::open_viewer(path)?, path, width, height, scale_milli)
+    }
+
+    /// As [`GuiFrame::open`], with the viewer attributed to `actor`, the caller of the host run (HOST INTEGRATION (4)):
+    /// every commit of the frame (a gesture, the eye toggle, a menu leaf) carries that actor and its session.
+    pub fn open_as(path: &Path, width: u32, height: u32, scale_milli: Option<u32>, actor: &ActorContext) -> Result<Self, HostError> {
+        rgba_len(width, height).map_err(|_| HostError::Usage("size"))?;
+        Self::with_viewer(crate::document::open_viewer_as(path, actor)?, path, width, height, scale_milli)
+    }
+
+    fn with_viewer(viewer: Viewer, path: &Path, width: u32, height: u32, scale_milli: Option<u32>) -> Result<Self, HostError> {
         let (scale, clamped) = scale_milli.map_or((Scale::ONE, false), scale_of);
         let (text, text_kind) = ui_text(viewer.run().actor());
         let edges = preset::raster_edges();
@@ -660,6 +694,9 @@ impl GuiFrame {
             notes: Vec::new(),
             fits: None,
             menu: Menus::default(),
+            gesture: Arbiter::default(),
+            raw: None,
+            agent: false,
         };
         if clamped {
             f.note("scale_clamped");
@@ -923,16 +960,40 @@ impl GuiFrame {
             }
             HostEvent::PointerMoved { x, y } => {
                 self.pointer = self.logical(x, y);
+                self.raw = Some((x, y));
+                if self.gesture.owns_pointer() {
+                    // The drag follows the pointer in screen space, inside the window or not (STU-SHL-104); hover stays
+                    // with the owner (the Interaction ignores moves while pressed).
+                    if self.gesture.motion((x, y), self.mods, self.scale.get()) {
+                        self.bump(&[INSPECT]);
+                    }
+                    self.hover();
+                    return None;
+                }
+                self.gesture.clear_restore();
                 self.hover();
+                // The pointer leaving the field closes its wheel transaction (STU-SHL-107).
+                if self.gesture.wheel_open() && self.ui.hovered.as_deref() != Some(OPACITY_ID) {
+                    return self.close_wheel();
+                }
                 None
             }
+            // A drag leaves the window and keeps going (STU-SHL-104).
+            HostEvent::PointerLeft if self.gesture.owns_pointer() => None,
             HostEvent::PointerLeft => {
                 self.pointer = None;
+                self.raw = None;
                 self.wheel_rest = 0;
                 self.hover();
-                None
+                self.close_wheel()
             }
+            HostEvent::Focus { gained: false } => self.finalize_gesture(),
+            HostEvent::Button { button: Button::Left, pressed: false } if self.gesture.owns_pointer() => self.release_scrub(),
+            // While a drag owns the pointer no other button acts (STU-SHL-101).
+            HostEvent::Button { .. } if self.gesture.owns_pointer() => None,
             HostEvent::Button { button: Button::Left, pressed: true } => {
+                // A press is the next action: an open wheel transaction commits first.
+                let closed = self.close_wheel();
                 // The next action dismisses a tip, unless the press is on the tip's remedy button.
                 if !self.pointer.is_some_and(|p| self.panel_at(p) == Some(TIP)) {
                     self.hide_tip();
@@ -951,8 +1012,16 @@ impl GuiFrame {
                     self.press_static = self.disabled_at(i, p);
                     self.ui.pointer_down(self.panels[i].tree(), p);
                     self.press = Some(i);
+                    // Claim at press (STU-SHL-101): the field under the pointer owns it for the whole drag.
+                    if self.ui.pressed.as_deref() == Some(OPACITY_ID)
+                        && let (Some((layer, value)), Some(at)) = (self.field_target(), self.raw)
+                    {
+                        self.gesture.press(OPACITY_ID, &layer, OPACITY, value, at);
+                        self.menu.operated = Some(OPACITY_ID.to_owned());
+                        self.bump(&[INSPECT, OBSERVE]);
+                    }
                 }
-                None
+                closed
             }
             HostEvent::Button { button: Button::Left, pressed: false } => {
                 self.menu.quiet_until = self.menu.clock_ms.saturating_add(TIP_QUIET_MS);
@@ -982,10 +1051,25 @@ impl GuiFrame {
                     Err(code) => Some(self.frame_outcome("frame.pointer", code, &[STATUS])),
                 }
             }
+            // The owner of the pointer consumes the wheel: nothing scrolls under a drag (STU-SHL-104).
+            HostEvent::Wheel { .. } if self.gesture.owns_pointer() => None,
             HostEvent::Wheel { y, .. } if !self.menu.open.is_empty() && self.pointer.is_some_and(|p| self.panel_at(p) == Some(POPUP)) => {
                 // The wheel scrolls the deepest popup by rows (positive y reveals rows above).
                 self.scroll_menu(if y > 0 { -1 } else { 1 });
                 None
+            }
+            HostEvent::Wheel { y, pixels, .. } if self.ui.hovered.as_deref() == Some(OPACITY_ID) && self.field_target().is_some() => {
+                // The wheel over the hovered field steps it and is consumed (STU-SHL-105, -189): a line notch is one
+                // step, a pixel delta one step per row height; positive y (up) grows the value.
+                let (layer, value) = self.field_target()?;
+                let closed = if self.gesture.wheel_elsewhere(OPACITY_ID, &layer) { self.close_wheel() } else { None };
+                let notches = if pixels { f64::from(y) / f64::from(size::ROW_LAYER_H) } else { f64::from(y) / 1000.0 };
+                self.hide_tip();
+                self.menu.operated = Some(OPACITY_ID.to_owned());
+                if self.gesture.wheel(OPACITY_ID, &layer, OPACITY, value, notches, self.mods) {
+                    self.bump(&[INSPECT]);
+                }
+                closed
             }
             HostEvent::Wheel { y, pixels, .. } => {
                 if self.layers_active() && self.pointer.is_some_and(|p| self.regions.body.contains(p)) {
@@ -998,7 +1082,24 @@ impl GuiFrame {
                 }
                 None
             }
-            HostEvent::Key { key, pressed: true, mods } => self.key(key, mods),
+            HostEvent::Key { key, pressed: true, .. } if self.gesture.owns_pointer() => {
+                // Under an owned drag only Escape acts (it aborts); an accelerator cannot fire (STU-SHL-106).
+                if key == Key::Escape && self.gesture.escape() {
+                    self.bump(&[INSPECT]);
+                }
+                None
+            }
+            HostEvent::Key { key: Key::Escape, pressed: true, .. } if self.gesture.wheel_open() => {
+                // Escape discards the wheel transaction (STU-SHL-107).
+                self.gesture.escape();
+                self.bump(&[INSPECT]);
+                None
+            }
+            HostEvent::Key { key, pressed: true, mods } => {
+                // Any other key is the next action: an open wheel transaction commits first.
+                let closed = self.close_wheel();
+                self.key(key, mods).or(closed)
+            }
             HostEvent::Modifiers(m) => {
                 self.mods = m;
                 None
@@ -1106,6 +1207,11 @@ impl GuiFrame {
     /// active group tab).
     fn activate(&mut self, id: &str) -> Result<Option<Outcome>, &'static str> {
         self.menu.operated = Some(id.to_owned());
+        if id == OPACITY_ID && self.node(OPACITY_ID).is_some() {
+            // A click on a ScrubValue enters text edit (STU-SHL-187), which this host does not build: inert; its value
+            // moves by a drag, the wheel or SetValue.
+            return Ok(None);
+        }
         if let Some(t) = self.menu_target(id) {
             return Ok(Some(self.menu_activate(t)));
         }
@@ -1168,6 +1274,7 @@ impl GuiFrame {
     fn run(&mut self, cmd: Cmd) -> Outcome {
         let (command, result) = match cmd {
             Cmd::SetVisible { layer, visible } => ("layer.set_visible", self.viewer.set_visible(&layer, visible).map(drop)),
+            Cmd::SetOpacity { layer, percent } => ("layer.set_opacity", self.viewer.set_opacity(&layer, percent).map(drop)),
             Cmd::Select(layer) => {
                 self.viewer.select(layer);
                 ("viewer.select", Ok(()))
@@ -1200,14 +1307,20 @@ impl GuiFrame {
 
     /// Activates the control `author_id` as a release inside it would (STU-MDL-109: command API plus the tree by
     /// author_id, no OS input). `Err("unknown_author_id")` / `Err("unknown_layer")`: a typed refusal.
+    /// While a drag owns the pointer no other control may act (STU-SHL-101): `Err("pointer_owned")`. An open wheel
+    /// transaction commits first (an invoke is the next action).
     pub fn invoke(&mut self, author_id: &str) -> Result<Option<Outcome>, &'static str> {
-        self.activate(author_id)
+        if self.gesture.owns_pointer() {
+            return Err("pointer_owned");
+        }
+        let closed = self.close_wheel();
+        Ok(self.activate(author_id)?.or(closed))
     }
     /// One scripted step; an unknown author_id is `Usage("unknown_author_id")` (exit 2).
     pub fn step(&mut self, step: &Step) -> Result<Option<Outcome>, HostError> {
         match step {
             Step::Event(e) => Ok(self.apply(*e)),
-            Step::Invoke(id) => self.activate(id).map_err(HostError::Usage),
+            Step::Invoke(id) => self.invoke(id).map_err(HostError::Usage),
         }
     }
 
@@ -1371,6 +1484,22 @@ impl GuiFrame {
         let selection = self.selected.as_deref().and_then(|id| self.rows.iter().find(|r| r.layer_id == id)).map(|r| format!("{} layer", r.kind));
         let dock_state = self.dock_state();
         let tool = self.tool_active().to_owned();
+        let gesture_active = self.gesture.active();
+        // The opacity field of the selected layer, showing the in-gesture value while a gesture holds one.
+        let field_value = self.field_target().map(|(layer, doc)| self.gesture.live(OPACITY_ID, &layer).unwrap_or(doc));
+        let field_text = field_value.map(|v| OPACITY.text(v));
+        let props = chrome::PropertiesFacts {
+            opacity: field_value.zip(field_text.as_deref()).map(|(value, text)| chrome::FieldFacts {
+                id: OPACITY_ID,
+                label: "Opacity",
+                text,
+                unit: OPACITY.unit,
+                value,
+                min: OPACITY.hard.0,
+                max: OPACITY.hard.1,
+                step: OPACITY.step(),
+            }),
+        };
         let popup = self.popup_facts();
         let tipf = self.tip_now();
         let (rows, selected, first, body_h) = (&self.rows, self.selected.as_deref(), self.first_row, self.regions.body.h());
@@ -1414,7 +1543,7 @@ impl GuiFrame {
         any |= p[BROWSE].update(revs[BROWSE], ui, l.left, s, theme, text, |b| if left_open { chrome::browse_dock(b, &left_group) } else { chrome::browse_rail(b) }).map_err(err)?;
         any |= p[VIEWPORT].update(revs[VIEWPORT], ui, l.centre, s, theme, text, |b| chrome::viewport(b, &vp)).map_err(err)?;
         let inspect_rail = l.right_state == frame::EdgeState::Rail;
-        any |= match p[INSPECT].update(revs[INSPECT], ui, l.right, s, theme, text, |b| if inspect_rail { chrome::inspect_rail(b) } else { chrome::inspect_dock(b, &groups, &layers) }) {
+        any |= match p[INSPECT].update(revs[INSPECT], ui, l.right, s, theme, text, |b| if inspect_rail { chrome::inspect_rail(b) } else { chrome::inspect_dock(b, &groups, &layers, &props) }) {
             Ok(b) => b,
             // A collision of lowercased ids (or any build refusal) is an empty state with its code, never a panic.
             Err(e) => {
@@ -1440,7 +1569,7 @@ impl GuiFrame {
                 }
             })
             .map_err(err)?;
-        any |= p[OBSERVE].update(revs[OBSERVE], ui, Rect::default(), s, theme, text, |b| chrome::observe(b, &dock_state, &tool)).map_err(err)?;
+        any |= p[OBSERVE].update(revs[OBSERVE], ui, Rect::default(), s, theme, text, |b| chrome::observe(b, &dock_state, &tool, &gesture_active)).map_err(err)?;
         Ok(any)
     }
 
@@ -1655,6 +1784,7 @@ impl GuiFrame {
             ("rail_shown", n(l.rail_shown as u64)),
             ("rail_hidden", n(l.rail_hidden as u64)),
             ("menu", self.menu_receipt()),
+            ("gesture", self.gesture_receipt()),
             (
                 "paint",
                 Json::obj(vec![("prims", n(ps.prims)), ("glyphs", n(ps.glyphs)), ("glyph_refusals", n(ps.glyph_refusals)), ("missing_resources", n(ps.missing_resources))]),
@@ -1690,38 +1820,168 @@ impl GuiFrame {
     }
 }
 
-/// The frame's timed gestures, each with its untimed path (STU-SHL-109 #7a).
+/// Every timed gesture the frame offers (STU-SHL-109 #7a), from the constants its timers run on, each with its untimed
+/// path: the L0 and L1 dwell tips ([`L0_DWELL_MS`], [`L1_DWELL_MS`]; the accessibility request
+/// [`GuiFrame::show_tip`]) and the wheel idle commit ([`gesture::WHEEL_IDLE_MS`]; the pointer leaving the field, focus
+/// loss, or SetValue). The quiet time after a press ([`TIP_QUIET_MS`]) suppresses a tip and starts nothing, so it is
+/// not a gesture. The frame has no long press and no double-tap reveal. Their reachability from the menu and the
+/// palette (#7b) waits for the palette (STU-SHL-041..044 are not built in this host).
 pub fn timed_gestures() -> &'static [TimedGesture] {
-    &[]
+    const TIMED: [TimedGesture; 3] = [
+        TimedGesture { id: "tooltip.l0", after_ms: L0_DWELL_MS, untimed: Untimed::ShowTip { level: 0 } },
+        TimedGesture { id: "tooltip.l1", after_ms: L1_DWELL_MS, untimed: Untimed::ShowTip { level: 1 } },
+        TimedGesture { id: "scrub.wheel_idle", after_ms: gesture::WHEEL_IDLE_MS, untimed: Untimed::CloseTransaction },
+    ];
+    &TIMED
 }
 
 impl GuiFrame {
-    // ---- pointer gesture arbitration (SMB-GUI-GESTURE-GATE-1): red-first stubs ----
+    // ---- pointer gesture arbitration (SMB-GUI-GESTURE-GATE-1, STU-SHL-100..109) ----
 
-    /// Opens `path` as [`GuiFrame::open`] does, with the viewer attributed to `actor`, the caller of the host run.
-    pub fn open_as(path: &Path, width: u32, height: u32, scale_milli: Option<u32>, actor: &ActorContext) -> Result<Self, HostError> {
-        let _ = actor;
-        Self::open(path, width, height, scale_milli)
+    /// The layer the opacity field edits and its document value: the selected layer, while one is selected.
+    fn field_target(&self) -> Option<(String, f64)> {
+        let id = self.selected.as_deref()?;
+        self.rows.iter().find(|r| r.layer_id == id).map(|r| (r.layer_id.clone(), r.opacity))
     }
-    /// The accessibility SetValue action on the field `author_id`.
+
+    /// Runs a gesture's one commit through the Viewer (`layer.set_opacity`, the viewer's actor) and counts it.
+    fn commit(&mut self, c: Commit) -> Option<Outcome> {
+        let out = self.run(Cmd::SetOpacity { layer: c.target, percent: c.after });
+        let n = &mut self.gesture.counters;
+        if out.code == "ok" {
+            n.commits = n.commits.saturating_add(1);
+        } else {
+            n.refusals = n.refusals.saturating_add(1);
+        }
+        self.bump(&[INSPECT, OBSERVE]);
+        Some(out)
+    }
+
+    /// Closes an open wheel transaction now (its one commit, if the value changed).
+    fn close_wheel(&mut self) -> Option<Outcome> {
+        if !self.gesture.wheel_open() {
+            return None;
+        }
+        let c = self.gesture.close_wheel();
+        self.bump(&[INSPECT]);
+        c.and_then(|c| self.commit(c))
+    }
+
+    /// The release of a drag: the pointer is free again, the drag closes into its one commit or none.
+    fn release_scrub(&mut self) -> Option<Outcome> {
+        self.menu.quiet_until = self.menu.clock_ms.saturating_add(TIP_QUIET_MS);
+        self.press = None;
+        self.press_static = None;
+        // A release outside the field activates nothing (STU-SHL-101): the press is dropped without a hit.
+        let _ = self.ui.pointer_up(&Tree::default(), Point::new(f32::NAN, f32::NAN));
+        let c = self.gesture.release();
+        self.bump(&[INSPECT, OBSERVE]);
+        // Hover follows the pointer again.
+        self.hover();
+        c.and_then(|c| self.commit(c))
+    }
+
+    /// Focus loss finalizes valid work once (STU-SHL-194): a drag commits as a release would, a wheel transaction closes.
+    fn finalize_gesture(&mut self) -> Option<Outcome> {
+        if !self.gesture.owns_pointer() && !self.gesture.wheel_open() {
+            return None;
+        }
+        if self.gesture.owns_pointer() {
+            self.press = None;
+            self.press_static = None;
+            let _ = self.ui.pointer_up(&Tree::default(), Point::new(f32::NAN, f32::NAN));
+        }
+        let c = self.gesture.finalize();
+        self.bump(&[INSPECT, OBSERVE]);
+        c.and_then(|c| self.commit(c))
+    }
+
+    /// The accessibility SetValue action on the field `author_id` (STU-SHL-107): ONE discrete entry through the same
+    /// clamp-and-quantize and commit path as a drag. `Ok(None)` when the settled value equals the document's (no entry);
+    /// typed refusals: `unknown_author_id` (no such field shown), `pointer_owned` (a drag owns the pointer),
+    /// `value_not_finite`.
     pub fn set_value(&mut self, author_id: &str, value: f64) -> Result<Option<Outcome>, &'static str> {
-        let _ = (author_id, value);
-        Err("unknown_author_id")
+        if author_id != OPACITY_ID || self.node(OPACITY_ID).is_none() {
+            return Err("unknown_author_id");
+        }
+        if self.gesture.owns_pointer() {
+            return Err("pointer_owned");
+        }
+        let closed = self.close_wheel();
+        let (layer, before) = self.field_target().ok_or("unknown_author_id")?;
+        let Some(after) = OPACITY.settle(value) else {
+            self.gesture.counters.refusals = self.gesture.counters.refusals.saturating_add(1);
+            return Err("value_not_finite");
+        };
+        self.gesture.counters.gestures = self.gesture.counters.gestures.saturating_add(1);
+        if OPACITY.settle(before) == Some(after) {
+            self.gesture.counters.unchanged = self.gesture.counters.unchanged.saturating_add(1);
+            return Ok(closed);
+        }
+        Ok(self.commit(Commit { owner: OPACITY_ID.to_owned(), target: layer, before, after }))
     }
-    /// What the frame asks the host to do with the OS cursor.
-    pub fn cursor(&self) -> crate::event::CursorRequest {
-        crate::event::CursorRequest::Default
+
+    /// What the frame asks the host to do with the OS cursor (STU-SHL-104, STU-SHL-186): column-resize over the field,
+    /// hidden while a drag that moved owns the pointer, shown at the press point after it. No request moves the pointer
+    /// during a drag.
+    pub fn cursor(&self) -> CursorRequest {
+        self.gesture.cursor(self.ui.hovered.as_deref() == Some(OPACITY_ID))
     }
-    /// Agent mode (quiet windows, offscreen runs): no dwell tips (STU-SHL-235 rule 5).
+
+    /// Agent mode, set by the host for quiet windows and offscreen runs: no dwell tip appears (STU-SHL-235 rule 5);
+    /// [`GuiFrame::advance`] then drives gesture timers only. An explicit [`GuiFrame::show_tip`] still answers.
     pub fn set_agent_driven(&mut self, on: bool) {
-        let _ = on;
+        self.agent = on;
+        if on && self.menu.tip.as_ref().is_some_and(|t| !t.explicit) {
+            self.hide_tip();
+        }
     }
-    /// Milliseconds until the next timer of the frame fires, if one is pending.
+
+    /// Milliseconds until the next timer of the frame fires (the wheel idle window; outside agent mode also the next
+    /// dwell level of the hovered control), if one is pending: the host waits that long without polling.
     pub fn next_timer_ms(&self) -> Option<u64> {
-        None
+        let gesture = self.gesture.pending_ms();
+        let dwell = if self.agent { None } else { self.dwell_pending_ms() };
+        match (gesture, dwell) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
-    /// Closes every pending gesture timer as if its time had passed (the end of a script).
-    pub fn settle_timers(&mut self) {}
+
+    fn dwell_pending_ms(&self) -> Option<u64> {
+        let target = self.ui.hovered.as_deref()?;
+        if self.press.is_some() || self.menu.tips_off || self.menu.operated.as_deref() == Some(target) || self.panels[TIP].tree().find(target).is_some() {
+            return None;
+        }
+        let shown = self.menu.tip.as_ref().filter(|t| t.target == target).map(|t| t.level);
+        let want = match shown {
+            None if self.menu.dwell_ms < L0_DWELL_MS => L0_DWELL_MS,
+            None | Some(0) if self.menu.dwell_ms < L1_DWELL_MS && self.menu.tip_cap != Some(0) => L1_DWELL_MS,
+            _ => return None,
+        };
+        let quiet = self.menu.quiet_until.saturating_sub(self.menu.clock_ms);
+        Some(want.saturating_sub(self.menu.dwell_ms).max(quiet).max(1))
+    }
+
+    /// Closes every pending gesture timer as if its time had passed: the end of a script, where no clock runs
+    /// (offscreen [`drive`]).
+    pub fn settle_timers(&mut self) {
+        let _ = self.close_wheel();
+    }
+
+    /// The receipt's `frame.gesture` member: the kind owning the pointer and the counters (codes and counters only).
+    fn gesture_receipt(&self) -> Json {
+        let n = |v: u64| Json::Num(v);
+        let c = self.gesture.counters;
+        Json::obj(vec![
+            ("active", Json::str(self.gesture.kind().word())),
+            ("gestures", n(c.gestures)),
+            ("commits", n(c.commits)),
+            ("aborts", n(c.aborts)),
+            ("refusals", n(c.refusals)),
+            ("unchanged", n(c.unchanged)),
+        ])
+    }
 }
 
 /// An availability record as node properties (STU-SHL-019).
@@ -2582,12 +2842,20 @@ impl GuiFrame {
 
     // ---- tooltips (STU-SHL-230 to 235) ----
 
-    /// Advances the host's clock by `ms` (a window frame clock; no script step calls it, so an agent-driven session
-    /// never sees a dwell tip, STU-SHL-235 rule 5): L0 after 400 ms on the hovered control, L1 after 900 ms or at once
-    /// when a tip was showing on the control the pointer came from; none while a button is held, for 500 ms after a
-    /// release, on the control just operated, with tips off, or above the level cap.
+    /// Advances the host's clock by `ms` (the window's frame clock; no script step calls it): the wheel idle window of
+    /// an open field transaction closes after 400 ms (STU-SHL-107); outside agent mode, L0 after 400 ms on the hovered
+    /// control, L1 after 900 ms or at once when a tip was showing on the control the pointer came from; none while a
+    /// button is held, for 500 ms after a release, on the control just operated, with tips off, or above the level cap.
+    /// An agent-driven frame never sees a dwell tip (STU-SHL-235 rule 5).
     pub fn advance(&mut self, ms: u64) {
         self.menu.clock_ms = self.menu.clock_ms.saturating_add(ms);
+        if let Some(c) = self.gesture.tick(ms) {
+            self.bump(&[INSPECT]);
+            let _ = self.commit(c);
+        }
+        if self.agent {
+            return;
+        }
         let hovered = self.ui.hovered.clone();
         if hovered.as_deref().is_some_and(|h| self.panels[TIP].tree().find(h).is_some()) {
             return;
@@ -2821,11 +3089,16 @@ pub fn drive_chrome(frame: &mut GuiFrame, target: &mut dyn ChromeTarget, steps: 
         frame.frame()?;
         frame.draw(target)?;
     }
+    // No clock runs in a script: pending gesture timers close at its end, as a window's clock would close them.
+    frame.settle_timers();
+    frame.frame()?;
+    frame.draw(target)?;
     Ok(())
 }
 
 /// Applies `steps` in order; after each, paints and uploads what changed. Stops at the first refusal of the sink:
-/// no command runs after a lost device, and nothing retries.
+/// no command runs after a lost device, and nothing retries. Pending gesture timers close at the end of the script
+/// ([`GuiFrame::settle_timers`]), so a script ending in wheel notches commits as the window's clock would.
 pub fn drive(frame: &mut GuiFrame, sink: &mut dyn PaneSink, steps: &[Step]) -> Result<(), HostError> {
     frame.frame()?;
     frame.upload(sink)?;
@@ -2834,5 +3107,8 @@ pub fn drive(frame: &mut GuiFrame, sink: &mut dyn PaneSink, steps: &[Step]) -> R
         frame.frame()?;
         frame.upload(sink)?;
     }
+    frame.settle_timers();
+    frame.frame()?;
+    frame.upload(sink)?;
     Ok(())
 }

@@ -298,6 +298,74 @@ pub struct LayersFacts<'a> {
     pub body_h: f32,
 }
 
+/// One ScrubValue as the frame decided it (SMB-GUI-GESTURE-GATE-1): its owner-based id, label, the value it shows
+/// (the in-gesture value during a gesture) rendered at the precision, the unit, and the numeric node metadata.
+pub struct FieldFacts<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub text: &'a str,
+    pub unit: &'a str,
+    pub value: f64,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+}
+
+/// What the Properties body shows: the selected layer's opacity field; None keeps the empty state (no selection).
+pub struct PropertiesFacts<'a> {
+    pub opacity: Option<FieldFacts<'a>>,
+}
+
+/// The Properties body with the selected layer's Appearance (mock_raster.py properties: `.pad` 6 22 6 12, `.pr` 24 high
+/// with a 96 px label and 8 px gap): the opacity ScrubValue (components.json scrub_value: 72 x 24, field style, value
+/// right-aligned with the unit in text.tertiary, pad 6; on hover and while scrubbing the 2 px accent gutter on its left,
+/// STU-SHL-186). Its grab rect is the node's bounds (STU-SHL-196), 12 px from the dock's left edge and clear of the 10 px
+/// scroll lane on the right (STU-SHL-103, -105). The node value is the rendered string with its unit (STU-SHL-193).
+fn properties_body(b: &mut Builder<'_>, f: &FieldFacts<'_>) {
+    b.begin(
+        Node::new("studio.panel.properties", Role::TabPanel)
+            .label("Properties")
+            .layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, pad: [12.0, 6.0, 22.0, 6.0], cross: Align::Start, ..LayoutSpec::default() })
+            .paint(Paint::Fill(ColorToken::SurfacePanel)),
+    );
+    b.leaf(
+        Node::deco()
+            .paint(Paint::Label { text: "Appearance".into(), token: TextToken::Body, weight: 0, color: Some(ColorToken::TextPrimary), align: Align::Start, ellipsis: true })
+            .size(Size::Fill, Size::Fixed(kumihimo_ui::tokens::size::FIELD_H)),
+    );
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(kumihimo_ui::tokens::size::FIELD_H), cross: Align::Center, ..LayoutSpec::default() }));
+    b.leaf(
+        Node::deco()
+            .paint(Paint::Label { text: f.label.into(), token: TextToken::Body, weight: 0, color: Some(ColorToken::TextSecondary), align: Align::Start, ellipsis: true })
+            .size(Size::Fixed(96.0), Size::Fill),
+    );
+    gap(b, 8.0, 0.0);
+    let hot = {
+        let ui = b.interaction();
+        ui.hovered.as_deref() == Some(f.id) || ui.pressed.as_deref() == Some(f.id)
+    };
+    let mut field = Node::new(f.id, Role::Slider)
+        .label(f.label)
+        .value(format!("{}{}", f.text, f.unit))
+        .actions(&[Action::Focus, Action::Increment, Action::Decrement, Action::SetValue])
+        .layout(LayoutSpec {
+            axis: Axis::Row,
+            w: Size::Fixed(kumihimo_ui::widgets::component::SLIDER_FIELD_W),
+            h: Size::Fixed(kumihimo_ui::tokens::size::FIELD_H),
+            pad: [0.0, 0.0, 6.0, 0.0],
+            cross: Align::Center,
+            ..LayoutSpec::default()
+        })
+        .paint(Paint::Surface { kind: kumihimo_ui::tokens::StyleKind::Field, radius: kumihimo_ui::tokens::radius::R2_FIELD });
+    field.numeric = Some(kumihimo_ui::tree::Numeric { value: f.value, min: f.min, max: f.max, step: f.step });
+    b.begin(field);
+    b.leaf(Node::deco().paint(if hot { Paint::Fill(ColorToken::AccentBase) } else { Paint::None }).size(Size::Fixed(2.0), Size::Fill));
+    b.leaf(Node::deco().paint(Paint::Value { text: f.text.into(), unit: Some(f.unit.into()) }).size(Size::Fill, Size::Fill));
+    b.end();
+    b.end();
+    b.end();
+}
+
 pub fn group_id(first_tab: &str) -> String {
     format!("studio.group.{first_tab}")
 }
@@ -314,8 +382,9 @@ pub fn more_row_id(first_tab: &str, panel: &str) -> String {
 
 /// One dock group: (for every group but the top one of a dock) a 1 px lead under the group seam so the header keeps
 /// all 26 px (D-F11), the header with disclosure, tabs, +N and panel menu, then the open +N list, or the active tab's
-/// body: Layers as the spine built it, every other panel the empty state naming it in words.
-fn group_box(b: &mut Builder<'_>, g: &GroupFacts<'_>, top: bool, layers: Option<&LayersFacts<'_>>) {
+/// body: Layers as the spine built it, Properties with the selected layer's opacity field while a layer is selected,
+/// every other panel the empty state naming it in words.
+fn group_box(b: &mut Builder<'_>, g: &GroupFacts<'_>, top: bool, layers: Option<&LayersFacts<'_>>, props: Option<&PropertiesFacts<'_>>) {
     let Some(&(first, _)) = g.tabs.first() else { return };
     let h = g.h.map_or(Size::Fill, Size::Fixed);
     let mut boxed = Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h, cross: Align::Start, ..LayoutSpec::default() }).flags(|f| f.clip = true);
@@ -367,9 +436,11 @@ fn group_box(b: &mut Builder<'_>, g: &GroupFacts<'_>, top: bool, layers: Option<
             b.end();
         } else {
             let (panel, name) = g.tabs[g.active.min(g.tabs.len() - 1)];
-            match layers.filter(|_| panel == "layers") {
-                Some(l) => view::layers_body(b, l.rows, l.selected, l.first, l.body_h),
-                None => {
+            let field = props.and_then(|p| p.opacity.as_ref()).filter(|_| panel == "properties");
+            match (layers.filter(|_| panel == "layers"), field) {
+                (Some(l), _) => view::layers_body(b, l.rows, l.selected, l.first, l.body_h),
+                (None, Some(f)) => properties_body(b, f),
+                (None, None) => {
                     b.begin(Node::new(format!("studio.panel.{panel}"), Role::TabPanel).label(name).layout(column()).paint(Paint::Fill(ColorToken::SurfacePanel)));
                     view::empty_state_at(b, &format!("studio.panel.{panel}.empty"), name, NOT_BUILT, NIY);
                     b.end();
@@ -381,10 +452,10 @@ fn group_box(b: &mut Builder<'_>, g: &GroupFacts<'_>, top: bool, layers: Option<
 }
 
 /// The Inspect Dock (surface.panel, left seam): three groups, a top seam on each but the first.
-pub fn inspect_dock(b: &mut Builder<'_>, groups: &[GroupFacts<'_>], layers: &LayersFacts<'_>) {
+pub fn inspect_dock(b: &mut Builder<'_>, groups: &[GroupFacts<'_>], layers: &LayersFacts<'_>, props: &PropertiesFacts<'_>) {
     dock_root(b, DOCK_ID, "Inspect Dock", ColorToken::SurfacePanel, Side::Left, Axis::Column);
     for (gi, g) in groups.iter().enumerate() {
-        group_box(b, g, gi == 0, Some(layers));
+        group_box(b, g, gi == 0, Some(layers), Some(props));
     }
     b.end();
 }
@@ -393,7 +464,7 @@ pub fn inspect_dock(b: &mut Builder<'_>, groups: &[GroupFacts<'_>], layers: &Lay
 /// view, empty states as bodies.
 pub fn browse_dock(b: &mut Builder<'_>, g: &GroupFacts<'_>) {
     dock_root(b, "studio.dock.left", "Browse Dock", ColorToken::SurfacePanel, Side::Right, Axis::Column);
-    group_box(b, g, true, None);
+    group_box(b, g, true, None, None);
     b.end();
 }
 
@@ -503,10 +574,13 @@ pub fn status(b: &mut Builder<'_>, s: &StatusFacts<'_>) {
     b.end();
 }
 
-/// The unpainted observability nodes: studio.dock.state (STU-MDL-106) and studio.tool.active (STU-MDL-116).
-pub fn observe(b: &mut Builder<'_>, dock_state: &str, tool: &str) {
+/// The unpainted observability nodes: studio.dock.state (STU-MDL-106), studio.tool.active (STU-MDL-116) and
+/// studio.gesture.active (STU-SHL-108, STU-MDL-106).
+pub fn observe(b: &mut Builder<'_>, dock_state: &str, tool: &str, gesture: &str) {
     b.leaf(Node::new("studio.dock.state", Role::Label).label("Dock state").value(dock_state));
     b.leaf(Node::new("studio.tool.active", Role::Label).label("Active tool").value(tool));
+    // STU-SHL-108, STU-MDL-106: `<author_id> <kind>` of the widget owning the pointer, or `none`.
+    b.leaf(Node::new(super::GESTURE_ID, Role::Label).label("Active gesture").value(gesture));
 }
 
 // ---- B6: menu popups, the Layers context menu and tooltips (SMB-GUI-MENU-1).
