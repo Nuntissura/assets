@@ -12,7 +12,7 @@ use super::super::develop::Refusal;
 use super::super::prototype::{PlayFail, PrototypePlay, Screen};
 use super::decode::{Fields, invalid};
 use super::{CommandRefusal, read_bounded};
-use hsk_studio_accord::DomainId;
+use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_components::PlayerInput;
 use serde_json::{Value, json};
 
@@ -65,8 +65,9 @@ fn prototype_resource(play: &PrototypePlay) -> Option<DomainId> {
 /// `prototype.capture_frame` (module docs). With a path (lane SMB-FIX-CAPTURE-ADMISSION-1; R60 attempt 3 probe j2,
 /// common lead ruling 2; STU-ARC-008, STU-ARC-013): the cheap checks first (`parameter_conflict`, a path with a file
 /// name, `overwrite_required`), then one export job admitted through the viewer's bound JobPort before anything is
-/// rendered or written (typed `overloaded`, `canceled`, `stale_revision`), then the render and the PNG write, settled
-/// once (`completed`, else `canceled` or `failed` with the refusal's code); the reply carries the settlement as `job`.
+/// rendered or written (typed `overloaded`, `canceled`, `stale_revision`), then the render, a cancel check and the
+/// PNG write (never over a file without `overwrite`, [`render_and_write`]), settled once (`completed`, else
+/// `canceled` or `failed` with the refusal's code); the reply carries the settlement as `job`.
 /// The job names the open document, else the play session's resource ([`prototype_resource`]). Without a path
 /// nothing is written and nothing is admitted: the frame is the reply's size and means. Test
 /// `hsk-studio-harness` `tests/fix_capture_admission.rs`.
@@ -99,16 +100,21 @@ fn capture_frame(v: &mut Viewer, f: &Fields<'_>) -> Result<Value, CommandRefusal
         v.admit_export_job_with(&v.job_admission_of(resource))
     };
     let job = admitted.map_err(refused)?;
+    let cancel = v.cancel;
     let result = match v.prototype() {
-        Some(play) => render_and_write(play, &path),
+        Some(play) => render_and_write(play, &path, overwrite, cancel),
         None => Err(Refusal { code: "prototype_closed", detail: String::new() }),
     };
     v.settle_export_job(job, result).map_err(refused)
 }
 
 /// The frame rendered and written as an 8-bit RGB PNG at `path` (the cheap checks passed, the job admitted); the
-/// reply.
-fn render_and_write(play: &mut PrototypePlay, path: &std::path::Path) -> Result<Value, Refusal> {
+/// reply. Review of b9074096: the viewer's token is checked after the render and before the write, so a cancel
+/// raised after admission settles `canceled` and writes nothing (F4; a cancel during the render itself is not seen,
+/// the play session renders under its own token); without `overwrite` the file is written by `write_new`, as
+/// `export_document` does, so a file that appeared after the cheap check is never replaced and is refused
+/// `overwrite_required` (F1).
+fn render_and_write(play: &mut PrototypePlay, path: &std::path::Path, overwrite: bool, cancel: &CancellationToken) -> Result<Value, Refusal> {
     let screen = play.render().map_err(|e| Refusal { code: e.code, detail: e.detail })?;
     let samples = hsk_studio_interop_raster::Samples::U8(screen.rgb.clone());
     let request = hsk_studio_interop_raster::PngEncodeRequest {
@@ -120,7 +126,9 @@ fn render_and_write(play: &mut PrototypePlay, path: &std::path::Path) -> Result<
         compression: hsk_studio_interop_raster::PngCompression::Balanced,
     };
     let png = hsk_studio_interop_raster::encode_png(&request).map_err(|e| Refusal { code: e.code(), detail: "png".to_string() })?;
-    super::super::export::write_atomic(path, &png).map_err(|code| Refusal { code, detail: path.to_string_lossy().into_owned() })?;
+    cancel.check().map_err(|_| Refusal { code: "canceled", detail: "before the write".to_string() })?;
+    let written = if overwrite { super::super::export::write_atomic(path, &png) } else { super::super::export::write_new(path, &png) };
+    written.map_err(|code| Refusal { code: if code == "destination_exists" { "overwrite_required" } else { code }, detail: path.to_string_lossy().into_owned() })?;
     let mut r = state(play);
     r["screen"] = screen_json(&screen);
     Ok(r)
