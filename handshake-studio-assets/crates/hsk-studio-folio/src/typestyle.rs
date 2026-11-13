@@ -389,11 +389,26 @@ pub struct TypographyParamRow {
     pub unit: &'static str,
     /// Decimal places carried and round-tripped.
     pub precision: Option<u32>,
+    /// The physical domain where the spec states no bound (review F13 b): a value must be greater than
+    /// this (size, leading and the scales: 0). `None` = finiteness only.
+    pub exclusive_min: Option<f64>,
+    /// STU-TYP-109 `step`, `coarse_step`, `fine_step` as the spec declares them; `None` = UNKNOWN (the
+    /// capture declares key-increment preferences, never their values).
+    pub declared_steps: [Option<f64>; 3],
+    /// The implementation's recorded choice per STU-TYP-109 (step, coarse_step, fine_step).
+    pub selected_steps: [f64; 3],
 }
 
 const fn unknown_bounds_points(key: &'static str) -> TypographyParamRow {
-    TypographyParamRow { key, hard_min: None, hard_max: None, soft_min: None, soft_max: None, default: Some(0.0), unit: "points", precision: None }
+    TypographyParamRow { key, hard_min: None, hard_max: None, soft_min: None, soft_max: None, default: Some(0.0), unit: "points", precision: None, exclusive_min: None, declared_steps: [None; 3], selected_steps: POINT_STEPS }
 }
+
+/// Recorded step choices per unit (STU-TYP-109: the implementation selects and records them).
+const POINT_STEPS: [f64; 3] = [1.0, 10.0, 0.1];
+const MILLI_EM_STEPS: [f64; 3] = [10.0, 100.0, 1.0];
+const PERCENT_STEPS: [f64; 3] = [1.0, 10.0, 0.1];
+const DEGREE_STEPS: [f64; 3] = [1.0, 15.0, 0.1];
+const EM_STEPS: [f64; 3] = [0.125, 0.5, 0.0625];
 
 /// STU-TYP-185 parameter table, row for row: every bound and the precision UNKNOWN, default 0,
 /// unit points.
@@ -574,6 +589,25 @@ pub const CHARACTER_ENUMERATIONS: [(&str, &[&str]); 9] = [
     ),
 ];
 
+/// STU-TYP-170 feature value: a boolean for a binary feature, an unsigned integer for an alternate index
+/// (review F13 c). An integer 0/1 on a binary tag is read as an alternate index of that value, which
+/// shapes the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum StudioFeatureValue {
+    Binary(bool),
+    Alternate(u32),
+}
+impl StudioFeatureValue {
+    /// The value Type applies: 0 or 1 for a binary feature, the index for an alternate.
+    pub fn shaping_value(self) -> u32 {
+        match self {
+            Self::Binary(on) => u32::from(on),
+            Self::Alternate(n) => n,
+        }
+    }
+}
+
 /// A decoration weight or offset (STU-TYP-159 points; STU-TYP-160 `auto`, `percent`, `pixels`,
 /// mapped onto the one decoration record: `auto` resolves from font metrics at composition time).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -751,10 +785,10 @@ pub struct StudioCharacterAttributes {
     pub overprint_fill: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overprint_stroke: Option<bool>,
-    /// STU-TYP-170 feature map: four-character tag -> value (0/1 for a binary feature, an alternate
-    /// index otherwise). Any well-formed tag is accepted; there is no closed list.
+    /// STU-TYP-170 feature map: four-character tag -> value (a boolean for a binary feature, an
+    /// alternate index otherwise). Any well-formed tag is accepted; there is no closed list.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub opentype_features: BTreeMap<String, u32>,
+    pub opentype_features: BTreeMap<String, StudioFeatureValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub small_cap_size: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -788,36 +822,43 @@ pub const CHARACTER_ATTRIBUTE_FIELDS: [&str; 44] = [
 /// parameter; `None` = the spec's UNKNOWN, never clamped). Decoration rows name the
 /// `underline` / `strikethrough` record fields.
 pub const CHARACTER_PARAMS: [TypographyParamRow; 26] = [
-    param("size", None, None, None, "points", None),
-    param("leading", None, None, None, "points", None),
-    param("tracking", None, None, Some(0.0), "em/1000", Some(0)),
-    param("kerning_manual", None, None, Some(0.0), "em/1000", Some(0)),
-    param("horizontal_scale", None, None, Some(100.0), "percent", None),
-    param("vertical_scale", None, None, Some(100.0), "percent", None),
-    param("baseline_shift", None, None, Some(0.0), "points", None),
-    param("character_rotation", None, None, Some(0.0), "degrees", None),
-    param("skew", None, None, Some(0.0), "degrees", None),
-    param("aki_left", None, None, None, "em", None),
-    param("aki_right", None, None, None, "em", None),
-    param("tsume", None, None, None, "percent", None),
-    param("stroke_weight", Some(0.0), None, None, "points", None),
-    param("small_cap_size", Some(1.0), Some(200.0), None, "percent", None),
-    param("superscript_size", Some(0.0), Some(200.0), None, "percent", None),
-    param("subscript_size", Some(0.0), Some(200.0), None, "percent", None),
-    param("superscript_position", Some(-500.0), Some(500.0), None, "percent", None),
-    param("subscript_position", Some(-500.0), Some(500.0), None, "percent", None),
-    param("underline_weight", Some(0.0), None, None, "points", None),
-    param("underline_offset", None, None, None, "points", None),
-    param("underline_tint", Some(0.0), Some(100.0), None, "percent", None),
-    param("underline_gap_tint", Some(0.0), Some(100.0), None, "percent", None),
-    param("strikethrough_weight", Some(0.0), None, None, "points", None),
-    param("strikethrough_offset", None, None, None, "points", None),
-    param("strikethrough_tint", Some(0.0), Some(100.0), None, "percent", None),
-    param("strikethrough_gap_tint", Some(0.0), Some(100.0), None, "percent", None),
+    param("size", None, None, None, "points", None, Some(0.0), POINT_STEPS),
+    param("leading", None, None, None, "points", None, Some(0.0), POINT_STEPS),
+    param("tracking", None, None, Some(0.0), "em/1000", Some(0), None, MILLI_EM_STEPS),
+    param("kerning_manual", None, None, Some(0.0), "em/1000", Some(0), None, MILLI_EM_STEPS),
+    param("horizontal_scale", None, None, Some(100.0), "percent", None, Some(0.0), PERCENT_STEPS),
+    param("vertical_scale", None, None, Some(100.0), "percent", None, Some(0.0), PERCENT_STEPS),
+    param("baseline_shift", None, None, Some(0.0), "points", None, None, POINT_STEPS),
+    param("character_rotation", None, None, Some(0.0), "degrees", None, None, DEGREE_STEPS),
+    param("skew", None, None, Some(0.0), "degrees", None, None, DEGREE_STEPS),
+    param("aki_left", None, None, None, "em", None, None, EM_STEPS),
+    param("aki_right", None, None, None, "em", None, None, EM_STEPS),
+    param("tsume", None, None, None, "percent", None, None, PERCENT_STEPS),
+    param("stroke_weight", Some(0.0), None, None, "points", None, None, POINT_STEPS),
+    param("small_cap_size", Some(1.0), Some(200.0), None, "percent", None, None, PERCENT_STEPS),
+    param("superscript_size", Some(0.0), Some(200.0), None, "percent", None, None, PERCENT_STEPS),
+    param("subscript_size", Some(0.0), Some(200.0), None, "percent", None, None, PERCENT_STEPS),
+    param("superscript_position", Some(-500.0), Some(500.0), None, "percent", None, None, PERCENT_STEPS),
+    param("subscript_position", Some(-500.0), Some(500.0), None, "percent", None, None, PERCENT_STEPS),
+    param("underline_weight", Some(0.0), None, None, "points", None, None, POINT_STEPS),
+    param("underline_offset", None, None, None, "points", None, None, POINT_STEPS),
+    param("underline_tint", Some(0.0), Some(100.0), None, "percent", None, None, PERCENT_STEPS),
+    param("underline_gap_tint", Some(0.0), Some(100.0), None, "percent", None, None, PERCENT_STEPS),
+    param("strikethrough_weight", Some(0.0), None, None, "points", None, None, POINT_STEPS),
+    param("strikethrough_offset", None, None, None, "points", None, None, POINT_STEPS),
+    param("strikethrough_tint", Some(0.0), Some(100.0), None, "percent", None, None, PERCENT_STEPS),
+    param("strikethrough_gap_tint", Some(0.0), Some(100.0), None, "percent", None, None, PERCENT_STEPS),
 ];
 
-const fn param(key: &'static str, hard_min: Option<f64>, hard_max: Option<f64>, default: Option<f64>, unit: &'static str, precision: Option<u32>) -> TypographyParamRow {
-    TypographyParamRow { key, hard_min, hard_max, soft_min: None, soft_max: None, default, unit, precision }
+#[allow(clippy::too_many_arguments)]
+const fn param(key: &'static str, hard_min: Option<f64>, hard_max: Option<f64>, default: Option<f64>, unit: &'static str, precision: Option<u32>, exclusive_min: Option<f64>, selected_steps: [f64; 3]) -> TypographyParamRow {
+    TypographyParamRow { key, hard_min, hard_max, soft_min: None, soft_max: None, default, unit, precision, exclusive_min, declared_steps: [None; 3], selected_steps }
+}
+
+/// The range-key rule a language record's name follows (STU-TYP-210: the key a character range's
+/// `applied_language` holds, `[A-Za-z0-9_-]{1,128}`; review F7).
+pub fn language_key_ok(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// True for a well-formed OpenType tag: four ASCII bytes 0x20..=0x7E, no leading space.
@@ -844,6 +885,11 @@ impl StudioCharacterAttributes {
     /// True when no field is set.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+    /// The fields that are not typographic formatting, which clear-overrides keeps (review F6 + lead
+    /// ruling Q8): the hyperlink. (Text anchors and conditions are layout-flow records, not here.)
+    pub fn non_typographic(&self) -> Self {
+        Self { hyperlink: self.hyperlink.clone(), ..Self::default() }
     }
     /// `self` with every field `top` sets replaced by `top`'s (decorations field by field, feature
     /// entries tag by tag): the STU-TYP-201 later-wins order.
@@ -1039,7 +1085,7 @@ impl StudioLanguage {
     /// control character). `InvalidField`, target `languages/{name}/{field}`.
     pub fn validate(&self) -> Result<()> {
         let t = format!("languages/{}", self.name);
-        check(label(&self.name), &t, "name")?;
+        check(language_key_ok(&self.name), &t, "name")?;
         check(label(&self.primary_language_name), &t, "primary_language_name")?;
         for (field, v) in [
             ("sublanguage_name", &self.sublanguage_name),
@@ -1163,32 +1209,32 @@ impl StudioTypeStyleRecords {
     pub fn language(&self, name: &str) -> Option<&StudioLanguage> {
         self.languages.iter().find(|l| l.name == name)
     }
-    /// The character attributes a style states along its `based_on` chain, root first (the chain
-    /// is bounded by the set size; a cycle, which validation refuses, stops the walk).
+    /// The character attributes a style's `based_on` chain states, root first, legacy fields folded at
+    /// each level ([`CharacterResolver`]; a chain the resolver refuses resolves empty).
     pub fn chain_character(&self, style_id: &str) -> StudioCharacterAttributes {
-        let mut chain = Vec::new();
-        let mut at = Some(style_id);
-        while let Some(id) = at {
-            if chain.len() > self.styles.len() || chain.contains(&id) {
-                break;
-            }
-            chain.push(id);
-            at = self.style(id).and_then(|s| s.based_on.as_deref());
-        }
-        chain.iter().rev().fold(StudioCharacterAttributes::default(), |acc, id| self.style_character(id).map_or(acc.clone(), |c| acc.overlaid(c)))
+        CharacterResolver::new(self, u64::MAX).styles_of(Some(style_id), None).unwrap_or_default()
     }
     /// The character attributes in force at a byte of `text_id` (STU-TYP-201 order): the
     /// paragraph style's chain, then the character style's chain, then the local override covering
     /// `byte`.
     pub fn resolved_character(&self, text_id: &str, byte: u64, paragraph_style: Option<&str>, character_style: Option<&str>) -> StudioCharacterAttributes {
-        let mut out = paragraph_style.map(|s| self.chain_character(s)).unwrap_or_default();
-        if let Some(s) = character_style {
-            out = out.overlaid(&self.chain_character(s));
+        CharacterResolver::new(self, u64::MAX).at(text_id, byte, paragraph_style, character_style).unwrap_or_default()
+    }
+    /// Removes every node hyperlink whose target `alive` refuses (STU-TYP-161, review F14: a deleted node
+    /// takes its links in the same step); a style entry or override left empty goes too. Returns how many
+    /// links went.
+    pub fn drop_node_links(&mut self, alive: &dyn Fn(&str) -> bool) -> usize {
+        let dead = |a: &StudioCharacterAttributes| matches!(&a.hyperlink, Some(StudioHyperlink::Node { node_id }) if !alive(node_id));
+        let mut n = 0usize;
+        for a in self.style_character.iter_mut().map(|c| &mut c.attributes).chain(self.character_overrides.iter_mut().map(|o| &mut o.attributes)) {
+            if dead(a) {
+                a.hyperlink = None;
+                n = n.saturating_add(1);
+            }
         }
-        match self.character_overrides.iter().find(|o| o.text_id == text_id && o.start <= byte && byte < o.end) {
-            Some(o) => out.overlaid(&o.attributes),
-            None => out,
-        }
+        self.style_character.retain(|c| !c.attributes.is_empty());
+        self.character_overrides.retain(|o| !o.attributes.is_empty());
+        n
     }
     /// The style with this id.
     pub fn style(&self, style_id: &str) -> Option<&StudioTypeStyle> {
@@ -1207,23 +1253,139 @@ impl StudioTypeStyleRecords {
     }
 }
 
-/// Deepest `based_on` chain a resolution walks (red skeleton).
+/// Deepest `based_on` chain a resolution walks (a Folio hard ceiling, review F8): a longer chain is refused
+/// `BudgetExceeded` within this many steps, never walked to its end.
 pub const MAX_STYLE_CHAIN: usize = 64;
 
-/// One export's or read's character-attribute resolution (red skeleton: no legacy fold, no bound).
+/// A length in points (layout's conventions: px = 0.75 pt), `None` when not finite.
+fn length_points(l: &Length) -> Option<f64> {
+    let k = match l.unit {
+        GeometryUnit::Pt => 1.0,
+        GeometryUnit::In => 72.0,
+        GeometryUnit::Mm => 72.0 / 25.4,
+        GeometryUnit::Px => 0.75,
+    };
+    let v = l.value * k;
+    v.is_finite().then_some(v)
+}
+
+/// A style's legacy fields as character attributes of the style's own level (review F3 + lead ruling Q2:
+/// one storage; the record of the same style overlays them): `font_size` as `size`, a length line height as
+/// `leading` (a percent one of the size in force), letter spacing as `tracking` (a percent of the size:
+/// 1 % = 10 em/1000; a length at the size in force). `size_pt` is the size in force before this style.
+pub fn legacy_character(style: &StudioTypeStyle, size_pt: Option<f64>) -> StudioCharacterAttributes {
+    let size = style.font_size.as_ref().and_then(length_points).filter(|v| *v > 0.0);
+    let at = size.or(size_pt);
+    let leading = match &style.line_height {
+        Some(StudioLineHeight::Length { length }) => length_points(length),
+        Some(StudioLineHeight::Percent { value }) => at.map(|s| s * value / 100.0).filter(|v| v.is_finite()),
+        Some(StudioLineHeight::Auto) | None => None,
+    };
+    let tracking = match &style.letter_spacing {
+        Some(StudioLetterSpacing::Percent { value }) => Some(value * 10.0).filter(|v| v.is_finite()),
+        Some(StudioLetterSpacing::Length { length }) => length_points(length).zip(at).filter(|(_, s)| *s > 0.0).map(|(l, s)| l / s * 1000.0).filter(|v| v.is_finite()),
+        None => None,
+    };
+    StudioCharacterAttributes { size, leading, tracking, ..StudioCharacterAttributes::default() }
+}
+
+/// The one character-attribute resolver (review F3 + Q2, F8): STU-TYP-201 order, paragraph style chain
+/// (root first), character style chain (root first), then the local override covering the byte; at every
+/// style the legacy fields ([`legacy_character`]) and then the style's own record. Bounded: `based_on`
+/// chains past [`MAX_STYLE_CHAIN`] and a cycle are refused typed; overrides are indexed per story (a
+/// lookup costs about log2 of the story's override count); every step is charged against the caller's
+/// budget (`BudgetExceeded` past it); resolved style pairs are cached.
 pub struct CharacterResolver<'a> {
-    records: &'a StudioTypeStyleRecords,
+    styles: BTreeMap<&'a str, &'a StudioTypeStyle>,
+    stated: BTreeMap<&'a str, &'a StudioCharacterAttributes>,
+    overrides: BTreeMap<&'a str, Vec<&'a StudioCharacterOverride>>,
+    cache: BTreeMap<(Option<String>, Option<String>), StudioCharacterAttributes>,
+    steps: u64,
+    budget: u64,
 }
 impl<'a> CharacterResolver<'a> {
+    /// A resolver over `records` that refuses past `step_budget` charged steps.
     pub fn new(records: &'a StudioTypeStyleRecords, step_budget: u64) -> Self {
-        let _ = step_budget;
-        Self { records }
+        let styles = records.styles.iter().map(|s| (s.style_id.as_str(), s)).collect();
+        let stated = records.style_character.iter().map(|c| (c.style_id.as_str(), &c.attributes)).collect();
+        let mut overrides: BTreeMap<&'a str, Vec<&'a StudioCharacterOverride>> = BTreeMap::new();
+        for o in &records.character_overrides {
+            overrides.entry(o.text_id.as_str()).or_default().push(o);
+        }
+        for list in overrides.values_mut() {
+            list.sort_by_key(|o| o.start);
+        }
+        Self { styles, stated, overrides, cache: BTreeMap::new(), steps: 0, budget: step_budget }
     }
-    pub fn at(&mut self, text_id: &str, byte: u64, paragraph_style: Option<&str>, character_style: Option<&str>) -> Result<StudioCharacterAttributes> {
-        Ok(self.records.resolved_character(text_id, byte, paragraph_style, character_style))
-    }
+    /// Steps charged so far.
     pub fn steps(&self) -> u64 {
-        0
+        self.steps
+    }
+    /// The local overrides of `text_id`, ordered by start.
+    pub fn overrides_of(&self, text_id: &str) -> &[&'a StudioCharacterOverride] {
+        self.overrides.get(text_id).map_or(&[], Vec::as_slice)
+    }
+    /// Charges `n` steps; `BudgetExceeded` past the budget.
+    pub fn charge(&mut self, n: u64) -> Result<()> {
+        self.steps = self.steps.saturating_add(n);
+        if self.steps > self.budget {
+            return Err(err(Code::BudgetExceeded, "character_resolution"));
+        }
+        Ok(())
+    }
+    fn chain(&mut self, id: &str) -> Result<Vec<&'a StudioTypeStyle>> {
+        let mut out: Vec<&'a StudioTypeStyle> = Vec::new();
+        let mut next = self.styles.get(id).copied();
+        while let Some(s) = next {
+            self.charge(1)?;
+            if out.len() >= MAX_STYLE_CHAIN {
+                return Err(err(Code::BudgetExceeded, format!("style_chain/{id}")));
+            }
+            if out.iter().any(|x| x.style_id == s.style_id) {
+                return Err(err(Code::RenderCycle, format!("style_chain/{id}")));
+            }
+            out.push(s);
+            next = s.based_on.as_deref().and_then(|b| self.styles.get(b).copied());
+        }
+        out.reverse();
+        Ok(out)
+    }
+    /// The attributes the two styles' chains state (legacy fields folded at their own level).
+    pub fn styles_of(&mut self, paragraph_style: Option<&str>, character_style: Option<&str>) -> Result<StudioCharacterAttributes> {
+        self.charge(1)?;
+        let key = (paragraph_style.map(str::to_owned), character_style.map(str::to_owned));
+        if let Some(hit) = self.cache.get(&key) {
+            return Ok(hit.clone());
+        }
+        let mut acc = StudioCharacterAttributes::default();
+        for id in [paragraph_style, character_style].into_iter().flatten() {
+            for s in self.chain(id)? {
+                self.charge(1)?;
+                acc = acc.overlaid(&legacy_character(s, acc.size));
+                if let Some(r) = self.stated.get(s.style_id.as_str()).copied() {
+                    acc = acc.overlaid(r);
+                }
+            }
+        }
+        self.cache.insert(key, acc.clone());
+        Ok(acc)
+    }
+    /// The attributes in force at `byte` of `text_id` (module docs).
+    pub fn at(&mut self, text_id: &str, byte: u64, paragraph_style: Option<&str>, character_style: Option<&str>) -> Result<StudioCharacterAttributes> {
+        let base = self.styles_of(paragraph_style, character_style)?;
+        let (cost, found) = match self.overrides.get(text_id) {
+            Some(list) => {
+                let n = u64::try_from(list.len()).unwrap_or(u64::MAX);
+                let i = list.partition_point(|o| o.end <= byte);
+                (u64::from(64u32.saturating_sub(n.leading_zeros())).saturating_add(1), list.get(i).filter(|o| o.start <= byte).copied())
+            }
+            None => (1, None),
+        };
+        self.charge(cost)?;
+        Ok(match found {
+            Some(o) => base.overlaid(&o.attributes),
+            None => base,
+        })
     }
 }
 

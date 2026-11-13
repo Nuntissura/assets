@@ -109,7 +109,9 @@ pub struct VectorGlyph {
     pub glyph_id: u32,
     /// What the glyph stands for (ToUnicode, then glyph names), when known.
     pub unicode: Option<String>,
-    /// The `/ActualText` of the innermost marked-content span around the glyph (red skeleton: not read).
+    /// The `/ActualText` of the innermost marked-content span around the glyph (an inline `BDC` property
+    /// dict of the page walk; [`read_vector_document`] only). Bounded at 4096 chars (`MAX_ACTUAL_TEXT_CHARS`): a longer
+    /// value is cut there, ends with U+FFFD and notes the page [`VectorNote::ActualTextTruncated`].
     pub actual_text: Option<String>,
     /// Glyph space (1000 units per em) to user space.
     pub matrix: [f64; 6],
@@ -160,7 +162,12 @@ pub enum VectorNote {
     /// A syntax stream of the file had a damaged Flate tail (or a damaged later filter stage) and was
     /// read to its readable prefix (SMB-PARSER-HOSTILE-1 lead ruling: base behaviour with a warning).
     StreamTailDamaged,
+    /// A glyph's `/ActualText` was longer than 4096 chars (`MAX_ACTUAL_TEXT_CHARS`) and was cut.
+    ActualTextTruncated,
 }
+
+/// Most chars of one `/ActualText` a reader keeps ([`VectorGlyph::actual_text`]).
+pub(crate) const MAX_ACTUAL_TEXT_CHARS: usize = 4096;
 
 impl VectorNote {
     pub const fn code(self) -> &'static str {
@@ -179,6 +186,7 @@ impl VectorNote {
             Self::StructureNotRead => "pdf_structure_not_read",
             Self::FontBytesBudget => "pdf_font_bytes_budget",
             Self::StreamTailDamaged => "pdf_stream_tail_damaged",
+            Self::ActualTextTruncated => "pdf_actual_text_truncated",
         }
     }
 }
@@ -250,6 +258,8 @@ struct Recorder<'c> {
     marks_ok: bool,
     /// Open marked content: whether it opened a layer.
     mark_stack: Vec<bool>,
+    /// Open marked content: its `/ActualText`, if any (innermost last).
+    actual_stack: Vec<Option<String>>,
     /// Inside a Type 3 glyph procedure (its drawing consumes no walk events).
     type3: u32,
 }
@@ -500,7 +510,11 @@ impl<'a> Device<'a> for Recorder<'_> {
                     hayro_interpret::hayro_cmap::BfString::Char(c) => c.to_string(),
                     hayro_interpret::hayro_cmap::BfString::String(s) => s,
                 });
-                let info = VectorGlyph { font, glyph_id: g.glyph_id().to_u32(), unicode, actual_text: None, matrix: t.as_coeffs() };
+                let actual_text = self.actual_stack.iter().rev().find_map(Clone::clone);
+                if actual_text.as_ref().is_some_and(|a| a.chars().count() > MAX_ACTUAL_TEXT_CHARS) {
+                    self.notes.insert(VectorNote::ActualTextTruncated);
+                }
+                let info = VectorGlyph { font, glyph_id: g.glyph_id().to_u32(), unicode, actual_text, matrix: t.as_coeffs() };
                 match draw_mode {
                     GlyphDrawMode::Fill => self.draw(&outline, t, paint, VectorModeIn::Fill(FillRule::NonZero), Some(info)),
                     GlyphDrawMode::Stroke(props) => self.draw(&outline, t, paint, VectorModeIn::Stroke(props), Some(info)),
@@ -534,9 +548,13 @@ impl<'a> Device<'a> for Recorder<'_> {
         if self.type3 > 0 {
             return;
         }
-        let Some(src) = self.src else { return };
+        let Some(src) = self.src else {
+            self.actual_stack.push(None);
+            return;
+        };
         let mark = src.marks.get(self.mark_at);
         self.mark_at = self.mark_at.saturating_add(1);
+        self.actual_stack.push(mark.filter(|m| self.marks_ok && m.tag == tag).and_then(|m| m.actual_text.clone()));
         let opens = match mark {
             Some(m) if self.marks_ok && m.tag == tag => match m.layer {
                 // Only the outermost layer is kept (Illustrator layers are page level).
@@ -555,7 +573,11 @@ impl<'a> Device<'a> for Recorder<'_> {
     }
 
     fn end_marked_content(&mut self) {
-        if self.type3 > 0 || self.src.is_none() {
+        if self.type3 > 0 {
+            return;
+        }
+        self.actual_stack.pop();
+        if self.src.is_none() {
             return;
         }
         if self.mark_stack.pop() == Some(true) {
@@ -668,6 +690,7 @@ fn read(pdf: &[u8], max_bytes: usize, sources: Option<Option<&DocSource>>, cance
                     src_ok: true,
                     marks_ok: true,
                     mark_stack: Vec::new(),
+                    actual_stack: Vec::new(),
                     type3: 0,
                 };
                 interpret_page(page, &mut ctx, &mut rec);

@@ -168,6 +168,14 @@ pub fn replace_story_text(
             character_ranges.push(StoryRange { start: a, end: b, ..r.clone() });
         }
     }
+    // Text inserted at byte 0 lies before the first range (map_pos moves a start at the edit after the
+    // inserted text); it joins that range so the ranges keep tiling the stream (lane
+    // SMB-TYPE-CHARACTER-ATTRIBUTES-1, review Q7).
+    if let Some(first) = character_ranges.first_mut()
+        && first.start > 0
+    {
+        first.start = 0;
+    }
     if character_ranges.is_empty() && !out.is_empty() {
         let template = story.character_ranges.first().cloned();
         character_ranges.push(StoryRange {

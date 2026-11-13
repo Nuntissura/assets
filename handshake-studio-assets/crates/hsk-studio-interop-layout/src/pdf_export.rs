@@ -260,6 +260,8 @@ struct RunKey {
 struct Placed {
     para: usize,
     at: u64,
+    /// End of the glyph's cluster (the ActualText of a span part covers the drawn clusters).
+    end: u64,
     page: usize,
     x: f64,
     y: f64,
@@ -919,6 +921,9 @@ impl Cx<'_> {
         let mut widths: Vec<BTreeMap<u16, u16>> = vec![BTreeMap::new(); fonts.len()];
         let mut unicode: Vec<BTreeMap<u16, String>> = vec![BTreeMap::new(); fonts.len()];
         let mut used = vec![false; fonts.len()];
+        // `/W` is each glyph's own width from the font program (review F5 + lead ruling): composed advances
+        // carry tracking and justification, which press writes as TJ adjustments, never as widths.
+        let program: Vec<Option<Vec<u16>>> = fonts.iter().map(|f| hsk_studio_press::font_advance_widths(f.bytes, f.face_index).ok()).collect();
         let longdoc = self.longdoc;
         for s in self.input.stories.iter().chain(longdoc.stories()) {
             for (gs, p) in s.glyphs.iter().zip(s.paragraphs) {
@@ -928,9 +933,16 @@ impl Cx<'_> {
                         continue;
                     };
                     *flag = true;
-                    let em = lg.advance_pt / g.size_pt * 1000.0;
-                    if em.is_finite() && (0.0..=65535.0).contains(&em) {
-                        w.entry(g.glyph_id).or_insert(em.round() as u16);
+                    match program.get(g.font).and_then(Option::as_ref).and_then(|p| p.get(usize::from(g.glyph_id))) {
+                        Some(own) => {
+                            w.entry(g.glyph_id).or_insert(*own);
+                        }
+                        None => {
+                            let em = lg.advance_pt / g.size_pt * 1000.0;
+                            if em.is_finite() && (0.0..=65535.0).contains(&em) {
+                                w.entry(g.glyph_id).or_insert(em.round() as u16);
+                            }
+                        }
                     }
                     let cluster = (lg.cluster.start, lg.cluster.end);
                     if last_cluster != Some(cluster) {
@@ -1061,7 +1073,7 @@ impl Cx<'_> {
                     .zip(usize::try_from(lg.cluster.end).ok())
                     .and_then(|(a, b)| story.text.get(a..b))
                     .is_some_and(|t| !t.is_empty() && t.chars().all(char::is_whitespace));
-                out.push((Placed { para: line.paragraph, at: lg.cluster.start, page: pi, x: x + g.x_offset_pt, y: y - g.y_offset_pt }, *g));
+                out.push((Placed { para: line.paragraph, at: lg.cluster.start, end: lg.cluster.end, page: pi, x: x + g.x_offset_pt, y: y - g.y_offset_pt }, *g));
                 x += lg.advance_pt * if space { scale } else { 1.0 };
                 if idx.checked_add(1).is_some_and(|n| n < line.glyph_range.end) {
                     x += gap;
@@ -1072,7 +1084,7 @@ impl Cx<'_> {
                 match last.and_then(|(g, at)| self.input.fonts.get(g.font).and_then(|f| f.hyphen).map(|h| (g, at, h))) {
                     Some((g, at, (hid, _))) => {
                         let hy = PdfGlyph { glyph_id: hid, x_offset_pt: 0.0, y_offset_pt: 0.0, ..g };
-                        out.push((Placed { para: line.paragraph, at, page: pi, x, y }, hy));
+                        out.push((Placed { para: line.paragraph, at, end: at, page: pi, x, y }, hy));
                     }
                     None => self.loss.note(&story.story.story_id, "text", LossKind::Approximated, "hyphen_glyph_missing"),
                 }
@@ -1085,8 +1097,44 @@ impl Cx<'_> {
         // Pending glyph run on this frame and its key (font, size, fill, alpha).
         let mut run: Vec<(u16, f64, f64)> = Vec::new();
         let mut run_key: Option<RunKey> = None;
-        for (at, g) in self.glyph_layout(story, frame, pi) {
-            self.place(&mut run, &mut run_key, story, at, g)?;
+        let placed = self.glyph_layout(story, frame, pi);
+        // Case-transformed spans of this story (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1), ordered by start.
+        let mut spans: Vec<(&str, u64, u64, &str)> = self.longdoc.actual_text.iter().filter(|a| a.0 == story.story.story_id).copied().collect();
+        spans.sort_by_key(|a| a.1);
+        let span_of = |at: u64| -> Option<usize> {
+            let i = spans.partition_point(|a| a.2 <= at);
+            spans.get(i).filter(|a| a.1 <= at).map(|_| i)
+        };
+        let mut i = 0usize;
+        while let Some((first, _)) = placed.get(i) {
+            let span = span_of(first.at);
+            let mut j = i;
+            while placed.get(j).is_some_and(|(p, _)| span_of(p.at) == span) {
+                j = j.saturating_add(1);
+            }
+            let group = placed.get(i..j).unwrap_or(&[]);
+            match span.and_then(|k| spans.get(k)).copied() {
+                Some((_, start, end, stored)) => {
+                    self.flush(&mut run, run_key, pi)?;
+                    let lo = group.iter().map(|(p, _)| p.at).min().unwrap_or(start).max(start);
+                    let hi = group.iter().map(|(p, _)| p.end).max().unwrap_or(end).clamp(lo, end);
+                    let cut = |b: u64| usize::try_from(b.saturating_sub(start)).ok();
+                    let text = cut(lo).zip(cut(hi)).and_then(|(a, b)| stored.get(a..b)).filter(|t| !t.is_empty()).unwrap_or(stored);
+                    let Some(page) = self.pages.get(pi).map(|p| p.handle) else { return Err(PdfExportError::InvalidInput("frame_page")) };
+                    self.ex.begin_actual_text(page, text)?;
+                    for (at, g) in group {
+                        self.place(&mut run, &mut run_key, story, *at, *g)?;
+                    }
+                    self.flush(&mut run, run_key, pi)?;
+                    self.ex.end_actual_text(page)?;
+                }
+                None => {
+                    for (at, g) in group {
+                        self.place(&mut run, &mut run_key, story, *at, *g)?;
+                    }
+                }
+            }
+            i = j;
         }
         self.flush(&mut run, run_key, pi)
     }

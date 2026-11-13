@@ -205,6 +205,7 @@ fn tracking_is_added_once_per_cluster() {
     assert_eq!(plain.len(), 3, "x, the mark and y: {plain:?}");
     ok(&mut v, "layout.set_character_attributes", json!({"story": story, "start": 0, "end": 4, "attributes": {"tracking": 500}}));
     let tracked = drawn(&mut v, &s.0.join("tracked.pdf"));
+    assert_eq!(tracked.iter().map(|g| g.id).collect::<Vec<_>>(), plain.iter().map(|g| g.id).collect::<Vec<_>>(), "the same glyphs");
     assert!(((tracked[1].x - tracked[0].x) - (plain[1].x - plain[0].x)).abs() < 1e-6, "the mark stays on its base: {plain:?} {tracked:?}");
     assert!(((tracked[2].x - tracked[0].x) - (plain[2].x - plain[0].x) - 6.0).abs() < 1e-6, "one 6 pt step per cluster: {plain:?} {tracked:?}");
 }
@@ -298,7 +299,10 @@ fn introspection_rows_binary_features_subfield_clear_and_insertion_point_read() 
 /// same step, and undo restores both.
 #[test]
 fn node_links_name_document_nodes() {
-    let (mut v, story) = layout_with(2, "Go to page two");
+    let (mut v, story) = layout_with(1, "Go to page two");
+    // page-2 on a spread of its own: deleting the page deletes the spread node the link names (a page added to
+    // page-1's spread would leave that spread, and the link, in place).
+    v.add_page(Some("page-1"), true, None, None).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(refused(&mut v, "layout.set_character_attributes", json!({"story": story, "start": 0, "end": 2, "attributes": {"hyperlink": {"target_kind": "node", "node_id": "nothing"}}})), "unknown_link_target");
     let spread = v.run().snapshot().unwrap().document().page_spreads.iter().find(|s| s.pages.iter().any(|p| p.page_id == "page-2")).unwrap().page_spread_id.clone();
     ok(&mut v, "layout.set_character_attributes", json!({"story": story, "start": 0, "end": 2, "attributes": {"hyperlink": {"target_kind": "node", "node_id": spread}}}));

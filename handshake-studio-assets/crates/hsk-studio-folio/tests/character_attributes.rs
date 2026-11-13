@@ -201,10 +201,10 @@ fn registries_overrides_and_style_entries_are_checked() {
 /// feature entries tag by tag.
 #[test]
 fn resolution_is_paragraph_then_character_then_override() {
-    let mut v = records(json!({"size": 20.0, "opentype_features": {"liga": 0}, "underline": {"tint": 50.0}}));
+    let mut v = records(json!({"size": 20.0, "opentype_features": {"liga": false}, "underline": {"tint": 50.0}}));
     v["style_character"] = json!([
         {"style_id": stys(1), "attributes": {"size": 10.0, "tracking": 5.0, "kerning_mode": "none"}},
-        {"style_id": stys(2), "attributes": {"tracking": 30.0, "opentype_features": {"liga": 1, "smcp": 1}, "underline": {"type": "solid", "tint": 100.0}}},
+        {"style_id": stys(2), "attributes": {"tracking": 30.0, "opentype_features": {"liga": true, "smcp": true}, "underline": {"type": "solid", "tint": 100.0}}},
         {"style_id": stys(3), "attributes": {"capitalization": "small_caps"}}]);
     assert!(check(&v).is_ok());
     let r: StudioTypeStyleRecords = serde_json::from_value(v).unwrap();
@@ -212,10 +212,10 @@ fn resolution_is_paragraph_then_character_then_override() {
     let outside = r.resolved_character(&story, 0, Some(&stys(1)), Some(&stys(3)));
     assert_eq!((outside.size, outside.tracking, outside.kerning_mode), (Some(10.0), Some(30.0), Some(StudioKerningMode::None)));
     assert_eq!(outside.capitalization, Some(StudioCapitalization::SmallCaps), "inherited through based_on");
-    assert_eq!(outside.opentype_features.get("liga"), Some(&1));
+    assert_eq!(outside.opentype_features.get("liga"), Some(&StudioFeatureValue::Binary(true)));
     let inside = r.resolved_character(&story, 3, Some(&stys(1)), Some(&stys(3)));
     assert_eq!((inside.size, inside.tracking), (Some(20.0), Some(30.0)));
-    assert_eq!((inside.opentype_features.get("liga"), inside.opentype_features.get("smcp")), (Some(&0), Some(&1)));
+    assert_eq!((inside.opentype_features.get("liga"), inside.opentype_features.get("smcp")), (Some(&StudioFeatureValue::Binary(false)), Some(&StudioFeatureValue::Binary(true))));
     let u = inside.underline.expect("merged underline");
     assert_eq!((u.stroke_type.as_deref(), u.tint), (Some("solid"), Some(50.0)));
     assert!(r.resolved_character(&identity("STXT", 2), 3, None, None).is_empty(), "another story has no override");

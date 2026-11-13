@@ -93,7 +93,7 @@ use super::text::{self, DEFAULT_FONT, FontFile};
 use crate::layout_ui::{LayoutDoc, LayoutEditor, LayoutRecords};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio::{
-    self as folio, Bounds, GeometryUnit, Length, PageSide, PageSpreadSchema, Parent, Payload, StudioAlternateGlyphForm, StudioBaselineDirection, StudioCapitalization,
+    self as folio, CharacterResolver, Bounds, GeometryUnit, Length, PageSide, PageSpreadSchema, Parent, Payload, StudioAlternateGlyphForm, StudioBaselineDirection, StudioCapitalization,
     StudioCharacterAlignment, StudioCharacterAttributes, StudioCharacterPosition, StudioDecoration, StudioDigitsType, StudioFontBaselineOption, StudioKerningMode, StudioPage,
     StudioPageSpread, StudioTextStory, StudioTypeStyleRecords, TypeStyleScope,
 };
@@ -232,8 +232,10 @@ struct Span {
 }
 
 /// What the export applies of one span's resolved character attributes (module docs).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Character {
+    /// Feature tags projected from `capitalization` or `position` (tag, field): an inert one reports the field.
+    projections: Vec<([u8; 4], &'static str)>,
     /// OpenType features by tag (STU-TYP-170 map plus the kerning, capitalization and position
     /// projections).
     features: BTreeMap<[u8; 4], u32>,
@@ -260,6 +262,16 @@ fn shaping_language(styles: &StudioTypeStyleRecords, key: &str) -> Option<String
     locale.then(|| key.replace('_', "-"))
 }
 
+/// Feature tags shaping applies by default (HarfBuzz's always-on and default features): an explicit 0 for
+/// one of them turns it off, so it is effective; a 0 for any other tag changes nothing and is not sent
+/// (review F1: a span carries only its effective features).
+const DEFAULT_ON: [&[u8; 4]; 21] = [
+    b"abvm", b"blwm", b"calt", b"ccmp", b"clig", b"curs", b"dist", b"fina", b"init", b"isol", b"kern", b"liga", b"locl", b"mark", b"medi", b"mkmk", b"rclt", b"rlig",
+    b"rvrn", b"valt", b"vert",
+];
+/// ISO 15924 scripts `metrics_roman_only` treats as CJK (lead ruling Q6: every other script is Roman).
+const CJK_SCRIPTS: [&[u8; 4]; 9] = [b"Hani", b"Hira", b"Kana", b"Hrkt", b"Hang", b"Bopo", b"Jpan", b"Kore", b"Hans"];
+
 /// The export's reading of one span's resolved attributes at the style size `size_pt`, and the
 /// span's size (module docs). Fields it cannot draw count in `not_rendered`.
 fn character_of(a: &StudioCharacterAttributes, size_pt: f64, script: [u8; 4], language: String, not_rendered: &mut BTreeMap<&'static str, u32>) -> (Character, f64) {
@@ -269,27 +281,31 @@ fn character_of(a: &StudioCharacterAttributes, size_pt: f64, script: [u8; 4], la
     };
     let mut c = Character { language, leading_pt: a.leading, ..Character::default() };
     for (tag, value) in &a.opentype_features {
-        if let Ok(t) = <[u8; 4]>::try_from(tag.as_bytes()) {
-            c.features.insert(t, *value);
+        let Ok(t) = <[u8; 4]>::try_from(tag.as_bytes()) else { continue };
+        let v = value.shaping_value();
+        if v != 0 || DEFAULT_ON.contains(&&t) {
+            c.features.insert(t, v);
         }
     }
+    let project = |c: &mut Character, tag: [u8; 4], field: &'static str| {
+        c.features.entry(tag).or_insert(1);
+        c.projections.push((tag, field));
+    };
     match a.kerning_mode {
         Some(StudioKerningMode::None) => {
             c.features.insert(*b"kern", 0);
         }
-        Some(StudioKerningMode::MetricsRomanOnly) if script != *b"Latn" => {
+        Some(StudioKerningMode::MetricsRomanOnly) if CJK_SCRIPTS.contains(&&script) => {
             c.features.insert(*b"kern", 0);
         }
         Some(StudioKerningMode::Optical) => miss("kerning_mode"),
         _ => {}
     }
     match a.capitalization {
-        Some(StudioCapitalization::SmallCaps) => {
-            c.features.entry(*b"smcp").or_insert(1);
-        }
+        Some(StudioCapitalization::SmallCaps) => project(&mut c, *b"smcp", "capitalization"),
         Some(StudioCapitalization::AllSmallCaps) => {
-            c.features.entry(*b"smcp").or_insert(1);
-            c.features.entry(*b"c2sc").or_insert(1);
+            project(&mut c, *b"smcp", "capitalization");
+            project(&mut c, *b"c2sc", "capitalization");
         }
         Some(StudioCapitalization::AllCaps) => c.upper = Some(true),
         Some(StudioCapitalization::LowerCase) => c.upper = Some(false),
@@ -298,18 +314,10 @@ fn character_of(a: &StudioCharacterAttributes, size_pt: f64, script: [u8; 4], la
     let mut size = size_pt;
     let mut shift = a.baseline_shift.unwrap_or(0.0);
     match a.position {
-        Some(StudioCharacterPosition::OtSuperscript) => {
-            c.features.entry(*b"sups").or_insert(1);
-        }
-        Some(StudioCharacterPosition::OtSubscript) => {
-            c.features.entry(*b"subs").or_insert(1);
-        }
-        Some(StudioCharacterPosition::OtNumerator) => {
-            c.features.entry(*b"numr").or_insert(1);
-        }
-        Some(StudioCharacterPosition::OtDenominator) => {
-            c.features.entry(*b"dnom").or_insert(1);
-        }
+        Some(StudioCharacterPosition::OtSuperscript) => project(&mut c, *b"sups", "position"),
+        Some(StudioCharacterPosition::OtSubscript) => project(&mut c, *b"subs", "position"),
+        Some(StudioCharacterPosition::OtNumerator) => project(&mut c, *b"numr", "position"),
+        Some(StudioCharacterPosition::OtDenominator) => project(&mut c, *b"dnom", "position"),
         Some(p @ (StudioCharacterPosition::Superscript | StudioCharacterPosition::Subscript)) => {
             let up = p == StudioCharacterPosition::Superscript;
             let (scale, position) = if up { (a.superscript_size, a.superscript_position) } else { (a.subscript_size, a.subscript_position) };
@@ -368,26 +376,61 @@ fn character_of(a: &StudioCharacterAttributes, size_pt: f64, script: [u8; 4], la
     (c, size)
 }
 
-/// The base direction of paragraph `p` (red skeleton: always left to right).
-fn paragraph_base_direction(st: &StudioTextStory, p: &folio::StoryParagraph, text: &str) -> ty::Direction {
-    let _ = (st, p, text);
-    ty::Direction::LeftToRight
+/// A character's strong bidi direction for UAX #9 P2: `Some(true)` R or AL (the right-to-left blocks:
+/// Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic, Arabic extensions and presentation forms, and
+/// the right-to-left supplementary blocks), `Some(false)` L (any other alphabetic character), `None` weak
+/// or neutral. A block-level reading of the Bidi_Class table, UNVERIFIED for every code point (D5).
+fn strong(c: char) -> Option<bool> {
+    let u = u32::from(c);
+    let rtl = matches!(u, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF);
+    if rtl {
+        Some(true)
+    } else if c.is_alphabetic() {
+        Some(false)
+    } else {
+        None
+    }
 }
 
-/// The shaped copy of `text` (bytes relative to it): every span with a case mapping maps its
-/// characters one to one where the mapped character has the same UTF-8 length (a character whose
-/// case form differs in length, or is several characters, is kept).
+/// The base direction of paragraph `p` (review F12): its stated `paragraph_direction`, else the story's
+/// `story_direction`, else (story direction unknown) the first strong character of its text (UAX #9 P2-P3;
+/// none: left to right).
+fn paragraph_base_direction(st: &StudioTextStory, p: &folio::StoryParagraph, text: &str) -> ty::Direction {
+    match (p.paragraph_direction, st.story_direction) {
+        (Some(folio::StoryParagraphDirection::RightToLeft), _) | (None, folio::StoryDirection::RightToLeft) => ty::Direction::RightToLeft,
+        (Some(folio::StoryParagraphDirection::LeftToRight), _) | (None, folio::StoryDirection::LeftToRight) => ty::Direction::LeftToRight,
+        (None, folio::StoryDirection::Unknown) => match text.chars().find_map(strong) {
+            Some(true) => ty::Direction::RightToLeft,
+            _ => ty::Direction::LeftToRight,
+        },
+    }
+}
+
+/// One character's case form under the span's case mapping, or `None` when it cannot be mapped one to one
+/// at the same UTF-8 length (`ß`, `ŉ`; `i` and dotless `ı` under a Turkish or Azerbaijani language, whose
+/// case forms are other letters): such a character is kept and counted (review F4).
+fn case_form(c: char, upper: bool, language: &str) -> Option<char> {
+    let turkic = language.starts_with("tr") || language.starts_with("az");
+    if turkic && matches!(c, 'i' | '\u{131}' | 'I' | '\u{130}') {
+        return None;
+    }
+    let mapped = if upper { one(c.to_uppercase()) } else { one(c.to_lowercase()) };
+    mapped.filter(|m| m.len_utf8() == c.len_utf8())
+}
+
+/// The shaped copy of `text` (bytes relative to it): every span with a case mapping maps its characters
+/// ([`case_form`]); spans are walked in order with the characters (linear).
 fn case_mapped(text: &str, spans: &[Span], characters: &[Character]) -> String {
     let mut out = String::with_capacity(text.len());
+    let mut k = 0usize;
     for (i, c) in text.char_indices() {
         let at = i as u64;
-        let upper = spans.iter().find(|s| s.start <= at && at < s.end).and_then(|s| characters.get(s.character)).and_then(|c| c.upper);
-        let mapped = match upper {
-            Some(true) => one(c.to_uppercase()),
-            Some(false) => one(c.to_lowercase()),
-            None => None,
-        };
-        out.push(mapped.filter(|m| m.len_utf8() == c.len_utf8()).unwrap_or(c));
+        while spans.get(k).is_some_and(|s| s.end <= at) {
+            k = k.saturating_add(1);
+        }
+        let ch = spans.get(k).filter(|s| s.start <= at).and_then(|s| characters.get(s.character)).filter(|c| c.upper.is_some());
+        let mapped = ch.and_then(|ch| case_form(c, ch.upper == Some(true), &ch.language));
+        out.push(mapped.unwrap_or(c));
     }
     out
 }
@@ -409,6 +452,8 @@ struct Planned {
 
 /// One composed story (owned parts of a [`PdfStory`]).
 struct Composed {
+    /// The story text as drawn (case-mapped spans in their drawn case; review F2).
+    mapped: String,
     story: usize,
     placement: LayoutProposal,
     paragraphs: Vec<ShapedParagraph>,
@@ -453,7 +498,7 @@ fn shape_paragraph(
     composition: &str,
     actor: &ActorContext,
     cancel: &CancellationToken,
-) -> Result<(ShapedParagraph, Vec<PdfGlyph>)> {
+) -> Result<(ShapedParagraph, Vec<PdfGlyph>, Vec<Receipt>)> {
     let internal = |what: &str| LayoutExportRefusal::new("layout_internal", what.to_string());
     let mapped = case_mapped(text, spans, characters);
     let text = mapped.as_str();
@@ -542,27 +587,54 @@ fn shape_paragraph(
         let p = prepared.paragraphs().first().ok_or_else(|| internal("no shaped paragraph"))?;
         let mut shaped = ShapedParagraph::from_type(p, line.0, line.1);
         let mut glyphs = pdf_glyphs_from_type(p, pdf_fonts).map_err(|e| LayoutExportRefusal::new(e.code(), e.to_string()))?;
-        // Tracking, manual kerning and baseline shift of the glyph's span (module docs).
-        for (i, g) in shaped.glyphs.iter_mut().enumerate() {
-            if let Some(c) = spans.iter().find(|s| s.start <= g.cluster.start && g.cluster.start < s.end).and_then(|s| characters.get(s.character)) {
-                g.advance_pt += c.extra_advance_pt;
-                if let Some(pdf) = glyphs.get_mut(i) {
+        // Every feature receipt of the paragraph (review F4): (tag, inert, the span it was asked for).
+        let receipts: Vec<Receipt> = p
+            .runs()
+            .iter()
+            .flat_map(|r| r.features().iter())
+            .map(|r| (r.feature.tag, r.state == ty::FeatureState::UnavailableInert, spans.iter().position(|s| s.start <= r.feature.range.start && r.feature.range.start < s.end)))
+            .collect();
+        let span_of = |at: u64| spans.iter().find(|s| s.start <= at && at < s.end).and_then(|s| characters.get(s.character));
+        // Baseline shift of every glyph of the span; tracking and manual kerning once per cluster (review
+        // F5), on the advance of the cluster's last glyph, so the glyphs of one cluster (a base and its
+        // combining marks) keep their relative positions and only the next cluster moves.
+        let n = shaped.glyphs.len();
+        let mut i = 0usize;
+        while i < n {
+            let cluster = shaped.glyphs.get(i).map(|g| g.cluster).unwrap_or(SourceSpan { start: 0, end: 0 });
+            let mut j = i;
+            while shaped.glyphs.get(j).is_some_and(|g| g.cluster == cluster) {
+                j = j.saturating_add(1);
+            }
+            if let Some(c) = span_of(cluster.start) {
+                for pdf in glyphs.get_mut(i..j).into_iter().flatten() {
                     pdf.y_offset_pt += c.baseline_shift_pt;
                 }
-                if let Some(a) = shaped.line_end_advances.iter_mut().find(|a| a.glyph == i) {
+                let last = j.saturating_sub(1);
+                if let Some(g) = shaped.glyphs.get_mut(last) {
+                    g.advance_pt += c.extra_advance_pt;
+                }
+                if let Some(a) = shaped.line_end_advances.iter_mut().find(|a| a.glyph == last) {
                     a.advance_pt += c.extra_advance_pt;
                 }
             }
+            i = j.max(i.saturating_add(1));
+        }
+        for g in &mut shaped.glyphs {
             g.cluster = SourceSpan { start: g.cluster.start.saturating_add(offset), end: g.cluster.end.saturating_add(offset) };
         }
         for l in &mut shaped.ligature_parts {
             l.source = SourceSpan { start: l.source.start.saturating_add(offset), end: l.source.end.saturating_add(offset) };
         }
-        (shaped, glyphs)
+        (shaped, glyphs, receipts)
     };
     drop(input_lease);
     Ok(out)
 }
+
+/// One feature receipt of a shaped piece: the tag, whether Type found it inert, and the index of the span
+/// (in the piece's span list) it was requested for.
+type Receipt = ([u8; 4], bool, Option<usize>);
 
 /// What [`plan_story`] collects over every story of one export.
 struct Plan<'a> {
@@ -575,23 +647,52 @@ struct Plan<'a> {
     languages_unresolved: u32,
     /// Spans per (script, shaping language): the itemization receipt.
     itemized: BTreeMap<(String, String), u32>,
-    /// Work charged while planning (red skeleton: not charged).
+    /// Work charged while planning (review F8).
     steps: u64,
+    /// Characters a case mapping kept (review F4).
+    case_incomplete: u32,
+    /// Feature entries past Type's per-request feature limit on one span, not sent (review F1).
+    features_dropped: u32,
+    /// Paragraphs whose base direction is right to left, composed left to right (review F12).
+    direction_not_applied: u32,
 }
 impl<'a> Plan<'a> {
     fn new(fonts: &'a [FontFile], fallback: usize) -> Self {
-        Self { fonts, fallback, used: BTreeSet::new(), substituted: BTreeMap::new(), characters: Vec::new(), not_rendered: BTreeMap::new(), languages_unresolved: 0, itemized: BTreeMap::new(), steps: 0 }
+        Self {
+            fonts,
+            fallback,
+            used: BTreeSet::new(),
+            substituted: BTreeMap::new(),
+            characters: Vec::new(),
+            not_rendered: BTreeMap::new(),
+            languages_unresolved: 0,
+            itemized: BTreeMap::new(),
+            steps: 0,
+            case_incomplete: 0,
+            features_dropped: 0,
+            direction_not_applied: 0,
+        }
     }
 }
 
-/// The paragraphs of `story` with their spans (module docs: character style, else paragraph
-/// style, else the bundled font; the resolved character attributes; one script per span).
+/// Work budget of one story's planning (review F8): resolution and cut steps; past it the export refuses
+/// `layout_text_over_budget`.
+const PLAN_STEP_BUDGET: u64 = 1 << 24;
+
+/// The paragraphs of `story` with their spans (module docs: the one resolver's attributes, the character
+/// style's family, else the paragraph style's, else the bundled font; one script per span). Spans are cut
+/// only at character ranges, overrides and script runs, then neighbours with equal shaping inputs merge
+/// (review F1). The token is checked per paragraph and the work is charged (review F8).
 fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut Plan<'_>, cancel: &CancellationToken) -> Result<Vec<Planned>> {
-    let _ = cancel;
     let text = story_text(st);
     let total = text.len() as u64;
+    let feature_limit = usize::try_from(text::limits().features).unwrap_or(usize::MAX);
+    let mut res = CharacterResolver::new(styles, PLAN_STEP_BUDGET);
+    let over = |_| LayoutExportRefusal::new("layout_text_over_budget", st.story_id.clone());
+    let overrides: Vec<(u64, u64)> = res.overrides_of(&st.story_id).iter().map(|o| (o.start, o.end)).collect();
     let mut out = Vec::with_capacity(st.paragraphs.len());
     for p in &st.paragraphs {
+        cancel.check().map_err(|_| LayoutExportRefusal::new("canceled", "layout export"))?;
         if p.start > p.end || p.end > total {
             return Err(LayoutExportRefusal::new("story_paragraph_range", st.story_id.clone()));
         }
@@ -601,12 +702,23 @@ fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut 
         let visible_start = p.start.saturating_add(lead).min(p.end);
         let visible_end = p.end.saturating_sub(trail).max(visible_start);
         let visible = text.get(usize::try_from(visible_start).unwrap_or(usize::MAX)..usize::try_from(visible_end).unwrap_or(usize::MAX)).unwrap_or("");
+        if paragraph_base_direction(st, p, visible) == ty::Direction::RightToLeft {
+            plan.direction_not_applied = plan.direction_not_applied.saturating_add(1);
+        }
         let runs = ty::script_runs(visible, visible.len().saturating_add(1)).map_err(|e| LayoutExportRefusal::new("text_itemization_refused", format!("{e:?}")))?;
-        let (para_family, para_size) = style_font(styles, p.style_ref.as_deref(), TypeStyleScope::Paragraph);
+        // A run with no strong character takes the paragraph's first strong script (the engine shapes Zyyy
+        // only for default-ignorables), else Latin.
+        let paragraph_script = runs.iter().map(|r| r.script).find(|s| s != b"Zyyy").unwrap_or(*b"Latn");
+        let family_of = |id: Option<&str>, scope| style_font(styles, id, scope).0;
+        let para_family = family_of(p.style_ref.as_deref(), TypeStyleScope::Paragraph);
+        // Cuts inside the visible text: the character ranges, overrides and script runs that touch it
+        // (each list ordered by start, entered by binary search).
         let mut cuts: BTreeSet<u64> = [visible_start, visible_end].into_iter().collect();
-        let overrides = styles.character_overrides.iter().filter(|o| o.text_id == st.story_id).map(|o| (o.start, o.end));
+        let ranges = &st.character_ranges[st.character_ranges.partition_point(|r| r.end <= visible_start)..];
+        let local = &overrides[overrides.partition_point(|o| o.1 <= visible_start)..];
         let script_cuts = runs.iter().map(|r| (visible_start.saturating_add(r.range.start), visible_start.saturating_add(r.range.end)));
-        for (a, b) in st.character_ranges.iter().map(|r| (r.start, r.end)).chain(overrides).chain(script_cuts) {
+        for (a, b) in ranges.iter().map(|r| (r.start, r.end)).take_while(|r| r.0 < visible_end).chain(local.iter().copied().take_while(|o| o.0 < visible_end)).chain(script_cuts) {
+            res.charge(1).map_err(over)?;
             for at in [a, b] {
                 if at > visible_start && at < visible_end {
                     cuts.insert(at);
@@ -614,19 +726,24 @@ fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut 
             }
         }
         let cuts: Vec<u64> = cuts.into_iter().collect();
-        let mut spans = Vec::new();
+        let mut spans: Vec<Span> = Vec::new();
+        let mut r = 0usize;
         for w in cuts.windows(2) {
             let (a, b) = (w[0], w[1]);
-            let range = st.character_ranges.iter().find(|r| r.start <= a && a < r.end);
-            let (cf, cs) = style_font(styles, range.and_then(|r| r.style_ref.as_deref()), TypeStyleScope::Character);
-            let attributes = styles.resolved_character(&st.story_id, a, p.style_ref.as_deref(), range.and_then(|r| r.style_ref.as_deref()));
-            let family = cf.or_else(|| para_family.clone());
-            let size_pt = attributes.size.or(cs).or(para_size).unwrap_or(DEFAULT_SIZE_PT);
+            while ranges.get(r).is_some_and(|x| x.end <= a) {
+                r = r.saturating_add(1);
+            }
+            let range = ranges.get(r).filter(|x| x.start <= a);
+            let character_style = range.and_then(|x| x.style_ref.as_deref());
+            let attributes = res.at(&st.story_id, a, p.style_ref.as_deref(), character_style).map_err(|d| match d.code {
+                folio::Code::RenderCycle => LayoutExportRefusal::new("style_based_on_cycle", st.story_id.clone()),
+                _ => LayoutExportRefusal::new("layout_text_over_budget", st.story_id.clone()),
+            })?;
+            let family = family_of(character_style, TypeStyleScope::Character).or_else(|| para_family.clone());
+            let size_pt = attributes.size.unwrap_or(DEFAULT_SIZE_PT);
             let rel = a.saturating_sub(visible_start);
-            // A paragraph with no strong character is one `Zyyy` run; the engine shapes `Zyyy` only
-            // for default-ignorables, so such text is declared Latin (as before this lane).
-            let script = runs.iter().find(|r| r.range.start <= rel && rel < r.range.end).map_or(*b"Latn", |r| if r.script == *b"Zyyy" { *b"Latn" } else { r.script });
-            let language = match range.and_then(|r| r.applied_language.as_deref()) {
+            let script = runs.get(runs.partition_point(|x| x.range.end <= rel)).filter(|x| x.range.start <= rel).map_or(paragraph_script, |x| if x.script == *b"Zyyy" { paragraph_script } else { x.script });
+            let language = match range.and_then(|x| x.applied_language.as_deref()) {
                 None => "und".to_string(),
                 Some(key) => shaping_language(styles, key).unwrap_or_else(|| {
                     plan.languages_unresolved = plan.languages_unresolved.saturating_add(1);
@@ -636,7 +753,18 @@ fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut 
             let key = (String::from_utf8_lossy(&script).into_owned(), language.clone());
             let n = plan.itemized.entry(key).or_insert(0);
             *n = n.saturating_add(1);
-            let (character, size_pt) = character_of(&attributes, size_pt, script, language, &mut plan.not_rendered);
+            let (mut character, size_pt) = character_of(&attributes, size_pt, script, language, &mut plan.not_rendered);
+            // One span carries at most Type's per-request feature count; the rest is reported once per shaped
+            // span (review F1).
+            let dropped = character.features.len().saturating_sub(feature_limit);
+            if dropped > 0 {
+                character.features = character.features.into_iter().take(feature_limit).collect();
+            }
+            if let Some(upper) = character.upper {
+                let piece = text.get(usize::try_from(a).unwrap_or(usize::MAX)..usize::try_from(b).unwrap_or(usize::MAX)).unwrap_or("");
+                let kept = piece.chars().filter(|c| case_form(*c, upper, &character.language).is_none() && (if upper { c.is_lowercase() } else { c.is_uppercase() })).count();
+                plan.case_incomplete = plan.case_incomplete.saturating_add(u32::try_from(kept).unwrap_or(u32::MAX));
+            }
             let font = match family.as_deref() {
                 None => plan.fallback,
                 Some(name) => match plan.fonts.iter().position(|f| f.family == name) {
@@ -649,12 +777,63 @@ fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut 
                 },
             };
             plan.used.insert(font);
-            spans.push(Span { start: a.saturating_sub(visible_start), end: b.saturating_sub(visible_start), font, size_pt, script, character: plan.characters.len() });
-            plan.characters.push(character);
+            let (start, end) = (a.saturating_sub(visible_start), b.saturating_sub(visible_start));
+            // Neighbours with equal shaping inputs merge: attributes Type does not read never cut a span.
+            match spans.last_mut() {
+                Some(last) if last.end == start && last.font == font && last.size_pt.to_bits() == size_pt.to_bits() && last.script == script && plan.characters.get(last.character) == Some(&character) => last.end = end,
+                _ => {
+                    plan.features_dropped = plan.features_dropped.saturating_add(u32::try_from(dropped).unwrap_or(u32::MAX));
+                    spans.push(Span { start, end, font, size_pt, script, character: plan.characters.len() });
+                    plan.characters.push(character);
+                }
+            }
         }
         out.push(Planned { start: p.start, end: p.end, visible_start, visible_end, spans });
     }
+    plan.steps = plan.steps.saturating_add(res.steps());
     Ok(out)
+}
+
+/// The spans of one shaping piece split into requests within Type's limits (review F1): at most `styles`
+/// spans, `features` feature entries and `bytes` text bytes per request, cut at span edges; a span longer
+/// than `bytes` is cut at a character boundary. Returns the (start, end) byte ranges of the requests.
+fn chunks(piece: &str, spans: &[Span], characters: &[Character], styles: usize, features: usize, bytes: usize) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    let (mut start, mut count, mut feats) = (0u64, 0usize, 0usize);
+    let limit = bytes.max(4) as u64;
+    for s in spans {
+        let f = characters.get(s.character).map_or(0, |c| c.features.len());
+        // A span over the byte limit is cut into pieces of at most `limit` bytes on char boundaries.
+        let mut pieces: Vec<(u64, u64)> = Vec::new();
+        let mut a = s.start;
+        while s.end.saturating_sub(a) > limit {
+            let mut b = a.saturating_add(limit);
+            while b > a && !piece.is_char_boundary(usize::try_from(b).unwrap_or(usize::MAX)) {
+                b = b.saturating_sub(1);
+            }
+            if b == a {
+                break;
+            }
+            pieces.push((a, b));
+            a = b;
+        }
+        pieces.push((a, s.end));
+        for (a, b) in pieces {
+            let fits = count < styles && feats.saturating_add(f) <= features && b.saturating_sub(start) <= limit;
+            if !fits && count > 0 {
+                out.push((start, a));
+                start = a;
+                count = 0;
+                feats = 0;
+            }
+            count = count.saturating_add(1);
+            feats = feats.saturating_add(f);
+        }
+    }
+    if spans.last().is_some_and(|s| s.end > start) || out.is_empty() {
+        out.push((start, spans.last().map_or(piece.len() as u64, |s| s.end.max(start))));
+    }
+    out
 }
 
 /// Non-empty byte ranges of `visible` between paragraph terminators.
@@ -840,7 +1019,14 @@ impl Viewer {
             let st = doc.stories.get(*i).ok_or_else(|| LayoutExportRefusal::new("layout_internal", "story index"))?;
             plans.push((*i, plan_story(st, &doc.styles, &mut plan, cancel)?));
         }
-        let Plan { used, substituted, characters, not_rendered, languages_unresolved, itemized, .. } = plan;
+        let Plan { used, substituted, characters, mut not_rendered, languages_unresolved, itemized, case_incomplete, features_dropped, direction_not_applied, steps, .. } = plan;
+        let limits = text::limits();
+        let (max_styles, max_features) = (usize::try_from(limits.styles).unwrap_or(usize::MAX), usize::try_from(limits.features).unwrap_or(usize::MAX));
+        let max_fonts = usize::try_from(limits.font_resources).unwrap_or(usize::MAX);
+        let max_bytes = usize::try_from(limits.input_bytes).unwrap_or(usize::MAX);
+        // Feature receipts (review F4): per (tag, state) the spans; inert record tags by tag.
+        let mut receipts: BTreeMap<(String, &'static str), u32> = BTreeMap::new();
+        let mut unavailable: BTreeMap<String, u32> = BTreeMap::new();
         let used: Vec<usize> = used.into_iter().collect();
         let pdf_fonts: Vec<PdfFont<'_>> = used
             .iter()
@@ -849,10 +1035,33 @@ impl Viewer {
             .collect();
         let mut composed = Vec::with_capacity(plans.len());
         let mut inner_breaks = 0usize;
+        let mut actual: Vec<(&str, u64, u64, &str)> = Vec::new();
         for (i, planned) in &plans {
             cancel.check().map_err(|_| LayoutExportRefusal::new("canceled", "layout export"))?;
             let st = doc.stories.get(*i).ok_or_else(|| LayoutExportRefusal::new("layout_internal", "story index"))?;
             let text = story_text(st);
+            // The text the glyphs draw: case-mapped spans in their drawn case, so /ToUnicode maps every glyph
+            // to what it shows; each such span gets an ActualText span with the stored text (review F2).
+            let mut mapped = String::with_capacity(text.len());
+            let mut at = 0usize;
+            for p in planned {
+                for s in p.spans.iter().filter(|s| characters.get(s.character).is_some_and(|c| c.upper.is_some())) {
+                    let (a, b) = (p.visible_start.saturating_add(s.start), p.visible_start.saturating_add(s.end));
+                    let (ua, ub) = (usize::try_from(a).unwrap_or(usize::MAX), usize::try_from(b).unwrap_or(usize::MAX));
+                    let (Some(before), Some(stored)) = (text.get(at..ua), text.get(ua..ub)) else { continue };
+                    mapped.push_str(before);
+                    mapped.push_str(&case_mapped(stored, &[Span { start: 0, end: (ub.saturating_sub(ua)) as u64, ..*s }], &characters));
+                    at = ub;
+                    match actual.last_mut() {
+                        Some(last) if last.0 == st.story_id && last.2 == a => {
+                            last.2 = b;
+                            last.3 = text.get(usize::try_from(last.1).unwrap_or(usize::MAX)..ub).unwrap_or(last.3);
+                        }
+                        _ => actual.push((st.story_id.as_str(), a, b, stored)),
+                    }
+                }
+            }
+            mapped.push_str(text.get(at..).unwrap_or(""));
             let mut paragraphs = Vec::with_capacity(planned.len());
             let mut glyphs = Vec::with_capacity(planned.len());
             for p in planned {
@@ -869,16 +1078,39 @@ impl Viewer {
                 // terminator. The paragraph boundary is what is lost, and it is reported.
                 let pieces = pieces_of(visible);
                 inner_breaks = inner_breaks.saturating_add(pieces.len().saturating_sub(1));
-                for (k, (a, b)) in pieces.into_iter().enumerate() {
+                let mut first = true;
+                for (a, b) in pieces {
                     let spans: Vec<Span> = p.spans.iter().filter(|s| s.end > a && s.start < b).map(|s| Span { start: s.start.max(a).saturating_sub(a), end: s.end.min(b).saturating_sub(a), ..*s }).collect();
                     let piece = visible.get(usize::try_from(a).unwrap_or(usize::MAX)..usize::try_from(b).unwrap_or(usize::MAX)).unwrap_or("");
-                    let (part, part_glyphs) = shape_paragraph(fonts, piece, &spans, &characters, p.visible_start.saturating_add(a), line, &pdf_fonts, composition, &actor, cancel)?;
-                    if k == 0 {
-                        shaped = part;
-                    } else {
-                        append_paragraph(&mut shaped, part);
+                    // Requests within Type's limits, cut at span edges (review F1: never a refusal for size).
+                    for (c0, c1) in chunks(piece, &spans, &characters, max_styles.min(max_fonts), max_features, max_bytes) {
+                        let part_spans: Vec<Span> = spans.iter().filter(|s| s.end > c0 && s.start < c1).map(|s| Span { start: s.start.max(c0).saturating_sub(c0), end: s.end.min(c1).saturating_sub(c0), ..*s }).collect();
+                        let part_text = piece.get(usize::try_from(c0).unwrap_or(usize::MAX)..usize::try_from(c1).unwrap_or(usize::MAX)).unwrap_or("");
+                        if part_text.is_empty() {
+                            continue;
+                        }
+                        let (part, part_glyphs, got) = shape_paragraph(fonts, part_text, &part_spans, &characters, p.visible_start.saturating_add(a).saturating_add(c0), line, &pdf_fonts, composition, &actor, cancel)?;
+                        for (tag, inert, span) in got {
+                            let name = String::from_utf8_lossy(&tag).into_owned();
+                            let n = receipts.entry((name.clone(), if inert { "unavailable_inert" } else { "applied" })).or_insert(0);
+                            *n = n.saturating_add(1);
+                            if inert {
+                                let projected = span.and_then(|k| part_spans.get(k)).and_then(|s| characters.get(s.character)).and_then(|c| c.projections.iter().find(|(t, _)| *t == tag).map(|(_, f)| *f));
+                                let slot = match projected {
+                                    Some(field) => not_rendered.entry(field).or_insert(0),
+                                    None => unavailable.entry(name).or_insert(0),
+                                };
+                                *slot = slot.saturating_add(1);
+                            }
+                        }
+                        if first {
+                            shaped = part;
+                            first = false;
+                        } else {
+                            append_paragraph(&mut shaped, part);
+                        }
+                        g.extend(part_glyphs);
                     }
-                    g.extend(part_glyphs);
                 }
                 shaped.source = SourceSpan { start: p.start, end: p.end };
                 paragraphs.push(shaped);
@@ -895,9 +1127,12 @@ impl Viewer {
                 expected_revision: doc.document.revision,
                 limits: hsk_studio_layout::Limits::default(),
             };
-            let options = TypesetOptions { styles: Some(StyleSource { records: &doc.styles, default_font_size_pt: DEFAULT_SIZE_PT }), ..TypesetOptions::default() };
+            // Layout composes with the composition view of the styles: the shaped paragraphs carry the resolved
+            // leading and tracking (review F3: one storage, applied once).
+            let styles = crate::layout_ui::composition_styles(&doc.styles);
+            let options = TypesetOptions { styles: Some(StyleSource { records: &styles, default_font_size_pt: DEFAULT_SIZE_PT }), ..TypesetOptions::default() };
             let placement = reflow_flow(&request, &options, &doc.flow, cancel).map_err(|e| LayoutExportRefusal::new(e.code(), st.story_id.clone()))?;
-            composed.push(Composed { story: *i, placement, paragraphs, glyphs });
+            composed.push(Composed { story: *i, placement, paragraphs, glyphs, mapped });
         }
         // Unstyled text is black in the output intent's colour space (a CMYK or gray intent
         // takes no device RGB); style fills stay the engine's (RGB ones are its losses).
@@ -911,7 +1146,7 @@ impl Viewer {
             .iter()
             .filter_map(|c| {
                 let st = doc.stories.get(c.story)?;
-                Some(PdfStory { story: st, text: story_text(st), placement: &c.placement, paragraphs: &c.paragraphs, glyphs: &c.glyphs, default_fill })
+                Some(PdfStory { story: st, text: &c.mapped, placement: &c.placement, paragraphs: &c.paragraphs, glyphs: &c.glyphs, default_fill })
             })
             .collect();
         let snapshot = match self.run.snapshot().filter(|s| *s.document() == doc.document) {
@@ -944,7 +1179,7 @@ impl Viewer {
         let missing = super::layout_assets::needed(&doc.document, frames).iter().any(|d| !self.assets.contains_key(d));
         let stored = if missing { self.run.render_assets().map_err(|code| LayoutExportRefusal::new(code, "tile bodies"))? } else { BTreeMap::new() };
         let assets = super::layout_assets::LayoutAssets::new(&doc.document, frames, &[&self.assets, &stored]);
-        let longdoc = PdfLongDoc { page_labels: &labels, graphics: &graphics, ..PdfLongDoc::default() };
+        let longdoc = PdfLongDoc { page_labels: &labels, graphics: &graphics, actual_text: &actual, ..PdfLongDoc::default() };
         let input = PdfExportInput {
             snapshot: &snapshot,
             design: None,
@@ -971,6 +1206,16 @@ impl Viewer {
             host_loss.push(json!({"code": "paragraph_break_inside_paragraph_set_as_line_break", "element": "stories", "count": inner_breaks}));
         }
         host_loss.extend(not_rendered.iter().map(|(field, n)| json!({"code": "character_attribute_not_rendered", "element": field, "count": n})));
+        host_loss.extend(unavailable.iter().map(|(tag, n)| json!({"code": "opentype_feature_unavailable", "element": tag, "count": n})));
+        for (code, element, n) in [
+            ("case_mapping_incomplete", "capitalization", case_incomplete),
+            ("opentype_features_over_shaping_limit", "opentype_features", features_dropped),
+            ("paragraph_direction_not_applied", "paragraphs", direction_not_applied),
+        ] {
+            if n > 0 {
+                host_loss.push(json!({"code": code, "element": element, "count": n}));
+            }
+        }
         if languages_unresolved > 0 {
             host_loss.push(json!({"code": "applied_language_unresolved", "element": "character_ranges", "count": languages_unresolved}));
         }
@@ -987,7 +1232,8 @@ impl Viewer {
             "glyphs_drawn": out.glyphs_drawn, "paths_drawn": out.paths_drawn, "tiles_drawn": out.tiles_drawn, "placements": placements, "lines": lines, "overset_stories": overset,
             "fonts": used.iter().filter_map(|i| fonts.get(*i)).map(|f| f.family.as_str()).collect::<Vec<_>>(), "page_labels": labels.len(),
             "loss": loss_json(&out.loss), "host_loss": host_loss,
-            "itemization": itemized.iter().map(|((script, language), n)| json!({"script": script, "language": language, "spans": n})).collect::<Vec<_>>(), "preflight": report_json(&report, MAX_LISTED_FINDINGS), "pdfx": pdfx,
+            "itemization": itemized.iter().map(|((script, language), n)| json!({"script": script, "language": language, "spans": n})).collect::<Vec<_>>(),
+            "feature_receipts": receipts.iter().map(|((tag, state), n)| json!({"tag": tag, "state": state, "spans": n})).collect::<Vec<_>>(), "planning_steps": steps, "preflight": report_json(&report, MAX_LISTED_FINDINGS), "pdfx": pdfx,
             "receipt": {"version": receipt.version, "pages": receipt.pages, "fonts_embedded": receipt.fonts_embedded, "conformance": receipt.conformance,
                         "effective_output_condition": receipt.effective_output_condition, "effective_destination_profile_sha256": receipt.effective_destination_profile_sha256,
                         "effective_pdfx_profile": receipt.effective_pdfx_profile},

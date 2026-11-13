@@ -172,6 +172,18 @@ impl LayoutRecords {
             }
             folio::check_story_style_scopes(story, &self.styles)?;
         }
+        // Local character overrides lie on their story (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1, review F9): a
+        // stored story, inside its bytes, on character boundaries of inline text.
+        let by_id: std::collections::BTreeMap<&str, &StudioTextStory> = self.stories.iter().map(|s| (s.story_id.as_str(), s)).collect();
+        for o in &self.styles.character_overrides {
+            cancel.check().map_err(|_| diag(Code::Canceled, "character_overrides"))?;
+            let target = format!("character_overrides/{}/{}", o.text_id, o.start);
+            let story = by_id.get(o.text_id.as_str()).ok_or_else(|| diag(Code::DanglingReference, &target))?;
+            let boundary = |at: u64| story.inline_text().is_none_or(|t| usize::try_from(at).is_ok_and(|i| t.is_char_boundary(i)));
+            if o.end > story.byte_len() || !boundary(o.start) || !boundary(o.end) {
+                return Err(diag(Code::InvalidField, &target));
+            }
+        }
         folio::validate_layout_flow_records(&self.flow, document, cancel)?;
         folio::validate_parent_page_records(&self.parents, document, b, cancel, &folio::Unresolved)?;
         folio::validate_longdoc_records(&self.longdoc, document, b, cancel, &folio::Unresolved)?;

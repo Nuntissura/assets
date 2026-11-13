@@ -8,7 +8,7 @@
 //! editor's (`ApplyParagraphStyle` / `ApplyCharacterStyle`). Every result is checked by Folio's
 //! `validate_type_style_records` (references, scopes, `based_on` cycles) and GREP patterns by
 //! layout's bounded engine (`compile_find`, the same limits as GREP styles); effective values come
-//! from layout's `resolve_style`.
+//! from Folio's one character resolver (`CharacterResolver`, lane SMB-TYPE-CHARACTER-ATTRIBUTES-1).
 //!
 //! STU-LAY-143 names constraint failures as distinct typed errors; the name rules no engine checks
 //! yet are refused here with their own codes: `style_name_empty`, `style_name_duplicate` (unique per
@@ -17,13 +17,13 @@
 //! style groups, redefine from selection, break link, cross-document load, reserved names.
 //! InDesign style-panel behaviour UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
-use super::{LayoutDoc, LayoutEdit, LayoutEditor, LayoutUiError, len, widget};
+use super::{LayoutDoc, LayoutEdit, LayoutEditor, LayoutUiError, widget};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
-    Code, StoryRange, StudioCompositionSettings, StudioGrepStyle, StudioLineHeight, StudioStyleComposition, StudioTextAlign, StudioTypeStyle,
+    Code, StoryRange, StudioCompositionSettings, StudioGrepStyle, StudioStyleComposition, StudioTextAlign, StudioTypeStyle,
     TypeStyleSchema, TypeStyleScope, Unresolved, validate_type_style_records,
 };
-use hsk_studio_layout::{FindMode, compile_find, resolve_style};
+use hsk_studio_layout::{FindMode, compile_find};
 use serde_json::{Value, json};
 
 /// Longest style name accepted.
@@ -70,7 +70,7 @@ pub struct StyleRow {
     /// Paragraphs (paragraph scope) or character ranges (character scope) using it.
     pub uses: usize,
     pub grep_rules: usize,
-    /// Effective size from the based-on chain (layout `resolve_style`).
+    /// Effective size from the based-on chain (Folio's `CharacterResolver`: record and legacy field).
     pub font_size_pt: Option<f64>,
 }
 
@@ -180,6 +180,30 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
                     (None, None) => {}
                 }
             }
+            if patch.font_size_pt.is_some() || patch.leading_pt.is_some() {
+                // One storage (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1, review F3 + lead ruling Q2): size and
+                // leading live in the style's character-attributes record; this style's legacy fields go.
+                let at = d.styles.style_character.iter().position(|c| c.style_id == *style);
+                let mut a = at.and_then(|i| d.styles.style_character.get(i)).map(|c| c.attributes.clone()).unwrap_or_default();
+                if let Some(v) = patch.font_size_pt {
+                    a.size = v;
+                }
+                if let Some(v) = patch.leading_pt {
+                    a.leading = v;
+                }
+                match (at, a.is_empty()) {
+                    (Some(i), true) => {
+                        d.styles.style_character.remove(i);
+                    }
+                    (Some(i), false) => {
+                        if let Some(c) = d.styles.style_character.get_mut(i) {
+                            c.attributes = a;
+                        }
+                    }
+                    (None, false) => d.styles.style_character.push(hsk_studio_folio::StudioStyleCharacter { style_id: style.clone(), attributes: a }),
+                    (None, true) => {}
+                }
+            }
             let s = style_mut(&mut d, style)?;
             if let Some(n) = &patch.name {
                 s.name = n.clone();
@@ -193,11 +217,11 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
             if let Some(f) = &patch.font_family {
                 s.font_family = f.clone();
             }
-            if let Some(v) = patch.font_size_pt {
-                s.font_size = v.map(len);
+            if patch.font_size_pt.is_some() {
+                s.font_size = None;
             }
-            if let Some(v) = patch.leading_pt {
-                s.line_height = v.map(|v| StudioLineHeight::Length { length: len(v) });
+            if patch.leading_pt.is_some() {
+                s.line_height = None;
             }
             if let Some(a) = patch.align {
                 s.align = a;
@@ -267,17 +291,19 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
             for r in &st.character_ranges {
                 for (s, e, inside) in [(r.start, r.end.min(a), false), (r.start.max(a), r.end.min(b), true), (r.start.max(b), r.end, false)] {
                     if s < e {
-                        let style_ref = if inside { None } else { r.style_ref.clone() };
+                        // Typographic formatting goes, the language included (review F6 + lead ruling Q8).
+                        let (style_ref, applied_language) = if inside { (None, None) } else { (r.style_ref.clone(), r.applied_language.clone()) };
                         match out.last_mut() {
-                            Some(last) if last.end == s && last.style_ref == style_ref && last.applied_language == r.applied_language => last.end = e,
-                            _ => out.push(StoryRange { start: s, end: e, style_ref, applied_language: r.applied_language.clone() }),
+                            Some(last) if last.end == s && last.style_ref == style_ref && last.applied_language == applied_language => last.end = e,
+                            _ => out.push(StoryRange { start: s, end: e, style_ref, applied_language }),
                         }
                     }
                 }
             }
             st.character_ranges = out;
-            // Local character overrides in the paragraph go too (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1).
-            super::set_overrides(&mut d.styles, story, a, b.max(a), |_| Ok(hsk_studio_folio::StudioCharacterAttributes::default()))?;
+            // Local character overrides in the paragraph keep only their non-typographic fields, the hyperlink
+            // (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1, review F6 + lead ruling Q8).
+            super::set_overrides(&mut d.styles, story, a, b.max(a), |o| Ok(o.non_typographic()))?;
         }
     }
     validate(&d)?;
@@ -287,6 +313,8 @@ pub(crate) fn transform(doc: &LayoutDoc, edit: &StyleEdit) -> Result<LayoutDoc, 
 impl LayoutEditor {
     /// Style rows of one scope, in set order.
     pub fn style_rows(&self, scope: TypeStyleScope) -> Vec<StyleRow> {
+        // Sizes through the one resolver (review F3): the record and the legacy field fold per level.
+        let mut res = hsk_studio_folio::CharacterResolver::new(&self.doc.styles, 1 << 22);
         self.doc
             .styles
             .styles
@@ -309,7 +337,7 @@ impl LayoutEditor {
                     based_on: s.based_on.clone(),
                     uses,
                     grep_rules: s.grep_styles.len(),
-                    font_size_pt: resolve_style(&self.doc.styles, &s.style_id, scope).ok().and_then(|r| r.font_size_pt),
+                    font_size_pt: res.styles_of(Some(s.style_id.as_str()), None).ok().and_then(|a| a.size),
                 }
             })
             .collect()

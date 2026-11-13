@@ -82,11 +82,15 @@ pub(crate) enum SrcPaint {
     Pattern,
 }
 
-/// One `BMC` / `BDC`: its tag and the layer an `/OC` one names.
+/// One `BMC` / `BDC`: its tag, the layer an `/OC` one names and the `/ActualText` of an inline property
+/// dict (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1), decoded and bounded: past
+/// [`crate::vector_read::MAX_ACTUAL_TEXT_CHARS`] chars it is cut there and ends with U+FFFD (the
+/// truncation flag the reader reports).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Mark {
     pub tag: Vec<u8>,
     pub layer: Option<usize>,
+    pub actual_text: Option<String>,
 }
 
 /// The source events of one page.
@@ -400,7 +404,7 @@ impl<'d> Walker<'d> {
                 self.out.paths.push(gs.stroke);
             }
             b"sh" => self.out.paths.push(SrcPaint::Pattern),
-            b"BMC" => self.out.marks.push(Mark { tag: op.operands.first().and_then(Object::as_name).unwrap_or_default().to_vec(), layer: None }),
+            b"BMC" => self.out.marks.push(Mark { tag: op.operands.first().and_then(Object::as_name).unwrap_or_default().to_vec(), layer: None, actual_text: None }),
             b"BDC" => {
                 let tag = op.operands.first().and_then(Object::as_name).unwrap_or_default().to_vec();
                 let layer = if tag == b"OC" {
@@ -412,7 +416,20 @@ impl<'d> Walker<'d> {
                 } else {
                     None
                 };
-                self.out.marks.push(Mark { tag, layer });
+                let actual_text = match op.operands.get(1) {
+                    Some(Object::Dict(d)) => match d.get("ActualText") {
+                        Some(Object::Str(bytes)) => {
+                            let max = crate::vector_read::MAX_ACTUAL_TEXT_CHARS;
+                            // Decode at most what the bound can keep (UTF-16 with a mark: 4 bytes per char).
+                            let cut = bytes.get(..max.saturating_mul(4).saturating_add(2)).unwrap_or(bytes);
+                            let text = text_string(cut);
+                            Some(if text.chars().count() > max || cut.len() < bytes.len() { text.chars().take(max).chain(['\u{fffd}']).collect() } else { text })
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                self.out.marks.push(Mark { tag, layer, actual_text });
             }
             b"Do" => {
                 let Some(name) = op.operands.first().and_then(Object::as_name) else { return Ok(()) };

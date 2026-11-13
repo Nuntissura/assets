@@ -32,6 +32,7 @@ use hsk_studio_folio::{
     StudioCharacterAttributes, StudioCharacterOverride, StudioDocument, StudioLanguage, StudioLayer, StudioLayoutFlowRecords,
     StudioLongDocRecords, StudioParentPageRecords, StudioStrokeStyleEntry, StudioStyleCharacter, StudioTextFrame, StudioTextStory,
     StudioTypeStyleRecords, TextStorySchema, TypeStyleScope, Unresolved, VerticalJustification, BUILTIN_STROKE_STYLES, DECORATION_OFF, opentype_tag_ok, validate_type_style_records,
+    CharacterResolver, StudioHyperlink, language_key_ok,
 };
 use hsk_studio_layout::{
     Composer, LayoutError, LayoutProposal, Limits, ReflowRequest, ShapedParagraph, SourceSpan, SpaceParams, StyleSource,
@@ -288,6 +289,8 @@ pub enum LayoutUiError {
     StrokeStyleInUse(String),
     /// A `clear` entry that names no character attribute (or a malformed feature tag).
     UnknownCharacterAttribute(String),
+    /// A node hyperlink naming no page spread, artboard or text anchor of the document (review F14).
+    UnknownLinkTarget(String),
 }
 impl LayoutUiError {
     pub fn code(&self) -> &'static str {
@@ -319,6 +322,7 @@ impl LayoutUiError {
             Self::UnknownStrokeStyle(_) => "unknown_stroke_style",
             Self::StrokeStyleInUse(_) => "stroke_style_in_use",
             Self::UnknownCharacterAttribute(_) => "unknown_character_attribute",
+            Self::UnknownLinkTarget(_) => "unknown_link_target",
         }
     }
 }
@@ -449,7 +453,12 @@ impl LayoutEditor {
 
     /// Applies one edit as ONE undo step; a refusal changes nothing.
     pub fn apply(&mut self, edit: LayoutEdit) -> Result<(), LayoutUiError> {
-        let (next, next_rec) = match &edit {
+        // Review F11 + lead ruling Q5: CR LF is one paragraph terminator, normalised to LF at the input.
+        let edit = match edit {
+            LayoutEdit::ReplaceText { story, start, end, text } if text.contains("\r\n") => LayoutEdit::ReplaceText { story, start, end, text: text.replace("\r\n", "\n") },
+            other => other,
+        };
+        let (mut next, next_rec) = match &edit {
             LayoutEdit::Page(e) => pages::transform(&self.doc, &self.rec, e)?,
             LayoutEdit::Style(e) => (styles::transform(&self.doc, e)?, self.rec.clone()),
             LayoutEdit::Table(e) => tables::transform(&self.doc, &self.rec, e)?,
@@ -462,6 +471,14 @@ impl LayoutEditor {
                 (transform(&self.doc, &edit)?, rec)
             }
         };
+        // A removed story takes its local character overrides, and a removed page spread, artboard or text
+        // anchor its node hyperlinks, in this same step (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1, review F14 and
+        // the cascade ruling).
+        {
+            let LayoutDoc { document, stories, flow, styles } = &mut next;
+            styles.character_overrides.retain(|o| stories.iter().any(|st| st.story_id == o.text_id));
+            styles.drop_node_links(&|id: &str| node_alive(document, flow, id));
+        }
         let before = std::mem::replace(&mut self.doc, next);
         let before_rec = std::mem::replace(&mut self.rec, next_rec);
         self.undo.push((before, before_rec));
@@ -541,6 +558,7 @@ impl LayoutEditor {
             .find(|s| s.story_id == story_id)
             .ok_or_else(|| LayoutUiError::UnknownStory(story_id.to_owned()))?;
         let paras = preview_paragraphs(st, &self.doc.styles)?;
+        let styles = composition_styles(&self.doc.styles);
         let req = ReflowRequest {
             document: &self.doc.document,
             story: st,
@@ -553,7 +571,7 @@ impl LayoutEditor {
             limits: Limits::default(),
         };
         let opts = TypesetOptions {
-            styles: Some(StyleSource { records: &self.doc.styles, default_font_size_pt: 12.0 }),
+            styles: Some(StyleSource { records: &styles, default_font_size_pt: DEFAULT_SIZE_PT }),
             ..TypesetOptions::default()
         };
         Ok(reflow_flow(&req, &opts, &self.doc.flow, &CancellationToken::default())?)
@@ -961,27 +979,72 @@ impl LayoutEditor {
     }
 }
 
-/// Preview shaping (module docs): one fixed-advance paragraph per story paragraph, newline excluded.
+/// Preview shaping (module docs): one fixed-advance paragraph per story paragraph, newline excluded, at the
+/// paragraph style's size, leading and tracking as the one resolver gives them (review F3: the record and
+/// the legacy fields fold into one value per level).
 pub fn preview_paragraphs(st: &StudioTextStory, styles: &StudioTypeStyleRecords) -> Result<Vec<ShapedParagraph>, LayoutUiError> {
     let text = story_text(st);
-    st.paragraphs
-        .iter()
-        .map(|p| {
-            let size = p
-                .style_ref
-                .as_deref()
-                .and_then(|s| hsk_studio_layout::resolve_style(styles, s, TypeStyleScope::Paragraph).ok())
-                .and_then(|r| r.font_size_pt)
-                .unwrap_or(12.0);
-            let body_end = if text.as_bytes().get(usize::try_from(p.end).unwrap_or(usize::MAX).wrapping_sub(1)) == Some(&b'\n') && p.end > p.start {
-                p.end.saturating_sub(1)
-            } else {
-                p.end
-            };
-            ShapedParagraph::from_fixed_advance(text, SourceSpan { start: p.start, end: body_end }, size * 0.5, size * 1.25, size * 0.75)
-                .ok_or(LayoutUiError::Layout(LayoutError::InvalidInput))
-        })
-        .collect()
+    let mut res = CharacterResolver::new(styles, PREVIEW_STEP_BUDGET);
+    let mut out = Vec::with_capacity(st.paragraphs.len());
+    for p in &st.paragraphs {
+        let a = res.styles_of(p.style_ref.as_deref(), None).map_err(resolution_refused)?;
+        let size = a.size.unwrap_or(DEFAULT_SIZE_PT);
+        let height = a.leading.unwrap_or(size * 1.25);
+        let advance = size * 0.5 + a.tracking.unwrap_or(0.0) / 1000.0 * size;
+        let body_end = if text.as_bytes().get(usize::try_from(p.end).unwrap_or(usize::MAX).wrapping_sub(1)) == Some(&b'\n') && p.end > p.start {
+            p.end.saturating_sub(1)
+        } else {
+            p.end
+        };
+        let shaped = ShapedParagraph::from_fixed_advance(text, SourceSpan { start: p.start, end: body_end }, advance.max(0.0), height, (size * 0.75).min(height))
+            .ok_or(LayoutUiError::Layout(LayoutError::InvalidInput))?;
+        out.push(shaped);
+    }
+    Ok(out)
+}
+
+/// The size unstyled text is drawn and previewed at (pt).
+pub(crate) const DEFAULT_SIZE_PT: f64 = 12.0;
+/// Work budget of one preview's style resolution (review F8).
+const PREVIEW_STEP_BUDGET: u64 = 1 << 22;
+
+/// A resolution refusal (review F8) as the editor's typed error.
+pub(crate) fn resolution_refused(d: hsk_studio_folio::Diagnostic) -> LayoutUiError {
+    match d.code {
+        Code::RenderCycle => LayoutUiError::Style("style_based_on_cycle"),
+        _ => LayoutUiError::Layout(LayoutError::BudgetExceeded),
+    }
+}
+
+/// The style records layout composes with (review F3: one storage). The shaped paragraphs already carry
+/// the resolved leading and tracking, so each style's legacy line height and letter spacing are dropped
+/// (layout would add them again), and its font size is its chain's resolved size, so layout's percent
+/// conversions and auto leading read the size that is drawn.
+pub(crate) fn composition_styles(records: &StudioTypeStyleRecords) -> StudioTypeStyleRecords {
+    let mut out = records.clone();
+    let mut res = CharacterResolver::new(records, PREVIEW_STEP_BUDGET);
+    for s in &mut out.styles {
+        let size = res.styles_of(Some(s.style_id.as_str()), None).ok().and_then(|a| a.size);
+        s.font_size = size.map(len);
+        s.line_height = None;
+        s.letter_spacing = None;
+    }
+    out
+}
+
+/// A node hyperlink target of the document: a page spread, an artboard or a text anchor (STU-TYP-161).
+pub(crate) fn node_alive(document: &StudioDocument, flow: &StudioLayoutFlowRecords, id: &str) -> bool {
+    document.page_spreads.iter().any(|s| s.page_spread_id == id) || document.artboards.iter().any(|a| a.artboard_id == id) || flow.text_anchors.iter().any(|a| a.anchor_id == id)
+}
+
+/// Refuses a node hyperlink of `set` naming no node of the document (review F14).
+fn known_link(d: &LayoutDoc, set: &StudioCharacterAttributes) -> Result<(), LayoutUiError> {
+    if let Some(StudioHyperlink::Node { node_id }) = &set.hyperlink
+        && !node_alive(&d.document, &d.flow, node_id)
+    {
+        return Err(LayoutUiError::UnknownLinkTarget(node_id.clone()));
+    }
+    Ok(())
 }
 
 pub(crate) fn mint(doc: &LayoutDoc, prefix: &str) -> Result<String, LayoutUiError> {
@@ -1183,10 +1246,14 @@ fn transform(doc: &LayoutDoc, edit: &LayoutEdit) -> Result<LayoutDoc, LayoutUiEr
             rewrite_ranges(story_mut(&mut d, story)?, *start, *end, |r| (style.clone(), r.applied_language.clone()))?;
         }
         LayoutEdit::SetLanguage { story, start, end, language } => {
-            if let Some(name) = language
-                && d.styles.language(name).is_none()
-            {
-                return Err(LayoutUiError::UnknownLanguage(name.clone()));
+            if let Some(name) = language {
+                // Review F7: the name is a range key, checked before the commit.
+                if !language_key_ok(name) {
+                    return Err(LayoutUiError::Folio("folio_invalid_field", format!("applied_language/{name}")));
+                }
+                if d.styles.language(name).is_none() {
+                    return Err(LayoutUiError::UnknownLanguage(name.clone()));
+                }
             }
             rewrite_ranges(story_mut(&mut d, story)?, *start, *end, |r| (r.style_ref.clone(), language.clone()))?;
         }
@@ -1194,12 +1261,14 @@ fn transform(doc: &LayoutDoc, edit: &LayoutEdit) -> Result<LayoutDoc, LayoutUiEr
             let st = d.stories.iter().find(|s| s.story_id == *story).ok_or_else(|| LayoutUiError::UnknownStory(story.clone()))?;
             byte_span(story_text(st), *start, *end)?;
             known_strokes(&d.styles, set)?;
+            known_link(&d, set)?;
             set_overrides(&mut d.styles, story, *start, *end, |a| cleared(&a.overlaid(set), clear))?;
             validate_character(&d)?;
         }
         LayoutEdit::SetStyleCharacterAttributes { style, set, clear } => {
             d.styles.style(style).ok_or_else(|| LayoutUiError::UnknownStyle(style.clone()))?;
             known_strokes(&d.styles, set)?;
+            known_link(&d, set)?;
             let at = d.styles.style_character.iter().position(|c| c.style_id == *style);
             let current = at.and_then(|i| d.styles.style_character.get(i)).map(|c| c.attributes.clone()).unwrap_or_default();
             let next = cleared(&current.overlaid(set), clear)?;
@@ -1282,6 +1351,9 @@ fn rewrite_ranges(st: &mut StudioTextStory, start: u64, end: u64, inside: impl F
     Ok(())
 }
 
+/// The fields of an underline or strikethrough record, as `clear` names them (`underline/<field>`).
+const DECORATION_FIELDS: [&str; 10] = ["type", "weight", "offset", "colour", "tint", "overprint", "gap_colour", "gap_tint", "gap_overprint", "skip_ink"];
+
 /// `a` with the fields `clear` names unset (`LayoutEdit::SetCharacterAttributes`).
 fn cleared(a: &StudioCharacterAttributes, clear: &[String]) -> Result<StudioCharacterAttributes, LayoutUiError> {
     if clear.is_empty() {
@@ -1297,6 +1369,14 @@ fn cleared(a: &StudioCharacterAttributes, clear: &[String]) -> Result<StudioChar
             }
             if let Some(Value::Object(features)) = map.get_mut("opentype_features") {
                 features.remove(tag);
+            }
+        } else if let Some((record, field)) = name.split_once('/').filter(|(r, f)| matches!(*r, "underline" | "strikethrough") && DECORATION_FIELDS.contains(f)) {
+            // One field of a decoration record (STU-TYP-159 fields are separately stored, review F13 d).
+            if let Some(Value::Object(d)) = map.get_mut(record) {
+                d.remove(field);
+                if d.is_empty() {
+                    map.remove(record);
+                }
             }
         } else if CHARACTER_ATTRIBUTE_FIELDS.contains(&name.as_str()) {
             map.remove(name.as_str());
@@ -1385,18 +1465,53 @@ fn validate_character(d: &LayoutDoc) -> Result<(), LayoutUiError> {
     })
 }
 
-/// One segment of [`LayoutEditor::character_attributes`]: bytes, resolved record, applied language.
-type Segment = (u64, u64, Value, Option<String>);
+/// Most segments one read reports (review F8: past it the read refuses `budget_exceeded`).
+pub const MAX_READ_SEGMENTS: usize = 4096;
+/// Work budget of one read's resolution (review F8).
+const READ_STEP_BUDGET: u64 = 1 << 22;
 
-/// The one value of a field over `segments`, or the STU-TYP-222 `mixed` marker with each distinct
-/// value and its extents.
+/// One segment of [`LayoutEditor::character_attributes`]: bytes, effective record, which fields are
+/// defaults, applied language.
+type Segment = (u64, u64, Value, Value, Option<String>);
+
+/// The effective record the export draws (review F3): the resolved fields, and every unset field at its
+/// default (the spec default of [`CHARACTER_PARAMS`]; size: the drawn default; leading: 1.25 em of the
+/// size; no default: null), with a map of which fields came from a default.
+fn effective(a: &StudioCharacterAttributes) -> Result<(Value, Value), LayoutUiError> {
+    let internal = || LayoutUiError::Layout(LayoutError::InvalidInput);
+    let mut v = serde_json::to_value(a).map_err(|_| internal())?;
+    let map = v.as_object_mut().ok_or_else(internal)?;
+    let size = a.size.unwrap_or(DEFAULT_SIZE_PT);
+    let mut defaulted = serde_json::Map::new();
+    for name in CHARACTER_ATTRIBUTE_FIELDS {
+        let set = map.contains_key(name);
+        defaulted.insert(name.to_owned(), json!(!set));
+        if !set {
+            let d = match name {
+                "size" => Some(DEFAULT_SIZE_PT),
+                "leading" => Some(size * 1.25),
+                _ => CHARACTER_PARAMS.iter().find(|r| r.key == name).and_then(|r| r.default),
+            };
+            map.insert(name.to_owned(), d.map_or(Value::Null, |x| json!(x)));
+        }
+    }
+    Ok((v, Value::Object(defaulted)))
+}
+
+/// The one value of a field over `segments`, or the STU-TYP-222 `mixed` marker with each distinct value
+/// (first-seen order) and its extents; distinct values are keyed by their JSON text.
 fn mixed(segments: &[Segment], pick: impl Fn(&Segment) -> Value) -> Value {
     let mut values: Vec<(Value, Vec<[u64; 2]>)> = Vec::new();
+    let mut index: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for s in segments {
         let v = pick(s);
-        match values.iter_mut().find(|(x, _)| *x == v) {
+        let key = v.to_string();
+        match index.get(&key).and_then(|i| values.get_mut(*i)) {
             Some((_, extents)) => extents.push([s.0, s.1]),
-            None => values.push((v, vec![[s.0, s.1]])),
+            None => {
+                index.insert(key, values.len());
+                values.push((v, vec![[s.0, s.1]]));
+            }
         }
     }
     match values.as_slice() {
@@ -1405,67 +1520,104 @@ fn mixed(segments: &[Segment], pick: impl Fn(&Segment) -> Value) -> Value {
     }
 }
 
+/// A row value: the number, or `UNKNOWN` (STU-TYP-221: an explicit UNKNOWN, never a fabricated bound).
+fn known(v: Option<f64>) -> Value {
+    v.map_or(json!("UNKNOWN"), |x| json!(x))
+}
+
 impl LayoutEditor {
-    /// The resolved character attributes over `[start, end)` of `story` (STU-TYP-112 segment
-    /// projection, STU-TYP-222 mixed protocol): `segments` (each contiguous run of one resolved
-    /// record: bytes, attributes, applied language), per field the one value or
-    /// `{"mixed": true, "values": [{"value", "extents"}]}` (an unset field reads null), the legacy
-    /// boolean projections of the feature map (STU-TYP-174, Type's mapping), and the parameter
-    /// rows, enumerations, stroke styles and languages a model needs to set them (STU-TYP-221).
+    /// The effective character attributes over `[start, end)` of `story` (STU-TYP-112 segment projection,
+    /// STU-TYP-222 mixed protocol; `start == end` reads the insertion point, the attributes of the byte at
+    /// it, or of the last byte at the story's end): `segments` (each contiguous run of one effective record:
+    /// bytes, attributes, defaulted fields, applied language), per field the one value or
+    /// `{"mixed": true, "values": [{"value", "extents"}]}`, `defaulted` the same per field, the legacy
+    /// boolean projections of the feature map (STU-TYP-174, Type's mapping), and the parameter rows,
+    /// enumerations, stroke styles and languages a model needs to set them (STU-TYP-221). Resolution is the
+    /// export's ([`CharacterResolver`], review F3); bounded by [`MAX_READ_SEGMENTS`] and a work budget
+    /// (`budget_exceeded`).
     pub fn character_attributes(&self, story: &str, start: u64, end: u64) -> Result<Value, LayoutUiError> {
         let st = self.doc.stories.iter().find(|s| s.story_id == story).ok_or_else(|| LayoutUiError::UnknownStory(story.to_owned()))?;
-        byte_span(story_text(st), start, end)?;
+        let text = story_text(st);
+        let total = text.len() as u64;
+        if start == end {
+            if start > total || !text.is_char_boundary(usize::try_from(start).unwrap_or(usize::MAX)) {
+                return Err(LayoutUiError::Layout(LayoutError::InvalidInput));
+            }
+        } else {
+            byte_span(text, start, end)?;
+        }
         let styles = &self.doc.styles;
+        let mut res = CharacterResolver::new(styles, READ_STEP_BUDGET);
         let mut cuts: std::collections::BTreeSet<u64> = [start, end].into_iter().collect();
-        let bounds = st
-            .paragraphs
-            .iter()
-            .map(|p| (p.start, p.end))
-            .chain(st.character_ranges.iter().map(|r| (r.start, r.end)))
-            .chain(styles.character_overrides.iter().filter(|o| o.text_id == story).map(|o| (o.start, o.end)));
-        for (a, b) in bounds {
-            for at in [a, b] {
-                if at > start && at < end {
-                    cuts.insert(at);
+        if start < end {
+            let inside = move |(a, b): (u64, u64)| [a, b].into_iter().filter(move |at| *at > start && *at < end);
+            let paragraphs = &st.paragraphs[st.paragraphs.partition_point(|p| p.end <= start)..];
+            let ranges = &st.character_ranges[st.character_ranges.partition_point(|r| r.end <= start)..];
+            let overrides = res.overrides_of(story);
+            let overrides = &overrides[overrides.partition_point(|o| o.end <= start)..];
+            let bounds = paragraphs.iter().take_while(|p| p.start < end).map(|p| (p.start, p.end))
+                .chain(ranges.iter().take_while(|r| r.start < end).map(|r| (r.start, r.end)))
+                .chain(overrides.iter().take_while(|o| o.start < end).map(|o| (o.start, o.end)));
+            for b in bounds {
+                cuts.extend(inside(b));
+                if cuts.len() > MAX_READ_SEGMENTS {
+                    return Err(LayoutUiError::Layout(LayoutError::BudgetExceeded));
                 }
             }
         }
         let cuts: Vec<u64> = cuts.into_iter().collect();
-        let mut segments: Vec<Segment> = Vec::with_capacity(cuts.len());
-        for w in cuts.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            let paragraph = st.paragraphs.iter().find(|p| p.start <= a && a < p.end).and_then(|p| p.style_ref.as_deref());
-            let range = st.character_ranges.iter().find(|r| r.start <= a && a < r.end);
-            let resolved = styles.resolved_character(story, a, paragraph, range.and_then(|r| r.style_ref.as_deref()));
-            let value = serde_json::to_value(&resolved).map_err(|_| LayoutUiError::Layout(LayoutError::InvalidInput))?;
+        let windows: Vec<(u64, u64)> = if start == end { vec![(start, end)] } else { cuts.windows(2).map(|w| (w[0], w[1])).collect() };
+        let mut segments: Vec<Segment> = Vec::with_capacity(windows.len());
+        for (a, b) in windows {
+            // The byte whose attributes the segment reports (the insertion point at the story end reads the last byte).
+            let probe = if a < total { a } else { a.saturating_sub(1) };
+            let paragraph = st.paragraphs.get(st.paragraphs.partition_point(|p| p.end <= probe)).filter(|p| p.start <= probe).or_else(|| st.paragraphs.last().filter(|p| p.start <= probe));
+            let range = st.character_ranges.get(st.character_ranges.partition_point(|r| r.end <= probe)).filter(|r| r.start <= probe);
+            let resolved = res.at(story, probe, paragraph.and_then(|p| p.style_ref.as_deref()), range.and_then(|r| r.style_ref.as_deref())).map_err(resolution_refused)?;
+            let (value, defaulted) = effective(&resolved)?;
             let language = range.and_then(|r| r.applied_language.clone());
             match segments.last_mut() {
-                Some(last) if last.1 == a && last.2 == value && last.3 == language => last.1 = b,
-                _ => segments.push((a, b, value, language)),
+                Some(last) if last.1 == a && last.2 == value && last.3 == defaulted && last.4 == language => last.1 = b,
+                _ => segments.push((a, b, value, defaulted, language)),
             }
         }
         let mut fields = serde_json::Map::new();
+        let mut defaulted = serde_json::Map::new();
         for name in CHARACTER_ATTRIBUTE_FIELDS {
             fields.insert(name.to_owned(), mixed(&segments, |s| s.2.get(name).cloned().unwrap_or(Value::Null)));
+            defaulted.insert(name.to_owned(), mixed(&segments, |s| s.3.get(name).cloned().unwrap_or(Value::Null)));
         }
         let mut legacy = serde_json::Map::new();
         for b in hsk_studio_type::LegacyBoolean::ALL {
             let Ok(tag) = b.tag() else { continue };
             let bytes = tag.bytes();
             let Ok(tag) = std::str::from_utf8(&bytes) else { continue };
-            legacy.insert(b.name().to_owned(), mixed(&segments, |s| s.2.get("opentype_features").and_then(|m| m.get(tag)).map_or(Value::Null, |v| json!(v.as_u64() != Some(0)))));
+            let on = |v: &Value| match v {
+                Value::Bool(on) => json!(on),
+                Value::Number(n) => json!(n.as_u64() != Some(0)),
+                _ => Value::Null,
+            };
+            legacy.insert(b.name().to_owned(), mixed(&segments, |s| s.2.get("opentype_features").and_then(|m| m.get(tag)).map_or(Value::Null, on)));
         }
         let parameters: Vec<Value> = CHARACTER_PARAMS
             .iter()
-            .map(|p| json!({"key": p.key, "hard_min": p.hard_min, "hard_max": p.hard_max, "soft_min": p.soft_min, "soft_max": p.soft_max, "default": p.default, "unit": p.unit, "precision": p.precision}))
+            .map(|p| {
+                json!({
+                    "key": p.key, "hard_min": known(p.hard_min), "hard_max": known(p.hard_max), "soft_min": known(p.soft_min), "soft_max": known(p.soft_max),
+                    "default": known(p.default), "unit": p.unit, "precision": p.precision.map_or(json!("UNKNOWN"), |x| json!(x)), "exclusive_min": p.exclusive_min,
+                    "step": known(p.declared_steps[0]), "coarse_step": known(p.declared_steps[1]), "fine_step": known(p.declared_steps[2]),
+                    "selected_step": p.selected_steps[0], "selected_coarse_step": p.selected_steps[1], "selected_fine_step": p.selected_steps[2],
+                })
+            })
             .collect();
         let enumerations: serde_json::Map<String, Value> = CHARACTER_ENUMERATIONS.iter().map(|(k, m)| ((*k).to_owned(), json!(m))).collect();
         let strokes: Vec<String> = BUILTIN_STROKE_STYLES.iter().map(|n| (*n).to_owned()).chain(styles.stroke_styles.iter().map(|s| s.name.clone())).collect();
         Ok(json!({
             "story": story, "start": start, "end": end,
-            "segments": segments.iter().map(|(a, b, v, l)| json!({"start": a, "end": b, "attributes": v, "applied_language": l})).collect::<Vec<_>>(),
+            "segments": segments.iter().map(|(a, b, v, d, l)| json!({"start": a, "end": b, "attributes": v, "defaulted": d, "applied_language": l})).collect::<Vec<_>>(),
             "fields": fields,
-            "applied_language": mixed(&segments, |s| json!(s.3)),
+            "defaulted": defaulted,
+            "applied_language": mixed(&segments, |s| json!(s.4)),
             "legacy_booleans": legacy,
             "parameters": parameters,
             "enumerations": enumerations,

@@ -60,6 +60,11 @@ pub struct PdfLongDoc<'a> {
     pub page_labels: &'a [PdfPageLabel],
     /// Bookmarks in document order ([`outline_from_toc`]); empty writes none.
     pub outline: &'a [PdfOutlineItem<'a>],
+    /// Story byte spans drawn with a case transform (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1): `(story id,
+    /// start, end, the stored text of [start, end))`. Their glyphs are drawn inside `/Span <</ActualText>>`
+    /// holding the stored text of the drawn clusters, so extraction reads the source text while each
+    /// glyph's `/ToUnicode` stays what it draws. Empty draws no span.
+    pub actual_text: &'a [(&'a str, u64, u64, &'a str)],
 }
 
 /// One page-label range starting at a Folio page.

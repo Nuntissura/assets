@@ -350,6 +350,13 @@ pub fn cascade_layout_delete(document: &mut folio::StudioDocument, records: &mut
             }
         }
     }
+    // Character records (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1): a removed story's local overrides; node
+    // hyperlinks to a removed text anchor (review F14).
+    drop_where(&mut records.styles.character_overrides, n, |o| story_gone(&o.text_id, &stories));
+    if !anchors.is_empty() {
+        let unlinked = records.styles.drop_node_links(&|id: &str| !anchors.contains(id));
+        *n = n.saturating_add(u64::try_from(unlinked).unwrap_or(u64::MAX));
+    }
     drop_where(&mut records.stories, n, |s| stories.contains(&s.story_id));
     out.stories = stories.into_iter().collect();
     out
@@ -814,12 +821,20 @@ impl Run<'_> {
         let mut successor = document.clone();
         let mut updated = records.cloned();
         let mut scratch = LayoutRecords::new(&document.document_id);
-        let cascade = cascade_layout_delete(&mut successor, updated.as_mut().unwrap_or(&mut scratch), &doomed);
+        let mut cascade = cascade_layout_delete(&mut successor, updated.as_mut().unwrap_or(&mut scratch), &doomed);
         let mut spreads = successor.page_spreads.clone();
         delete_page_edit(&successor, &mut spreads, page).map_err(|code| (code, json!({"page_id": page})))?;
         successor.page_spreads = spreads;
         if let Some(updated) = updated.as_mut() {
             updated.parents.page_bindings.retain(|b| b.page_id != page);
+            // Node hyperlinks to a spread the delete removed go in the same step (lane
+            // SMB-TYPE-CHARACTER-ATTRIBUTES-1, review F14).
+            let kept: BTreeSet<&str> = successor.page_spreads.iter().map(|s| s.page_spread_id.as_str()).collect();
+            let removed: BTreeSet<&str> = document.page_spreads.iter().map(|s| s.page_spread_id.as_str()).filter(|s| !kept.contains(s)).collect();
+            if !removed.is_empty() {
+                let unlinked = updated.styles.drop_node_links(&|id: &str| !removed.contains(id));
+                cascade.records = cascade.records.saturating_add(u64::try_from(unlinked).unwrap_or(u64::MAX));
+            }
             // The page after `page` in document order (sections number pages in that order).
             let order: Vec<&str> = document.page_spreads.iter().flat_map(|s| &s.pages).map(|p| p.page_id.as_str()).collect();
             let next = order.iter().position(|p| *p == page).and_then(|i| i.checked_add(1)).and_then(|i| order.get(i)).map(|p| (*p).to_owned());

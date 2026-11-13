@@ -6,7 +6,7 @@ use super::{CommandEntry, ParamSpec, flag as b, index as i, list as l, number as
 const EDIT: &str = "LayoutEditor::apply";
 const PAGE_ITEM: &[ParamSpec] = &[t("page"), t("item")];
 const FIND_SCOPE: &str = "document|story|selection";
-const CHAR_ATTRS: &str = "Folio StudioCharacterAttributes (spec field names and units; opentype_features {tag: value}; underline / strikethrough {type, weight, offset, colour, tint, overprint, gap_colour, gap_tint, gap_overprint, skip_ink}; hyperlink {target_kind url|node}); merged field by field, absent keeps; clear names fields to unset (or opentype_features/<tag>)";
+const CHAR_ATTRS: &str = "Folio StudioCharacterAttributes (spec field names and units; opentype_features {tag: true|false for a binary feature, an integer alternate index}; underline / strikethrough {type, weight, offset, colour, tint, overprint, gap_colour, gap_tint, gap_overprint, skip_ink}; hyperlink {target_kind url|node, node = a page spread, artboard or text anchor id}); merged field by field, absent keeps; clear names fields to unset (a field, opentype_features/<tag>, underline/<field> or strikethrough/<field>)";
 const FIND: &[ParamSpec] = &[t("pattern"), o("mode", "text|grep").opt(), b("case_sensitive").opt(), b("whole_word").opt(), o("scope", FIND_SCOPE).opt(), t("story").opt(), i("start").opt(), i("end").opt()];
 const CHANGE: &[ParamSpec] = &[t("pattern"), t("replacement"), o("mode", "text|grep").opt(), b("case_sensitive").opt(), b("whole_word").opt(), o("scope", FIND_SCOPE).opt(), t("story").opt(), i("start").opt(), i("end").opt(), t("only_story").opt(), i("only_start").opt()];
 
@@ -51,6 +51,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("layout.delete_stroke_style", EDIT, "Delete stroke style", true, &[t("name")]),
     typed("layout.define_language", EDIT, "Define language", true, &[r("language", "Folio StudioLanguage {name, primary_language_name, icu_locale_name, sublanguage_name, untranslated_name, hyphenation_vendor, spelling_vendor, single_quotes, double_quotes {open, close}}; replaces the record of that name")]),
     typed("layout.set_language", EDIT, "Set applied language", true, &[t("story"), i("start"), i("end"), t("language").opt()]),
+    // start == end reads the attributes at an insertion point; every field reads its effective value (a default where unset, marked).
     typed("layout.character_attributes", "LayoutEditor::character_attributes", "Read character attributes", false, &[t("story"), i("start"), i("end")]),
     typed("layout.undo", "LayoutEditor::undo", "Undo layout edit", true, &[]),
     typed("layout.redo", "LayoutEditor::redo", "Redo layout edit", true, &[]),

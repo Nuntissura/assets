@@ -610,6 +610,8 @@ struct Level {
     shadings: Vec<(String, u32)>,
     /// Open `push_clip` levels.
     clips: usize,
+    /// Open `begin_actual_text` spans (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1).
+    actual_texts: usize,
     state: DrawState,
 }
 
@@ -2066,15 +2068,31 @@ impl PdfExport {
         Ok(())
     }
 
-    /// Opens a `/Span` marked-content sequence whose `/ActualText` is `text` (red skeleton: writes nothing).
+    /// Opens a `/Span` marked-content sequence on `page` (innermost open group) whose `/ActualText` is
+    /// `text` (ISO 32000-1 14.9.4): a reader extracts `text` for the glyphs drawn until
+    /// [`Self::end_actual_text`], while each glyph's `/ToUnicode` stays its own mapping (lane
+    /// SMB-TYPE-CHARACTER-ATTRIBUTES-1: case-transformed text extracts as its stored characters). A PDF
+    /// text string (UTF-16BE unless printable ASCII). Refusals: `TextTooLong` past [`MAX_EXPORT_TEXT`]
+    /// chars, `NoSuchPage`, `TooManyOperations`.
     pub fn begin_actual_text(&mut self, page: PageHandle, text: &str) -> Result<()> {
-        let _ = (page, text);
+        let value = text_bytes(text)?;
+        let mut props = Dict::default();
+        props.set("ActualText", value);
+        self.push_ops(page, vec![op("BDC", vec![name("Span"), Object::Dict(props)])])?;
+        let l = self.top_mut(page)?;
+        l.actual_texts = l.actual_texts.saturating_add(1);
         Ok(())
     }
 
-    /// Closes the span [`Self::begin_actual_text`] opened (red skeleton: writes nothing).
+    /// Closes the innermost span [`Self::begin_actual_text`] opened on `page` (`EMC`); `UnbalancedGroup`
+    /// when none is open.
     pub fn end_actual_text(&mut self, page: PageHandle) -> Result<()> {
-        let _ = page;
+        if self.top(page)?.actual_texts == 0 {
+            return Err(ExportError::UnbalancedGroup);
+        }
+        self.push_ops(page, vec![op("EMC", vec![])])?;
+        let l = self.top_mut(page)?;
+        l.actual_texts = l.actual_texts.saturating_sub(1);
         Ok(())
     }
 
