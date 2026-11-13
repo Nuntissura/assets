@@ -2789,6 +2789,72 @@ impl Session {
         self.settle(result, |receipt, report| receipt.report = report)
     }
 
+    /// [`Session::save_to`] writing `bytes` as the document entry `token` in place of the held one (lane
+    /// SMB-DS-VARIABLES-AUTHOR-1, lead ruling P3 2026-11-13: the saved, pruned form of an entry the session
+    /// keeps whole for its undo). The package gets a COPY of the held entries with that token's entry
+    /// replaced under the name rule of [`Session::set_document_entry`]; the session's own entries are never
+    /// touched, so a refused, failed or canceled save leaves the session as it was (the same atomic write
+    /// path, the same compare as `save_to`). After the save the session stays dirty when the written entry
+    /// differs from the held one. Refused like `set_document_entry` before anything is written: an unknown
+    /// token is `unsafe_name`; all entries above `max_entry_bytes` `total_too_large`; a validated sequence
+    /// token's bytes must validate.
+    pub fn save_to_with_entry(
+        &mut self,
+        path: &Path,
+        token: &str,
+        bytes: Vec<u8>,
+        cancel: &CancellationToken,
+    ) -> Result<SaveReceipt, Failed> {
+        let result = self.save_with_entry_inner(path, token, bytes, cancel);
+        self.settle(result, |receipt, report| receipt.report = report)
+    }
+
+    fn save_with_entry_inner(
+        &mut self,
+        path: &Path,
+        token: &str,
+        bytes: Vec<u8>,
+        cancel: &CancellationToken,
+    ) -> Result<SaveReceipt, SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        let token = *DOCUMENT_ENTRY_TOKENS
+            .iter()
+            .find(|t| **t == token)
+            .ok_or(SessionError::Package(PackageError::UnsafeName))?;
+        if !self.document_entry_fits(token, bytes.len()) {
+            return Err(SessionError::Package(PackageError::TotalTooLarge));
+        }
+        if sequence_records::validated_token(token) {
+            if !self.pending_keys().is_empty() {
+                return Err(SessionError::ReconciliationRequired);
+            }
+            sequence_records::check_entry(token, &bytes, self.snapshot.document(), self.config.budgets.folio(), cancel)?;
+        }
+        let differs = self.document_entry(token) != Some(bytes.as_slice());
+        let sha256_hex = sha256_hex_of(&bytes);
+        let mut held: Vec<Quarantined> = self
+            .quarantined
+            .iter()
+            .filter(|q| document_entry(&q.name, &q.sha256_hex) != Some(token))
+            .cloned()
+            .collect();
+        held.push(Quarantined {
+            name: format!("{DOCUMENT_ENTRY_PREFIX}{token}.{sha256_hex}"),
+            bytes,
+            sha256_hex,
+        });
+        held.sort_by(|a, b| a.name.cmp(&b.name));
+        let expect = match (&self.origin, &self.origin_disk) {
+            (Some(origin), Some(disk)) if same_destination(origin, path) => Expect::Unchanged(disk.clone()),
+            _ => Expect::Anything,
+        };
+        let receipt = self.save_inner_with(path, expect, Some(&held), cancel)?;
+        if differs {
+            self.entries_changed = true;
+        }
+        Ok(receipt)
+    }
+
     /// The previews to write: only those that describe the revision being written. Host-supplied
     /// ones for this revision replace the source's; anything rendered for another revision is
     /// dropped and counted (second value).
@@ -2948,6 +3014,18 @@ impl Session {
         expect: Expect,
         cancel: &CancellationToken,
     ) -> Result<SaveReceipt, SessionError> {
+        self.save_inner_with(path, expect, None, cancel)
+    }
+
+    /// [`Self::save_inner`] writing `held` (when given) as the entries kept beside the document instead
+    /// of the session's own (`save_to_with_entry`); everything else is the same save.
+    fn save_inner_with(
+        &mut self,
+        path: &Path,
+        expect: Expect,
+        held: Option<&[Quarantined]>,
+        cancel: &CancellationToken,
+    ) -> Result<SaveReceipt, SessionError> {
         cancel.check().map_err(|_| SessionError::Canceled)?;
         self.check_grant(Action::Save)?;
         let mut guard = GuardedFs::new(expect, self.config.save_lock_wait, cancel);
@@ -2966,7 +3044,7 @@ impl Session {
                 doc: &self.snapshot,
                 assets: &assets,
                 extras: Extras {
-                    quarantined: &self.quarantined,
+                    quarantined: held.unwrap_or(&self.quarantined),
                     previews: &images,
                 },
                 options: self.write_options(),

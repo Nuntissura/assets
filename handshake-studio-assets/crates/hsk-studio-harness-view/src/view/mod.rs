@@ -802,7 +802,7 @@ impl Viewer {
             self.say(e.clone());
             return Err(e);
         }
-        if self.run.save_to(path) {
+        if self.save_run(path) {
             self.say(format!("saved {}", path.display()));
             Ok(())
         } else {

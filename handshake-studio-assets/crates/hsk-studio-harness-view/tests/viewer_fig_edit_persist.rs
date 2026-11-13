@@ -211,7 +211,15 @@ fn edited_instance_survives_save_and_reopen() {
     let path = s.0.join("edited.handshake");
     v.save(&path, false).unwrap();
     let mut w = reopen(&path);
-    assert_eq!(entry(&w).unwrap(), bytes, "the entry is saved and reopened byte-identical");
+    // Lead ruling P3 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): the save leaves out the states of
+    // superseded contents (the variant switch's state, superseded by the override's), built on a copy; the
+    // session keeps its entry for undo, and the reopen reads byte for byte what was saved.
+    assert_eq!(entry(&v).unwrap(), bytes, "the save never changes the in-session entry");
+    let mut saved: folio::StudioDesignStateRecords = serde_json::from_slice(&bytes).unwrap();
+    let held = saved.instances.len();
+    saved.instances.retain(|st| st.content_signature == children(&v, &st.layer_id));
+    assert!(saved.instances.len() < held, "the session held a superseded state");
+    assert_eq!(entry(&w).unwrap(), serde_json::to_vec(&saved).unwrap(), "the pruned entry is saved and reopened byte-identical");
     assert_eq!(children(&w, &inst), children(&v, &inst));
     let after = w.instance_view(&inst).unwrap();
     assert_eq!(after.state, "edited", "{:?}", after.error);

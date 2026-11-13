@@ -2654,7 +2654,18 @@ impl Run<'_> {
         self.save_op(path, Session::save_replacing)
     }
 
+    /// [`Run::save_to`] that writes `bytes` as the document entry `token` in place of the session's own
+    /// (lane SMB-DS-VARIABLES-AUTHOR-1, lead ruling P3 2026-11-13; `Session::save_to_with_entry`): the
+    /// session keeps its entry, so its undo history is untouched; a refused save leaves the session as it was.
+    pub fn save_to_with_entry(&mut self, path: &Path, token: &str, bytes: Vec<u8>) -> bool {
+        self.save_op_with(path, |session: &mut Session, path: &Path, cancel: &CancellationToken| session.save_to_with_entry(path, token, bytes, cancel))
+    }
+
     fn save_op(&mut self, path: &Path, save: SessionSave) -> bool {
+        self.save_op_with(path, save)
+    }
+
+    fn save_op_with(&mut self, path: &Path, save: impl FnOnce(&mut Session, &Path, &CancellationToken) -> Result<hsk_studio_session::SaveReceipt, hsk_studio_session::Failed>) -> bool {
         self.note_unrecordable("document.save");
         let before = self.frames.count();
         let cancel = self.cancel;

@@ -349,6 +349,37 @@ impl Viewer {
             }
         }
     }
+
+    /// Lead ruling P3 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): the `design` entry as a save writes it,
+    /// when it differs from the session's. A reopened document has no history, so it can never return to
+    /// a state of content its layer no longer draws: the save leaves out the states of absent layers and of
+    /// superseded contents (design file instances too), and for authored instances the states whose record
+    /// is gone (what [`Self::design_opened`] drops). The reopen then prunes nothing more and reads byte for
+    /// byte what was saved. Built on a copy: the session's entry, which undo still needs, is never changed.
+    /// `None`: nothing to leave out, the save writes the session's entry.
+    pub(in crate::view) fn design_save_entry(&self) -> Option<Vec<u8>> {
+        let doc = self.run.snapshot()?.document();
+        let mut records = raw_states(self.run.document_entry(ENTRY)?)?;
+        let (design_file, native) = self.design_receipt().map_or_else(Default::default, |r| (r.design_file, r.native.into_keys().collect::<BTreeSet<_>>()));
+        let before = records.instances.len();
+        records.instances.retain(|s| {
+            let current = doc.layers.iter().any(|l| l.layer_id == s.layer_id) && s.content_signature == content(doc, &s.layer_id);
+            current && (design_file.contains(&s.instance_id) || native.contains(&s.instance_id))
+        });
+        if records.instances.len() == before {
+            return None;
+        }
+        serde_json::to_vec(&records).ok()
+    }
+
+    /// Saves the session through `Run::save_to`, or `Run::save_to_with_entry` with the pruned `design`
+    /// entry of [`Self::design_save_entry`] (lead ruling P3). Returns whether the save landed.
+    pub(in crate::view) fn save_run(&mut self, path: &std::path::Path) -> bool {
+        match self.design_save_entry() {
+            Some(bytes) => self.run.save_to_with_entry(path, ENTRY, bytes),
+            None => self.run.save_to(path),
+        }
+    }
 }
 
 #[cfg(test)]

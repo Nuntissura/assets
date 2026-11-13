@@ -3245,6 +3245,86 @@ fn document_entries_save_reopen_and_stay_bounded() {
     });
 }
 
+/// Lane SMB-DS-VARIABLES-AUTHOR-1 (lead ruling P3, 2026-11-13): `save_to_with_entry` writes one entry
+/// replaced in a COPY of the held entries; the session's entries and revision are untouched, it stays
+/// dirty only when the written entry differs, the reopen holds the written entry, and a plain save is
+/// byte-identical to what it was (the same session saved twice by `save_to` writes the same bytes).
+#[test]
+fn save_to_with_entry_writes_a_copy_and_leaves_the_session_entries_alone() {
+    bounded_case("save_to_with_entry_writes_a_copy", || {
+        let fixture = Fixture::new("savewithentry");
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        session.set_document_entry("design", Some(b"{\"whole\":true}".to_vec()), &token()).unwrap();
+        session.set_document_entry("selection", Some(b"sel".to_vec()), &token()).unwrap();
+        // Regression: a plain save writes the same bytes as before this lane (two saves of one state agree,
+        // and a save with the held entry itself is the same file).
+        let plain = fixture.dir.join("plain.handshake");
+        session.save_to(&plain, &token()).unwrap();
+        let again = fixture.dir.join("again.handshake");
+        session.save_to(&again, &token()).unwrap();
+        assert_eq!(fs::read(&plain).unwrap(), fs::read(&again).unwrap(), "a plain save is deterministic");
+        let same = fixture.dir.join("same.handshake");
+        session.save_to_with_entry(&same, "design", b"{\"whole\":true}".to_vec(), &token()).unwrap();
+        assert_eq!(fs::read(&same).unwrap(), fs::read(&plain).unwrap(), "the held entry written through the copy is the plain save");
+        assert!(!session.is_dirty(), "equal entry: clean after the save");
+        // Differs: the file holds the replacement, the session its own entry and revision, and stays dirty.
+        let revision = session.document_revision();
+        let path = fixture.dir.join("pruned.handshake");
+        session.save_to_with_entry(&path, "design", b"{\"pruned\":true}".to_vec(), &token()).unwrap();
+        assert_eq!(session.document_entry("design"), Some(&b"{\"whole\":true}"[..]), "the session keeps its entry");
+        assert_eq!(session.document_entry("selection"), Some(&b"sel"[..]));
+        assert_eq!(session.document_revision(), revision, "no new revision");
+        assert!(session.is_dirty(), "the session's entry differs from the saved one");
+        let reopened = Session::open_path(&path, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
+        assert_eq!(reopened.document_entry("design"), Some(&b"{\"pruned\":true}"[..]), "the reopen holds the written entry");
+        assert_eq!(reopened.document_entry("selection"), Some(&b"sel"[..]));
+        let typed = format!("{DOCUMENT_ENTRY_PREFIX}design.{}", sha256_hex_of(b"{\"pruned\":true}"));
+        assert!(!reopened.loss().iter().any(|n| n.name == typed), "the written entry is a typed entry, no loss");
+        // A later plain save writes the session's own entry again.
+        session.save_to(&path, &token()).unwrap();
+        let back = Session::open_path(&path, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
+        assert_eq!(back.document_entry("design"), Some(&b"{\"whole\":true}"[..]));
+        assert!(!session.is_dirty());
+    });
+}
+
+/// A refused, failed or canceled `save_to_with_entry` leaves the session as it was and no file.
+#[test]
+fn save_to_with_entry_refused_failed_or_canceled_changes_nothing() {
+    bounded_case("save_to_with_entry_changes_nothing", || {
+        let fixture = Fixture::new("savewithentryfail");
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        session.set_document_entry("design", Some(b"held".to_vec()), &token()).unwrap();
+        let revision = session.document_revision();
+        let check = |session: &Session| {
+            assert_eq!(session.document_entry("design"), Some(&b"held"[..]));
+            assert_eq!(session.document_revision(), revision);
+            assert!(session.is_dirty(), "still unsaved");
+        };
+        let path = fixture.dir.join("out.handshake");
+        assert_eq!(session.save_to_with_entry(&path, "secrets", b"x".to_vec(), &token()).unwrap_err().code(), "unsafe_name");
+        check(&session);
+        let mut small = SessionConfig::new(actor_context());
+        small.budgets.limits.max_entry_bytes = 64 * 1024;
+        let mut bounded = Session::open_path(&fixture.path, small, ports(&frames), &token()).unwrap();
+        assert_eq!(bounded.save_to_with_entry(&path, "design", vec![0; 64 * 1024], &token()).unwrap_err().code(), "total_too_large");
+        assert!(!path.exists());
+        let canceled = token();
+        canceled.cancel();
+        assert_eq!(session.save_to_with_entry(&path, "design", b"pruned".to_vec(), &canceled).unwrap_err().code(), "canceled");
+        check(&session);
+        assert!(!path.exists(), "a canceled save writes nothing");
+        let missing = fixture.dir.join("no-such-folder").join("out.handshake");
+        assert!(session.save_to_with_entry(&missing, "design", b"pruned".to_vec(), &token()).is_err());
+        check(&session);
+        assert!(!missing.exists());
+        let leftovers: Vec<String> = fixture.files().into_iter().filter(|n| n != "doc.handshake").collect();
+        assert!(leftovers.is_empty(), "no partial file: {leftovers:?}");
+    });
+}
+
 /// SMB-HARNESS-UI-3 slice 5: the pixel-edit path with a commit authority (CommitPort). The
 /// authority receives the successor document naming the staged tile; the tile body stays
 /// session-local until save, which writes it; a digest that is neither in the package nor staged
