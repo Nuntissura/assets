@@ -18,6 +18,7 @@ mod export;
 mod history;
 mod layer;
 mod layout;
+mod layout_flow;
 mod mixer;
 mod monitor;
 mod motion;
@@ -172,6 +173,7 @@ const DOMAINS: &[&[CommandEntry]] = &[
     catalog::ROWS,
     design::ROWS,
     layout::ROWS,
+    layout_flow::ROWS,
     motion::ROWS,
     panel::ROWS,
     photo::ROWS,

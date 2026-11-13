@@ -5,22 +5,34 @@
 //! step (no revision, like every document entry). Not recordable: a recording reports them typed
 //! ([STU-AUT-109]).
 //!
-//! What a delete refuses: a container a layer still names or a page a text frame sits on
-//! (`artboard_not_empty`, `page_not_empty`), the
+//! What a delete refuses: an artboard a layer still names (`artboard_not_empty`), the
 //! last page of a document (`last_page`) and the last artboard of a document with layers
-//! (`last_artboard`), so a frame for the layers stays; a page delete updates the layout records that name
-//! the page in the same step, or refuses `page_bound_by_layout_records` ([`Run::delete_page`]). A page has
-//! no name of its own in Folio
+//! (`last_artboard`), so a frame for the layers stays. A page delete takes the page's content with it
+//! and updates the layout records that name the page or its content in the same step, or refuses
+//! `page_bound_by_layout_records` ([`Run::delete_page`]). A page has no name of its own in Folio
 //! (`StudioPage`): `page.rename` names the page's spread.
+//!
+//! The layout delete cascade (lane SMB-LAYOUT-DELETE-CASCADE-1; [STU-LAY-003] delete, [STU-LAY-122]
+//! threads; [`cascade_layout_delete`]): the layers removed take every layer under them; a thread closes
+//! over a removed frame (the frame before the removed run links to the frame after it); a story no
+//! remaining layer shows goes with the records that annotate it; the records that name a removed layer
+//! go (graphic frames, frame options, vertical thresholds, applied object styles, anchored objects,
+//! parent page items and the overrides of those items; a page-local replacement that goes becomes a
+//! suppress override; a running text keeps its other frames). Records the cascade does not follow and
+//! that would name something gone refuse typed (`page_bound_by_layout_records`,
+//! `layer_bound_by_layout_records`): a delete never leaves a stale entry. InDesign parity of the
+//! thread closing and of the replacement-to-suppress rule is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::{EntryRestore, HistoryStep, Run, StudioBusinessEventId, command_text};
 use crate::document_new::{self as rules, ArtboardOptions, ArtboardOptionsEdit, NewDocument};
 use hsk_studio_accord::CommandContext;
-use hsk_studio_folio::{self as folio, Bounds, GeometryUnit, Length, PageSide, Parent, StudioArtboard, StudioPage, StudioPageSpread};
-use hsk_studio_session::{ContainerStep, Session, SessionConfig};
+use hsk_studio_folio::{
+    self as folio, Bounds, GeometryUnit, Length, PageSide, Parent, Payload, PortAddress, StudioArtboard, StudioItemOverride, StudioPage, StudioPageSpread, StudioXrefDestination,
+};
+use hsk_studio_session::{ContainerStep, LayoutRecords, Session, SessionConfig, SessionError};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ARTBOARD_SCHEMA: &str = "hsk.studio.artboard@1";
@@ -49,7 +61,8 @@ fn delete_page_edit(document: &folio::StudioDocument, spreads: &mut Vec<StudioPa
         return Err("last_page");
     }
     // A text frame sits on one page (lane SMB-R60-FOLLOWUPS-1 item 6: the document would name a page it no
-    // longer holds).
+    // longer holds). `Run::delete_page` removes the content first (`page_delete_plan`); this is the guard
+    // of the plain container step.
     if document.layers.iter().any(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == page)) {
         return Err("page_not_empty");
     }
@@ -112,6 +125,213 @@ fn page_id_fields(bytes: &[u8], out: &mut BTreeSet<u64>) {
     if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
         walk(&value, false, out);
     }
+}
+
+/// What [`cascade_layout_delete`] removed: opaque ids and counts, the op record's detail.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LayoutCascade {
+    /// The layers removed, in document order: the ones asked for and every layer under them.
+    pub layers: Vec<String>,
+    /// Kept frames whose thread link now skips the removed frames.
+    pub relinked: Vec<String>,
+    /// Stories no kept layer shows, and the note and cell stories of the records removed with them.
+    pub stories: Vec<String>,
+    /// Layout records removed or rewritten.
+    pub records: u64,
+}
+
+impl LayoutCascade {
+    /// The counts of the op record's detail.
+    pub fn detail(&self) -> Value {
+        json!({"layers_removed": self.layers.len(), "frames_relinked": self.relinked.len(), "stories_removed": self.stories.len(), "records_removed": self.records})
+    }
+}
+
+/// Removes the `items` that are `gone`, adding the number removed to `count`.
+fn drop_where<T>(items: &mut Vec<T>, count: &mut u64, mut gone: impl FnMut(&T) -> bool) {
+    let before = items.len();
+    items.retain(|t| !gone(t));
+    *count = count.saturating_add(u64::try_from(before.saturating_sub(items.len())).unwrap_or(u64::MAX));
+}
+
+/// Removes `doomed` (and every layer under them) from `document` and the stored layout `records`, in
+/// place (module docs, "The layout delete cascade"). Ids `document` does not hold are ignored. Bounded:
+/// every layer and thread link is visited a bounded number of times; nothing here validates, so the
+/// caller validates `records` against the successor (and the session the document) before committing.
+pub fn cascade_layout_delete(document: &mut folio::StudioDocument, records: &mut LayoutRecords, doomed: &BTreeSet<String>) -> LayoutCascade {
+    let mut out = LayoutCascade::default();
+    // The layers under a removed layer go with it (a group's children, at any depth).
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for l in &document.layers {
+        if let Parent::Node(n) = &l.parent {
+            children.entry(n.node_id.as_str()).or_default().push(l.layer_id.as_str());
+        }
+    }
+    let held: BTreeSet<&str> = document.layers.iter().map(|l| l.layer_id.as_str()).collect();
+    let mut gone: BTreeSet<String> = BTreeSet::new();
+    let mut stack: Vec<&str> = doomed.iter().map(String::as_str).filter(|id| held.contains(id)).collect();
+    while let Some(id) = stack.pop() {
+        if gone.insert(id.to_owned()) {
+            stack.extend(children.get(id).into_iter().flatten().copied());
+        }
+    }
+    if gone.is_empty() {
+        return out;
+    }
+    // Threads close over every removed run: the kept frame before a run links to the kept frame after it.
+    let links: BTreeMap<String, (Option<String>, Option<String>)> =
+        document.layers.iter().filter_map(|l| l.text_frame.as_ref().map(|f| (l.layer_id.clone(), (f.previous_text_frame.clone(), f.next_text_frame.clone())))).collect();
+    let mut next_of: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut previous_of: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut walked: BTreeSet<&str> = BTreeSet::new();
+    for (id, (previous, _)) in &links {
+        // A run starts at a removed frame whose previous frame is kept or absent.
+        if !gone.contains(id) || previous.as_ref().is_some_and(|p| gone.contains(p) && links.contains_key(p)) {
+            continue;
+        }
+        let before = previous.clone().filter(|p| links.contains_key(p));
+        let mut at = Some(id.as_str());
+        let mut after = None;
+        while let Some(current) = at {
+            if !walked.insert(current) {
+                break;
+            }
+            let next = links.get(current).and_then(|(_, n)| n.as_deref()).filter(|n| links.contains_key(*n));
+            match next {
+                Some(n) if gone.contains(n) => at = Some(n),
+                other => {
+                    after = other.map(str::to_owned);
+                    at = None;
+                }
+            }
+        }
+        if let Some(b) = &before {
+            next_of.insert(b.clone(), after.clone());
+        }
+        if let Some(a) = &after {
+            previous_of.insert(a.clone(), before.clone());
+        }
+    }
+    // Stories the removed layers show.
+    let shown_by_gone: BTreeSet<String> = document
+        .layers
+        .iter()
+        .filter(|l| gone.contains(&l.layer_id))
+        .filter_map(|l| match &l.payload {
+            Payload::Text { story_id } => Some(story_id.clone()),
+            _ => None,
+        })
+        .collect();
+    // The layers and their graph presence (as chronicle's remove: edges out of and into them, their
+    // operations, their outputs; the stacks they fed renumbered densely).
+    let fed: BTreeSet<PortAddress> = document.graph.edges.iter().filter(|e| gone.contains(&e.source.layer_id) && !gone.contains(&e.target.layer_id)).map(|e| e.target.clone()).collect();
+    document.graph.edges.retain(|e| !gone.contains(&e.source.layer_id) && !gone.contains(&e.target.layer_id));
+    document.graph.outputs.retain(|o| !gone.contains(&o.layer_id));
+    document.graph.operations.retain(|o| !gone.contains(&o.layer_id));
+    for port in &fed {
+        let mut ordinals: Vec<(u64, usize)> = document.graph.edges.iter().enumerate().filter(|(_, e)| &e.target == port).map(|(i, e)| (e.input_ordinal, i)).collect();
+        ordinals.sort_unstable();
+        for (n, (_, i)) in ordinals.into_iter().enumerate() {
+            if let (Some(edge), Ok(n)) = (document.graph.edges.get_mut(i), u64::try_from(n)) {
+                edge.input_ordinal = n;
+            }
+        }
+    }
+    out.layers = document.layers.iter().filter(|l| gone.contains(&l.layer_id)).map(|l| l.layer_id.clone()).collect();
+    document.layers.retain(|l| !gone.contains(&l.layer_id));
+    for l in &mut document.layers {
+        let Some(f) = l.text_frame.as_mut() else { continue };
+        let mut changed = false;
+        if let Some(n) = next_of.get(&l.layer_id) {
+            f.next_text_frame.clone_from(n);
+            changed = true;
+        }
+        if let Some(p) = previous_of.get(&l.layer_id) {
+            f.previous_text_frame.clone_from(p);
+            changed = true;
+        }
+        if changed {
+            out.relinked.push(l.layer_id.clone());
+        }
+    }
+    let shown: BTreeSet<&str> = document
+        .layers
+        .iter()
+        .filter_map(|l| match &l.payload {
+            Payload::Text { story_id } => Some(story_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut stories: BTreeSet<String> = shown_by_gone.into_iter().filter(|s| !shown.contains(s.as_str())).collect();
+    let n = &mut out.records;
+    let story_gone = |s: &str, stories: &BTreeSet<String>| stories.contains(s);
+    // Long-document records: a removed graphic frame's record; the records anchored in a removed story,
+    // whose own note and cell stories go with them.
+    let longdoc = &mut records.longdoc;
+    drop_where(&mut longdoc.graphic_frames, n, |g| gone.contains(&g.layer_id));
+    let mut owned: Vec<String> = Vec::new();
+    for t in longdoc.tables.iter().filter(|t| story_gone(&t.story_id, &stories)) {
+        owned.extend(t.cell_story_id.clone());
+    }
+    drop_where(&mut longdoc.tables, n, |t| story_gone(&t.story_id, &stories));
+    owned.extend(longdoc.footnotes.iter().filter(|x| story_gone(&x.story_id, &stories)).map(|x| x.note_story_id.clone()));
+    drop_where(&mut longdoc.footnotes, n, |x| story_gone(&x.story_id, &stories));
+    for notes in [&mut longdoc.endnotes, &mut longdoc.sidenotes] {
+        owned.extend(notes.iter().filter(|x| story_gone(&x.story_id, &stories)).map(|x| x.note_story_id.clone()));
+        drop_where(notes, n, |x| story_gone(&x.story_id, &stories));
+    }
+    drop_where(&mut longdoc.index_marks, n, |m| story_gone(&m.story_id, &stories));
+    for r in &mut longdoc.running_texts {
+        let before = r.frame_ids.len();
+        r.frame_ids.retain(|f| !gone.contains(f));
+        if r.frame_ids.len() != before {
+            *n = n.saturating_add(1);
+        }
+    }
+    drop_where(&mut longdoc.running_texts, n, |r| r.frame_ids.is_empty());
+    stories.extend(owned.into_iter().filter(|s| !shown.contains(s.as_str())));
+    // Layout-flow records of a removed frame, layer or story.
+    let flow = &mut records.flow;
+    drop_where(&mut flow.frame_options, n, |f| gone.contains(&f.layer_id));
+    drop_where(&mut flow.vertical_thresholds, n, |v| gone.contains(&v.layer_id));
+    drop_where(&mut flow.applied_object_styles, n, |a| gone.contains(&a.layer_id));
+    drop_where(&mut flow.anchored_objects, n, |a| gone.contains(&a.layer_id) || story_gone(&a.story_id, &stories));
+    drop_where(&mut flow.paragraph_flows, n, |p| story_gone(&p.story_id, &stories));
+    let anchors: BTreeSet<String> = flow.text_anchors.iter().filter(|a| story_gone(&a.story_id, &stories)).map(|a| a.anchor_id.clone()).collect();
+    drop_where(&mut flow.text_anchors, n, |a| story_gone(&a.story_id, &stories));
+    drop_where(&mut flow.cross_references, n, |x| {
+        story_gone(&x.source_story_id, &stories)
+            || match &x.destination {
+                StudioXrefDestination::Paragraph { story_id, .. } => story_gone(story_id, &stories),
+                StudioXrefDestination::TextAnchor { anchor_id } => anchors.contains(anchor_id),
+            }
+    });
+    drop_where(&mut flow.conditional_ranges, n, |c| story_gone(&c.story_id, &stories));
+    // Parent pages: a removed item leaves its parent, with the overrides of it; a removed page-local
+    // replacement leaves the inherited item suppressed.
+    let mut items_gone: BTreeSet<(String, String)> = BTreeSet::new();
+    for p in &mut records.parents.parents {
+        for i in p.parent_page_items.iter().filter(|i| gone.contains(&i.layer_id)) {
+            items_gone.insert((p.parent_id.clone(), i.item_id.clone()));
+        }
+        drop_where(&mut p.parent_page_items, n, |i| gone.contains(&i.layer_id));
+    }
+    let item_ids: BTreeSet<&str> = items_gone.iter().map(|(_, i)| i.as_str()).collect();
+    let kept_items: BTreeSet<&str> = records.parents.parents.iter().flat_map(|p| &p.parent_page_items).map(|i| i.item_id.as_str()).collect();
+    for b in &mut records.parents.page_bindings {
+        drop_where(&mut b.override_list, n, |o| item_ids.contains(o.parent_item_id()) && !kept_items.contains(o.parent_item_id()));
+        for o in &mut b.override_list {
+            if let StudioItemOverride::Replace { parent_item_id, replacement_layer_id } = o
+                && gone.contains(replacement_layer_id)
+            {
+                *o = StudioItemOverride::Suppress { parent_item_id: parent_item_id.clone() };
+                *n = n.saturating_add(1);
+            }
+        }
+    }
+    drop_where(&mut records.stories, n, |s| stories.contains(&s.story_id));
+    out.stories = stories.into_iter().collect();
+    out
 }
 
 impl Run<'_> {
@@ -509,30 +729,31 @@ impl Run<'_> {
         })
     }
 
-    /// `page.delete` ([STU-SHL-026] Delete Pages): a spread left with no page goes too. Refusals:
-    /// `unknown_page`, `last_page`, `page_not_empty` (module docs).
+    /// `page.delete` ([STU-SHL-026] Delete Pages, [STU-LAY-003] delete): the page with its content; a spread
+    /// left with no page goes too, with every layer it holds. Refusals: `unknown_page`, `last_page` (module docs).
     ///
-    /// Layout records (lane SMB-R60-FOLLOWUPS-1 item 6, lead ruling 2026-11-08): when the document holds
-    /// layout records that validate and name the page, the delete and the records updated for it commit
-    /// as ONE layout step (`Run::submit_layout`, one revision, one undo step labelled `delete_page <page>`),
-    /// so the entry still validates after save and reopen and undo restores the page and its records
-    /// together. The update: the page's parent-page binding (applied parent and overrides) is dropped; a
-    /// section that starts on the page starts on the next page instead, or is dropped when no page of its
-    /// own is left (the next page starts another section, or the page was the last). Refused typed,
-    /// changing nothing: `page_not_empty` for content on the page (a graphic frame placed on it, as for a
-    /// text frame; review c43f2d90 ruling 11: removing a page with its content is a next-lane candidate),
-    /// and `page_bound_by_layout_records`, a fail-closed guard, when the updated set still would not
-    /// validate against the document without the page, its op record detail naming the failing record
-    /// (`record`: the Folio diagnostic target with the record kind and id; `folio_code`): a delete never
-    /// leaves a stale entry. Records that need no
-    /// update and validate without the page, none stored, or an entry that is already stale or unreadable
-    /// keep the plain container step (`submit_layout` refuses a stale entry; the next layout edit reports it).
+    /// Content and layout records (lane SMB-LAYOUT-DELETE-CASCADE-1, after lane SMB-R60-FOLLOWUPS-1 item 6): the
+    /// text frames and graphic frames on the page (and, when the spread goes, the layers the spread holds) go
+    /// through [`cascade_layout_delete`]; the page's parent-page binding is dropped; a section that starts on the
+    /// page starts on the next page instead, or is dropped when no page of its own is left (the next page starts
+    /// another section, or the page was the last). The page, its content and the updated records commit as ONE
+    /// layout step (`Run::submit_layout`, one revision, one undo step labelled `delete_page <page>`), so the entry
+    /// still validates after save and reopen and undo restores the page, its content and its records together.
+    /// Detail `page_id`, `layout_records: "updated"` and the cascade's counts ([`LayoutCascade::detail`]). A page
+    /// with content in a document without layout records stores empty records with the step. Refused typed,
+    /// changing nothing: `layout_records_stale` (a page with content while the stored entry does not validate:
+    /// the records could not follow), and `page_bound_by_layout_records`, a fail-closed guard, when the updated
+    /// set still would not validate against the document without the page, its op record detail naming the
+    /// failing record (`record`: the Folio diagnostic target with the record kind and id; `folio_code`): a
+    /// delete never leaves a stale entry. An empty page whose records need no update, or none stored, keeps the
+    /// plain container step (as an empty page under a stale entry: `submit_layout` refuses a stale entry and
+    /// the next layout edit reports it).
     pub fn delete_page(&mut self, page: &str) -> bool {
         const OP: &str = "delete_page";
         const COMMAND: &str = "page.delete";
-        match self.layout_records_without_page(page) {
+        match self.page_delete_plan(page) {
             Ok(None) => self.container_edit(OP, COMMAND, |document, _, spreads| delete_page_edit(document, spreads, page)),
-            Ok(Some((document, records))) => {
+            Ok(Some((document, records, cascade))) => {
                 let depth = self.undo_stack.len();
                 if !self.submit_layout(OP, COMMAND, document, records) {
                     return false;
@@ -547,53 +768,86 @@ impl Run<'_> {
                 {
                     record["detail"]["page_id"] = json!(page);
                     record["detail"]["layout_records"] = json!("updated");
+                    if let Value::Object(counts) = cascade.detail() {
+                        for (k, v) in counts {
+                            record["detail"][k] = v;
+                        }
+                    }
                 }
                 true
             }
-            Err((code, detail)) => {
-                self.note_unrecordable(COMMAND);
-                let before = self.frames.count();
-                let _ = self.begin(COMMAND, None);
-                let ok = self.own_op(OP, before, Err(code));
-                if let Some(record) = self.ops.last_mut()
-                    && !detail.is_null()
-                {
-                    record["detail"] = detail;
-                }
-                ok
-            }
+            Err((code, detail)) => self.refuse_with_detail(OP, COMMAND, code, detail),
         }
     }
 
-    /// The document without `page` and the stored layout records updated for it (`delete_page` docs), or
-    /// `None` when the plain container step applies (no session, no records, records that do not validate
-    /// now, records that need no update and still validate without the page, or a delete the container step
-    /// refuses itself).
-    /// A refusal is its code and the op record's detail (`Value::Null` for none).
-    fn layout_records_without_page(&self, page: &str) -> Result<Option<(folio::StudioDocument, hsk_studio_session::LayoutRecords)>, (&'static str, Value)> {
+    /// One refusal record `op` of `command` with `detail` (`Value::Null` for none); always false.
+    fn refuse_with_detail(&mut self, op: &str, command: &'static str, code: &'static str, detail: Value) -> bool {
+        self.note_unrecordable(command);
+        let before = self.frames.count();
+        let _ = self.begin(command, None);
+        let ok = self.own_op(op, before, Err(code));
+        if let Some(record) = self.ops.last_mut()
+            && !detail.is_null()
+        {
+            record["detail"] = detail;
+        }
+        ok
+    }
+
+    /// The document without `page` and its content, the stored layout records updated for it and what the
+    /// cascade removed (`delete_page` docs), or `None` when the plain container step applies (no session, an
+    /// empty page with no records or records that need no update, a stale entry under an empty page, or a
+    /// delete the container step refuses itself). A refusal is its code and the op record's detail
+    /// (`Value::Null` for none).
+    #[allow(clippy::type_complexity)]
+    fn page_delete_plan(&self, page: &str) -> Result<Option<(folio::StudioDocument, LayoutRecords, LayoutCascade)>, (&'static str, Value)> {
         let cancel = self.cancel;
         let Some(session) = self.session.as_ref() else {
             return Ok(None);
         };
-        let Ok(Some(records)) = session.layout_records(cancel) else {
+        let document = session.snapshot().document();
+        let Some(at) = document.locate_page(page) else {
             return Ok(None);
         };
-        let document = session.snapshot().document();
-        let mut spreads = document.page_spreads.clone();
-        if delete_page_edit(document, &mut spreads, page).is_err() {
+        if rules::page_count(document) <= 1 {
+            return Ok(None);
+        }
+        let spread = (at.spread.pages.len() == 1).then(|| at.spread.page_spread_id.clone());
+        let readable = match session.layout_records(cancel) {
+            Ok(r) => Some(r),
+            Err(SessionError::Canceled) => return Err(("canceled", Value::Null)),
+            Err(_) => None,
+        };
+        let mut doomed: BTreeSet<String> = document
+            .layers
+            .iter()
+            .filter(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == page) || spread.as_ref().is_some_and(|s| matches!(&l.parent, Parent::Node(n) if n.node_id == *s)))
+            .map(|l| l.layer_id.clone())
+            .collect();
+        let records = match readable {
+            Some(r) => r,
+            None if doomed.is_empty() => return Ok(None),
+            None => return Err(("layout_records_stale", json!({"page_id": page}))),
+        };
+        if let Some(r) = &records {
+            doomed.extend(r.longdoc.graphic_frames.iter().filter(|g| g.page_id == page).map(|g| g.layer_id.clone()));
+        }
+        if doomed.is_empty() && records.is_none() {
             return Ok(None);
         }
         let mut successor = document.clone();
-        successor.page_spreads = spreads;
-        let mut updated = records.clone();
-        if let Some(g) = updated.longdoc.graphic_frames.iter().find(|g| g.page_id == page) {
-            return Err(("page_not_empty", json!({"page_id": page, "record": "graphic_frame", "layer_id": g.layer_id})));
+        let mut updated = records.clone().unwrap_or_else(|| LayoutRecords::new(&document.document_id));
+        let cascade = cascade_layout_delete(&mut successor, &mut updated, &doomed);
+        let mut spreads = successor.page_spreads.clone();
+        if delete_page_edit(&successor, &mut spreads, page).is_err() {
+            return Ok(None);
         }
+        successor.page_spreads = spreads;
         updated.parents.page_bindings.retain(|b| b.page_id != page);
         // The page after `page` in document order (sections number pages in that order).
         let order: Vec<&str> = document.page_spreads.iter().flat_map(|s| &s.pages).map(|p| p.page_id.as_str()).collect();
         let next = order.iter().position(|p| *p == page).and_then(|i| i.checked_add(1)).and_then(|i| order.get(i)).map(|p| (*p).to_owned());
-        let starts: BTreeSet<String> = records.longdoc.sections.iter().map(|s| s.page_start.clone()).collect();
+        let starts: BTreeSet<String> = updated.longdoc.sections.iter().map(|s| s.page_start.clone()).collect();
         updated.longdoc.sections.retain_mut(|s| {
             if s.page_start != page {
                 return true;
@@ -615,7 +869,64 @@ impl Run<'_> {
                 ("page_bound_by_layout_records", json!({"page_id": page, "record": d.target, "folio_code": format!("{:?}", d.code)}))
             }
         })?;
-        Ok(if updated == records { None } else { Some((successor, updated)) })
+        Ok(if cascade.layers.is_empty() && records.as_ref() == Some(&updated) { None } else { Some((successor, updated, cascade)) })
+    }
+
+    /// `layer.delete` of layers that layout records follow (lane SMB-LAYOUT-DELETE-CASCADE-1; the Viewer's
+    /// Layers > Delete of a text frame, a graphic frame or a group holding one): `layers` and every layer
+    /// under them go through [`cascade_layout_delete`] (a thread closes over a removed frame) and commit with
+    /// the updated layout records as ONE layout step under `command` (`Run::submit_layout`; with `entry`, the
+    /// session document entry `(token, bytes)` set in the same step, `Run::submit_layout_and_entry`), labelled
+    /// `op`; undo restores the layers, the thread and the records together. Detail: the step's and the
+    /// cascade's counts ([`LayoutCascade::detail`]). Refusals change nothing: `not_open`, `unknown_layer`,
+    /// `canceled`, `layout_records_stale` (the stored entry does not validate now), and
+    /// `layer_bound_by_layout_records`, fail closed, when the updated records would still not validate (detail
+    /// `record`, `folio_code`), then `submit_layout`'s codes. A document without layout records stores empty
+    /// records with the step.
+    pub fn delete_layout_layers(&mut self, op: &str, command: &'static str, layers: &[String], entry: Option<(&str, Vec<u8>)>) -> bool {
+        let cancel = self.cancel;
+        let planned = (|| {
+            let session = self.session.as_ref().ok_or(("not_open", Value::Null))?;
+            let document = session.snapshot().document();
+            if let Some(missing) = layers.iter().find(|id| !document.layers.iter().any(|l| l.layer_id == **id)) {
+                return Err(("unknown_layer", json!({"layer_id": missing})));
+            }
+            let records = match session.layout_records(cancel) {
+                Ok(r) => r.unwrap_or_else(|| LayoutRecords::new(&document.document_id)),
+                Err(SessionError::Canceled) => return Err(("canceled", Value::Null)),
+                Err(_) => return Err(("layout_records_stale", Value::Null)),
+            };
+            let mut successor = document.clone();
+            let mut updated = records;
+            let doomed: BTreeSet<String> = layers.iter().cloned().collect();
+            let cascade = cascade_layout_delete(&mut successor, &mut updated, &doomed);
+            updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| {
+                if d.code == folio::Code::Canceled {
+                    ("canceled", Value::Null)
+                } else {
+                    ("layer_bound_by_layout_records", json!({"record": d.target, "folio_code": format!("{:?}", d.code)}))
+                }
+            })?;
+            Ok((successor, updated, cascade))
+        })();
+        let (document, records, cascade) = match planned {
+            Ok(p) => p,
+            Err((code, detail)) => return self.refuse_with_detail(op, command, code, detail),
+        };
+        let ok = match entry {
+            Some((token, bytes)) => self.submit_layout_and_entry(op, command, document, records, token, bytes),
+            None => self.submit_layout(op, command, document, records),
+        };
+        if ok
+            && let Some(record) = self.ops.last_mut()
+            && record["detail"].is_object()
+            && let Value::Object(counts) = cascade.detail()
+        {
+            for (k, v) in counts {
+                record["detail"][k] = v;
+            }
+        }
+        ok
     }
 
     /// The options of the document's artboards in document order, the spec's defaults for one never
