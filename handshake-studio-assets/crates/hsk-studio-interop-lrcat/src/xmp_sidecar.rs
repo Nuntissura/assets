@@ -1346,6 +1346,30 @@ pub fn write_sidecar(original: Option<&[u8]>, update: &SidecarUpdate<'_>, limits
     apply_wants(&doc, &wants, defaults.as_ref(), update.recipe, limits)
 }
 
+/// Writes only the crop group of `recipe` (`CropTop`, `CropLeft`, `CropBottom`, `CropRight`, `CropAngle` and
+/// `HasCrop`) into `original` (or a fresh packet when `None`) through the same span edit as [`write_sidecar`]
+/// (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, lead ruling 2026-11-13: the develop DNG export's crop, so this codec stays
+/// the only `crs:` writer). Every other byte, every other `crs:` key and any user content included, is kept. A crop
+/// key the packet lacks stays absent while the recipe's value equals what a reader infers for it, so a full crop over
+/// a packet without crop keys returns the input bytes; a full crop over a packet that holds a crop writes `HasCrop`
+/// `False` and the full-frame values. Refusals are typed and write nothing: the packet's own (`xmp_*`),
+/// `crs_recipe_invalid`, `crs_value_not_finite`.
+pub fn write_sidecar_crop(original: Option<&[u8]>, recipe: &DevelopRecipe, limits: &XmpLimits) -> Result<Vec<u8>, XmpError> {
+    let doc = XmpSidecar::parse(original.unwrap_or(TEMPLATE.as_bytes()), limits)?;
+    recipe.validate().map_err(|_| syntax("crs_recipe_invalid"))?;
+    let mut wants: Vec<(&'static str, String, Want)> = Vec::new();
+    for k in all_keys().filter(|k| k.gate == Gate::Crop) {
+        let v = (k.get)(recipe);
+        if !v.is_finite() {
+            return Err(syntax("crs_value_not_finite"));
+        }
+        wants.push((NS_CRS, k.key.to_owned(), Want::Scalar(Some(fmt_num(v, k.fmt)))));
+    }
+    wants.push((NS_CRS, "HasCrop".into(), Want::Scalar(Some(fmt_bool(!crop_identity(&recipe.crop)).into()))));
+    let defaults = defaults_of(recipe);
+    apply_wants(&doc, &wants, Some(&defaults), Some(recipe), limits)
+}
+
 fn same_scalar(current: &str, want: &str) -> bool {
     if current == want {
         return true;
@@ -1617,4 +1641,82 @@ pub fn write_sidecar_via_port<P: CkcCatalogPort + ?Sized>(
         placement,
     };
     port.write_xmp_sidecar_bytes(actor, &request).map(Some).map_err(SidecarSyncError::Port)
+}
+
+#[cfg(test)]
+mod crop_writer_tests {
+    //! [`write_sidecar_crop`] (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, lead ruling 2026-11-13 on review F4).
+    use super::*;
+    use hsk_studio_accord::DomainId;
+    use hsk_studio_develop::ProfileBinding;
+
+    fn recipe() -> DevelopRecipe {
+        let profile = ProfileBinding { profile_id: DomainId::parse("SCPF-019abcde-0000-7000-8000-000000000001").expect("id"), sha256: [7; 32] };
+        DevelopRecipe::native([1.0; 3], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], profile)
+    }
+
+    fn cropped() -> DevelopRecipe {
+        let mut r = recipe();
+        r.crop = NormalizedCrop { left: 0.25, top: 0.2, right: 0.75, bottom: 0.8, angle: 3.0, ..NormalizedCrop::full() };
+        r
+    }
+
+    /// A packet with user content, foreign keys and develop keys the crop writer must not touch.
+    const PACKET: &str = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <!-- a user comment -->\n  <rdf:Description rdf:about=\"\" xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\" xmlns:keep=\"urn:example:keep\" keep:Note=\"untouched\" crs:Exposure2012=\"+1.00\" crs:WhiteBalance=\"Custom\" crs:Temperature=\"4800\" crs:Tint=\"+7\" crs:Sharpness=\"lots\">\n   <crs:ToneCurvePV2012><rdf:Seq><rdf:li>0, 0</rdf:li><rdf:li>255, 255</rdf:li></rdf:Seq></crs:ToneCurvePV2012>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>\n";
+
+    /// The packet with every crop attribute the writer inserted removed (a newline, three spaces and
+    /// `crs:<key>="..."`), so the rest can be compared byte for byte.
+    fn without_crop_keys(text: &str) -> String {
+        let mut out = text.to_owned();
+        for key in ["CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle", "HasCrop"] {
+            let pattern = format!("\n   crs:{key}=\"");
+            while let Some(at) = out.find(&pattern) {
+                let value_start = at.saturating_add(pattern.len());
+                let close = out[value_start..].find('"').expect("closing quote");
+                out.replace_range(at..value_start.saturating_add(close).saturating_add(1), "");
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn only_the_crop_keys_change_and_everything_else_stays_byte_for_byte() {
+        let limits = XmpLimits::default();
+        let out = write_sidecar_crop(Some(PACKET.as_bytes()), &cropped(), &limits).unwrap();
+        let text = String::from_utf8(out.clone()).unwrap();
+        for (k, v) in [("CropTop", "0.200000"), ("CropLeft", "0.250000"), ("CropBottom", "0.800000"), ("CropRight", "0.750000"), ("CropAngle", "+3.00"), ("HasCrop", "True")] {
+            assert!(text.contains(&format!("crs:{k}=\"{v}\"")), "{k}={v} in {text}");
+        }
+        // Every other byte (user comment, foreign key, unmanaged and out-of-range crs: keys, white balance,
+        // the tone curve structure, exposure) is the input's.
+        assert_eq!(without_crop_keys(&text), PACKET, "only crop keys were added");
+        // Round trip through this codec's reader: the crop reads back, no crop loss.
+        let read = read_sidecar(&out, &recipe(), &limits).unwrap();
+        let c = read.recipe.crop;
+        for (got, want) in [(c.left, 0.25), (c.top, 0.2), (c.right, 0.75), (c.bottom, 0.8), (c.angle, 3.0)] {
+            assert!((got - want).abs() <= 1e-6, "{got} vs {want}");
+        }
+        assert!(["CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle"].iter().all(|k| read.applied.contains(k)), "{:?}", read.applied);
+        assert!(!read.losses.iter().any(|(k, _)| k.starts_with("Crop")), "{:?}", read.losses);
+    }
+
+    #[test]
+    fn a_full_crop_leaves_a_packet_without_crop_keys_untouched_and_clears_a_stale_crop() {
+        let limits = XmpLimits::default();
+        // No crop keys and a full crop: the input bytes.
+        assert_eq!(write_sidecar_crop(Some(PACKET.as_bytes()), &recipe(), &limits).unwrap(), PACKET.as_bytes());
+        // A stale crop in the packet, the crop cleared: HasCrop False and the full frame, the rest kept.
+        let stale = write_sidecar_crop(Some(PACKET.as_bytes()), &cropped(), &limits).unwrap();
+        let cleared = write_sidecar_crop(Some(&stale), &recipe(), &limits).unwrap();
+        let text = String::from_utf8(cleared.clone()).unwrap();
+        assert!(text.contains("crs:HasCrop=\"False\"") && text.contains("crs:CropLeft=\"0.000000\"") && text.contains("crs:CropRight=\"1.000000\""), "{text}");
+        assert_eq!(without_crop_keys(&text), PACKET);
+        let read = read_sidecar(&cleared, &cropped(), &limits).unwrap();
+        assert!(read.losses.iter().any(|(k, code)| k == "CropLeft" && *code == "crs_crop_disabled"), "a disabled crop reads as such: {:?}", read.losses);
+        // A fresh packet takes the crop keys only.
+        let fresh = String::from_utf8(write_sidecar_crop(None, &cropped(), &limits).unwrap()).unwrap();
+        assert!(fresh.contains("crs:HasCrop=\"True\"") && !fresh.contains("Exposure2012"), "{fresh}");
+        // Typed refusals.
+        assert!(write_sidecar_crop(Some(b"not a packet"), &cropped(), &limits).is_err());
+    }
 }

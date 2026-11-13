@@ -46,7 +46,7 @@ pub use xmp::{
 };
 pub use xmp_sidecar::{
     CRS_FLAGS, CRS_KEYS, CrsFlag, CrsKey, LibrarySidecar, NS_CRS, SidecarRead, SidecarSyncError, SidecarUpdate,
-    XmpSidecar, read_sidecar, read_sidecar_via_port, write_sidecar, write_sidecar_via_port,
+    XmpSidecar, read_sidecar, read_sidecar_via_port, write_sidecar, write_sidecar_crop, write_sidecar_via_port,
 };
 
 use hsk_studio_accord::CancellationToken;

@@ -896,23 +896,32 @@ pub(super) fn crop_json(c: &NormalizedCrop) -> Value {
     json!({"left": c.left, "top": c.top, "right": c.right, "bottom": c.bottom, "angle": c.angle, "flip_horizontal": c.flip_horizontal, "flip_vertical": c.flip_vertical})
 }
 
-/// The XMP packet a develop DNG export embeds (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, STU-RAW-015; lead ruling
-/// 2026-11-13: one codec owns the crs: keys, no second writer here). Without a develop crop: the caller's packet
-/// as [`Viewer::set_develop_dng_xmp`] set it, byte for byte (or none). With a crop: the develop recipe written by
-/// the lrcat XMP codec (`write_sidecar`) into the caller's packet, or into a fresh one: the crop keys (`CropTop`,
-/// `CropLeft`, `CropBottom`, `CropRight`, `CropAngle`, `HasCrop`) and every other managed key whose value differs
-/// from the recipe's; every other byte of the caller's packet is kept (the codec's span edit). A packet over
-/// develop's `MAX_XMP_BYTES` is passed on unchanged, so develop's own `limit_xmp_bytes` refuses it as before; one
-/// the codec cannot read refuses `xmp_invalid` naming the codec's code. The flips have no crs: key (the export
-/// report notes `develop_crop_flip_not_in_dng_xmp`).
-fn dng_xmp_with_crop(packet: Option<&[u8]>, cropped: bool, recipe: &hsk_studio_develop::DevelopRecipe) -> Result<Option<Vec<u8>>, Refusal> {
-    if !cropped || packet.is_some_and(|p| p.len() > hsk_studio_develop::dng_write::MAX_XMP_BYTES) {
-        return Ok(packet.map(<[u8]>::to_vec));
+/// The XMP packet a develop DNG export embeds (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, STU-RAW-015; lead rulings
+/// 2026-11-13: one codec owns the crs: keys, no second writer here; review F4: the crop keys only). The develop crop
+/// (`CropTop`, `CropLeft`, `CropBottom`, `CropRight`, `CropAngle`, `HasCrop`) is merged by the lrcat XMP codec
+/// (`write_sidecar_crop`) into the caller's packet as [`Viewer::set_develop_dng_xmp`] set it, or into a fresh packet
+/// when the develop crop is set and the caller gave none; every other byte of the caller's packet, every other crs:
+/// key and any user content, is kept. A full crop leaves a packet without crop keys byte for byte and rewrites a
+/// stale caller crop to `HasCrop` `False`; with no packet and no crop the DNG carries none, as before. The second
+/// value says what happened to the crop keys: `written`, `unchanged` or `absent` (no packet). A packet over
+/// develop's `MAX_XMP_BYTES` is passed on unchanged, so develop's own `limit_xmp_bytes` refuses it as before; a
+/// packet the codec cannot read refuses `xmp_invalid` naming the codec's code; a recipe the codec refuses keeps the
+/// codec's code (`crs_recipe_invalid`, `crs_value_not_finite`). The flips have no crs: key (the export report notes
+/// `develop_crop_flip_not_in_dng_xmp`). Studio's own DNG import does not read the crs: keys back (next-lane
+/// candidate).
+fn dng_xmp_with_crop(packet: Option<&[u8]>, cropped: bool, recipe: &hsk_studio_develop::DevelopRecipe) -> Result<(Option<Vec<u8>>, &'static str), Refusal> {
+    if packet.is_none() && !cropped {
+        return Ok((None, "absent"));
     }
-    let update = hsk_studio_interop_lrcat::SidecarUpdate { recipe: Some(recipe), library: None };
-    hsk_studio_interop_lrcat::write_sidecar(packet, &update, &hsk_studio_interop_lrcat::XmpLimits::default())
-        .map(Some)
-        .map_err(|e| Refusal::new("xmp_invalid", format!("the crs: codec refused the packet: {}", e.code())))
+    if packet.is_some_and(|p| p.len() > hsk_studio_develop::dng_write::MAX_XMP_BYTES) {
+        return Ok((packet.map(<[u8]>::to_vec), "unchanged"));
+    }
+    let merged = hsk_studio_interop_lrcat::write_sidecar_crop(packet, recipe, &hsk_studio_interop_lrcat::XmpLimits::default()).map_err(|e| match e.code() {
+        code @ ("crs_recipe_invalid" | "crs_value_not_finite") => Refusal::new(code, "the develop recipe's crop"),
+        code => Refusal::new("xmp_invalid", format!("the crs: codec refused the packet: {code}")),
+    })?;
+    let state = if packet == Some(merged.as_slice()) { "unchanged" } else { "written" };
+    Ok((Some(merged), state))
 }
 
 /// Default source of the panel's "Add linear gradient" button (normalised image coordinates).
@@ -1519,7 +1528,7 @@ impl Viewer {
                 unique_camera_model: None,
             };
             let exif = exif_subset(&d.original);
-            let xmp = dng_xmp_with_crop(d.dng_xmp.as_deref(), crop.is_some(), &recipe)?;
+            let (xmp, xmp_crop) = dng_xmp_with_crop(d.dng_xmp.as_deref(), crop.is_some(), &recipe)?;
             let (export, receipt) = develop_to_dng(&raw, &recipe, revision, &settings, xmp.as_deref(), Some(&exif), SRGB_V4_ICC, d.threads, self.cancel)
                 .map_err(|e| Refusal::new(e.code(), if e.detail().is_empty() { format!("{e:?}") } else { e.detail().to_owned() }))?;
             let flipped = recipe.crop.flip_horizontal || recipe.crop.flip_vertical;
@@ -1529,7 +1538,7 @@ impl Viewer {
                 "bytes": export.bytes.len(), "file_sha256": hex(&export.dng_sha256), "samples_sha256": hex(&export.samples_sha256),
                 "bits_per_sample": export.bits_per_sample, "compression": format!("{:?}", export.compression).to_lowercase(),
                 "raw_payload_bytes": export.raw_payload_bytes, "preview": export.preview.map(|(w, h)| json!({"width": w, "height": h})),
-                "xmp_bytes": export.xmp_bytes, "exif_fields": export.exif_fields, "dropped": export.dropped,
+                "xmp_bytes": export.xmp_bytes, "xmp_crop_keys": xmp_crop, "exif_fields": export.exif_fields, "dropped": export.dropped,
                 "colour_loss": export.colour_loss, "dng_version": "1.4.0.0",
                 "route": receipt.as_ref().map(|r| r.route), "math_token": receipt.as_ref().map(|r| r.math_token),
                 "threads": d.threads.get(), "revision": revision, "values_known": known,
