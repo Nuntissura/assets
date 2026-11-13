@@ -47,9 +47,15 @@ pub(super) fn stack(doc: &StudioDocument, group: Option<&str>) -> Vec<String> {
     }
 }
 
-/// A fresh `SLYR` id: the document id's time fields, a fixed version/variant block and a 48-bit counter whose
-/// upper 24 bits are the document revision the id is minted at and whose lower 24 bits are the first value from
-/// `salt` the document does not hold (never an id the document holds).
+/// Refusal code of a layer id mint that would leave the 48-bit counter ([`try_mint_layer_id`]).
+pub(super) const LAYER_ID_SPACE_EXHAUSTED: &str = "layer_id_space_exhausted";
+/// One past the largest value each 24-bit half of the counter holds.
+const ID_HALF: u64 = 0x100_0000;
+
+/// A fresh `SLYR` id: the document id's time fields, a fixed version/variant block and a 48-bit counter
+/// (`revision * 2^24 + low`, the id's last group of 12 hex digits) whose upper 24 bits are the document revision
+/// the id is minted at and whose lower 24 bits are the first value from `salt` up the document does not hold
+/// (never an id the document holds).
 ///
 /// Lane SMB-PS-FILTER-ADJUST-COMMANDS-1 (lead ruling 2026-11-13): an id is never minted again, so a layer
 /// created after a delete never takes the deleted layer's id and never inherits a record other entries still
@@ -58,18 +64,41 @@ pub(super) fn stack(doc: &StudioDocument, group: Option<&str>) -> Vec<String> {
 /// chronicle commit, which moves the revision past the one its id was minted at; revisions only grow (an undo
 /// is a new revision) and a saved document reopens at its revision, so every later mint carries a higher
 /// revision. Ids of the earlier scheme have revision bits 0 and stay distinct from every mint at revision 1 or
-/// later. The revision bits saturate at 2^24 - 1 (16.7 million commits) and `salt` is taken modulo 2^24.
-pub(super) fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
+/// later. Nothing wraps or is truncated: a revision of 2^24 or more, a `salt` of 2^24 or more, or lower bits
+/// that run out refuse [`LAYER_ID_SPACE_EXHAUSTED`]. Every id is a string end to end (Folio, the package,
+/// IDML, PSD loss notes, export reports): no path narrows it to a number.
+pub(super) fn try_mint_layer_id(doc: &StudioDocument, salt: u64) -> Result<String, &'static str> {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
-    let mut n = doc.revision.min(0xFF_FFFF).saturating_mul(0x100_0000).saturating_add(salt & 0xFF_FFFF);
+    if doc.revision >= ID_HALF {
+        return Err(LAYER_ID_SPACE_EXHAUSTED);
+    }
+    let base = doc.revision.checked_mul(ID_HALF).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
+    let mut at = salt;
     loop {
+        if at >= ID_HALF {
+            return Err(LAYER_ID_SPACE_EXHAUSTED);
+        }
+        let n = base.checked_add(at).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
         let id = format!("SLYR-{high}-{low}-7ede-9000-{n:012x}");
         if !doc.layers.iter().any(|l| l.layer_id == id) {
-            return id;
+            return Ok(id);
         }
-        n = n.wrapping_add(1);
+        at = at.checked_add(1).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
     }
+}
+
+/// [`try_mint_layer_id`] for the callers that take an id unconditionally (text, vector, design). When the space
+/// is exhausted it returns `layer_id_space_exhausted-<salt>`, which is not an `SLYR` id, so the commit that would
+/// create the layer refuses (Folio `InvalidId` naming it): never a wrapped or truncated id, and distinct per
+/// `salt`, so a caller looping past ids it already took ends. This module's own creators refuse typed first.
+pub(super) fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
+    try_mint_layer_id(doc, salt).unwrap_or_else(|code| format!("{code}-{salt}"))
+}
+
+/// [`try_mint_layer_id`] as this module's refusal text (`layer_id_space_exhausted: ...`).
+fn mint_or_refuse(doc: &StudioDocument, salt: u64) -> Result<String, String> {
+    try_mint_layer_id(doc, salt).map_err(|code| format!("{code}: no fresh layer id at revision {} (salt {salt})", doc.revision))
 }
 
 /// The graph operation of a new leaf (image source) or group (ordered composite).
@@ -121,7 +150,7 @@ impl Viewer {
     pub fn new_raster_layer(&mut self, name: &str) -> Result<String, String> {
         let (parent, place) = self.insertion_point()?;
         let doc = self.doc()?;
-        let id = mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
+        let id = mint_or_refuse(doc, u64::try_from(doc.layers.len()).unwrap_or(0))?;
         let layer = new_layer(&id, name, &parent, "raster", json!({"payload_kind": "raster", "tiles": []}))?;
         let write = PlacementWrite { layer_id: id.clone(), to: Some(place), create: Some((layer, operation_for(&id, false)?)) };
         self.structure("new_layer", vec![write], format!("new raster layer {id}"))?;
@@ -153,10 +182,10 @@ impl Viewer {
             return Err(format!("duplicate: {source} has an unsupported payload (read-only)"));
         }
         // Distinct from every id the document holds and from the copies minted so far.
-        let mut id = mint_layer_id(doc, *salt);
+        let mut id = mint_or_refuse(doc, *salt)?;
         while writes.iter().any(|w| w.layer_id == id) {
             *salt = salt.saturating_add(1);
-            id = mint_layer_id(doc, *salt);
+            id = mint_or_refuse(doc, *salt)?;
         }
         *salt = salt.saturating_add(1);
         let mut value = serde_json::to_value(layer).map_err(|e| format!("duplicate: {e}"))?;
@@ -343,7 +372,7 @@ impl Viewer {
         placed.sort_by_key(|(_, (_, i))| *i);
         let top = placed.last().map(|(id, _)| id.clone()).ok_or("group: no layers")?;
         let doc = self.doc()?;
-        let gid = mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
+        let gid = mint_or_refuse(doc, u64::try_from(doc.layers.len()).unwrap_or(0))?;
         let group = new_layer(&gid, name, &parent, "group", json!({"payload_kind": "group"}))?;
         // The group enters directly above the topmost member; the members then move in
         // bottom-first, each to the top of the group (their order is kept).
@@ -377,5 +406,103 @@ impl Viewer {
             self.selected = children.last().cloned();
         }
         Ok(revision)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The layer id mint of the lead ruling 2026-11-13 (lane SMB-PS-FILTER-ADJUST-COMMANDS-1): conditions (1) no
+    //! silent wrap, (2) the combined value is a valid id, (3) one revision mints distinct ids, (6) ids of the
+    //! earlier scheme stay valid and distinct. (4) and (5) run through the viewer (harness tests/viewer_raster_effects.rs).
+    use super::*;
+
+    const DOC: &str = "SDOC-019abcde-0000-7000-8000-000000000001";
+
+    fn old_id(n: u64) -> String {
+        format!("SLYR-019abcde-0000-7ede-9000-{n:012x}")
+    }
+
+    fn document(revision: u64, ids: &[String]) -> StudioDocument {
+        let layers: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({"schema_id":"hsk.studio.layer@1","layer_id":id,"name":id,"parent":null,"kind":"group","payload":{"payload_kind":"group"},"visible":true}))
+            .collect();
+        serde_json::from_value(json!({
+            "schema_id":"hsk.studio.document@1","document_id":DOC,"revision":revision,"geometry_unit":"px",
+            "colour_mode":3,"bits_per_channel":8,"working_space_rgb":null,"working_space_cmyk":null,"working_space_gray":null,
+            "working_space_spot":null,"blending_space":null,"artboards":[],"page_spreads":[],"layers":layers,
+            "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[],"edges":[],"outputs":[]}
+        }))
+        .expect("document shape")
+    }
+
+    fn counter(id: &str) -> u64 {
+        u64::from_str_radix(id.rsplit('-').next().unwrap(), 16).unwrap()
+    }
+
+    #[test]
+    fn the_counter_carries_the_revision_and_the_largest_values_are_valid_ids() {
+        let id = try_mint_layer_id(&document(5, &[]), 3).unwrap();
+        assert_eq!(counter(&id), 5 * ID_HALF + 3, "{id}");
+        // (2) the largest combined value fills the 12 hex digits and is a valid SLYR id.
+        let top = try_mint_layer_id(&document(ID_HALF - 1, &[]), ID_HALF - 1).unwrap();
+        assert_eq!(counter(&top), (1 << 48) - 1, "{top}");
+        assert!(top.ends_with("-ffffffffffff"), "{top}");
+        let parsed = hsk_studio_accord::DomainId::parse(&top).expect("a valid SLYR id");
+        assert_eq!(parsed.prefix(), "SLYR");
+    }
+
+    #[test]
+    fn an_exhausted_space_refuses_typed_and_never_wraps() {
+        // (1) A revision of 2^24 or more refuses; no id of another revision is returned.
+        assert_eq!(try_mint_layer_id(&document(ID_HALF, &[]), 0), Err(LAYER_ID_SPACE_EXHAUSTED));
+        assert_eq!(try_mint_layer_id(&document(u64::MAX, &[]), 0), Err(LAYER_ID_SPACE_EXHAUSTED));
+        // A salt of 2^24 or more refuses (never taken modulo 2^24).
+        assert_eq!(try_mint_layer_id(&document(1, &[]), ID_HALF), Err(LAYER_ID_SPACE_EXHAUSTED));
+        // Lower bits that run out refuse instead of carrying into the next revision's ids.
+        let last = format!("SLYR-019abcde-0000-7ede-9000-{:012x}", 2 * ID_HALF + (ID_HALF - 1));
+        assert_eq!(try_mint_layer_id(&document(2, &[last]), ID_HALF - 1), Err(LAYER_ID_SPACE_EXHAUSTED));
+        // The unconditional form returns a non-SLYR text a commit refuses, distinct per salt.
+        let a = mint_layer_id(&document(ID_HALF, &[]), 7);
+        let b = mint_layer_id(&document(ID_HALF, &[]), 8);
+        assert_eq!(a, "layer_id_space_exhausted-7");
+        assert_ne!(a, b);
+        assert!(hsk_studio_accord::DomainId::parse(&a).is_err());
+        // This module's creators (new layer, duplicate, group) refuse with the code as the leading token.
+        let refusal = mint_or_refuse(&document(ID_HALF, &[]), 0).unwrap_err();
+        assert_eq!(super::super::commands::leading_code(&refusal).as_deref(), Some(LAYER_ID_SPACE_EXHAUSTED), "{refusal}");
+    }
+
+    #[test]
+    fn one_revision_mints_distinct_ids_from_successive_salts() {
+        // (3) Callers minting several layers in one transaction pass growing salts (or skip ids they hold).
+        let doc = document(9, &[]);
+        let ids: Vec<String> = (0..4).map(|s| try_mint_layer_id(&doc, s).unwrap()).collect();
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 4, "{ids:?}");
+        assert!(ids.iter().all(|id| counter(id) >> 24 == 9), "{ids:?}");
+        // An id the document holds is skipped.
+        let held = document(9, &[ids[0].clone()]);
+        assert_eq!(try_mint_layer_id(&held, 0).unwrap(), ids[1]);
+    }
+
+    #[test]
+    fn ids_of_the_earlier_scheme_stay_valid_and_distinct() {
+        // (6) A package of the earlier scheme: counters 0..=5 (revision bits 0), saved at revision 3.
+        let old: Vec<String> = (0..6).map(old_id).collect();
+        for id in &old {
+            assert!(hsk_studio_accord::DomainId::parse(id).is_ok(), "{id}");
+        }
+        let doc = document(3, &old);
+        for salt in 0..8 {
+            let id = try_mint_layer_id(&doc, salt).unwrap();
+            assert!(!old.contains(&id), "{id} reuses an id of the earlier scheme");
+            assert_eq!(counter(&id) >> 24, 3);
+        }
+        // Even at revision 0 the document's own ids are never minted.
+        let fresh = try_mint_layer_id(&document(0, &old), 0).unwrap();
+        assert!(!old.contains(&fresh), "{fresh}");
     }
 }

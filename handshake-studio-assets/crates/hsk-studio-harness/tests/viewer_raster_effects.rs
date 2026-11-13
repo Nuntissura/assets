@@ -379,6 +379,81 @@ fn a_new_layer_after_a_delete_gets_a_fresh_id_and_no_inherited_smart_filters() {
     assert_eq!(filters(&mut r, &fresh)["filters"], json!([]), "the new layer inherits no smart filter stack after reopen");
 }
 
+fn layer_ids(v: &Viewer) -> Vec<String> {
+    v.run().snapshot().unwrap().document().layers.iter().map(|l| l.layer_id.clone()).collect()
+}
+
+/// The layer ids the `raster_records` entry keys (rows of deleted layers included).
+fn record_ids(v: &Viewer) -> Vec<String> {
+    let Some(bytes) = v.run().document_entry("raster_records") else { return Vec::new() };
+    let entry: Value = serde_json::from_slice(bytes).unwrap();
+    entry["records"]["layers"].as_array().map(|a| a.iter().filter_map(|r| r["layer_id"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+/// The 48-bit counter of a minted id (its last group): revision in the upper 24 bits.
+fn counter(id: &str) -> u64 {
+    u64::from_str_radix(id.rsplit('-').next().unwrap(), 16).unwrap()
+}
+
+/// Lead ruling 2026-11-13 on the layer id mint, conditions (2) to (5) through the viewer (conditions (1), (2) at the
+/// largest value, (3) and (6) are harness-view unit tests in `view::layers`): one command creating two layers mints
+/// two distinct ids of one revision; a package saved at an earlier revision, reopened, mints no id it holds as a
+/// layer or as a `raster_records` row; undo then create mints a fresh id; and an id carrying revision bits survives
+/// Folio persistence and reaches an export that names it (`export.run` through node settings keyed by it).
+#[test]
+fn minted_layer_ids_are_never_minted_twice_and_survive_save_reopen_and_export() {
+    let scratch = Scratch::new("raster-effects-mint");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let art = layer(&v, "art");
+    // (3) Duplicating a group copies the group and `art` in one step: two ids of one revision.
+    let group = v.group_layers(std::slice::from_ref(&art), "g").unwrap();
+    let before = layer_ids(&v);
+    let steps = undo(&v).len();
+    let copy = v.duplicate_layer(&group).unwrap();
+    assert_eq!(undo(&v).len(), steps + 1, "one step");
+    let added: Vec<String> = layer_ids(&v).into_iter().filter(|id| !before.contains(id)).collect();
+    assert_eq!(added.len(), 2, "{added:?}");
+    assert!(added.contains(&copy) && added[0] != added[1], "{added:?}");
+    assert_eq!(counter(&added[0]) >> 24, counter(&added[1]) >> 24, "one revision: {added:?}");
+    assert!(counter(&copy) >> 24 > 0, "{copy} carries revision bits");
+
+    // A deleted layer whose raster_records row stays in the entry, and node export settings keyed by the copy.
+    let gone = v.new_raster_layer("gone").unwrap();
+    ok(&mut v, "effect.apply", json!({"layer": gone, "filter_kind": "sharpen"}));
+    v.delete_layer(&gone).unwrap();
+    assert!(record_ids(&v).contains(&gone), "the row of the deleted layer stays in the entry");
+    let steps = undo(&v).len();
+    row(&mut v, "export.set_settings", json!({"node": copy, "settings": [{"format": "PNG"}]})).unwrap();
+    assert_eq!(undo(&v).len(), steps + 1);
+    let early = scratch.0.join("early.handshake");
+    v.save(&early, false).unwrap();
+    let saved_ids: Vec<String> = layer_ids(&v).into_iter().chain(record_ids(&v)).collect();
+
+    // (4) Undo, then create: the undone layer's id is not minted again.
+    let a = v.new_raster_layer("a").unwrap();
+    v.undo().unwrap();
+    assert!(!layer_ids(&v).contains(&a));
+    let b = v.new_raster_layer("b").unwrap();
+    assert_ne!(a, b, "undo then create mints a fresh id");
+
+    // (5) The package saved at the earlier revision: a layer created after reopening collides with no id it holds.
+    let mut r = open(&early);
+    let fresh = r.new_raster_layer("fresh").unwrap();
+    assert!(!saved_ids.contains(&fresh), "{fresh} is held by the package: {saved_ids:?}");
+    assert_eq!(filters(&mut r, &fresh)["filters"], json!([]));
+    // (2) The id with revision bits is the same string after reopen and reaches the export that names it.
+    assert!(layer_ids(&r).contains(&copy));
+    let out = scratch.0.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let ran = row(&mut r, "export.run", json!({"dir": out.to_string_lossy(), "nodes": [copy]})).unwrap_or_else(|e| panic!("export.run refused: {} {}", e.code, e.detail));
+    let files = ran["files"].as_array().unwrap_or_else(|| panic!("{ran}"));
+    assert_eq!(files.len(), 1, "{ran}");
+    assert_eq!(files[0]["node"], json!(copy), "{ran}");
+    assert!(Path::new(files[0]["path"].as_str().unwrap()).is_file());
+}
+
 // ---- the rows through the process (`command --stdin`) -----------------------------------------------------------
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/demo.handshake");
