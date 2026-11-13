@@ -10,16 +10,24 @@ use hsk_studio_observe::{
     ResourceDisposition, ShapingBudget, ShapingCounts, ShapingDetail, ShapingDisposition, ShapingRead, SinkPort, TextDisposition,
 };
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const FIXTURE: &[u8] = include_bytes!("../../hsk-studio-harness/tests/fixtures/demo.handshake");
 const RESOURCE: &str = "SDOC-019abcde-0000-7000-8000-00000000beef";
 const DECOY: &str = "PRIVATE-PROJECT-DECOY-zqxj-WOLF";
 const CHILD_ENV: &str = "HSK_DIAG_SINK_TEST_CHILD";
+/// Milliseconds a child waits before each of its later steps: a child that is slow but behaves correctly.
+const CHILD_STEP_ENV: &str = "HSK_DIAG_SINK_TEST_STEP_MS";
+/// The line a child writes on stderr at each of its steps, with the wall clock, so the parent can tell where its time
+/// went: `entered`, `lines_written`, `ending` (the abort, overflow, panic or end of run comes next).
+const PHASE_MARK: &str = "hsk-diag-child phase=";
+/// The guard of the process tests' children.
+const CHILD_DEADLINE: Duration = Duration::from_secs(60);
 
 struct Scratch(PathBuf);
 impl Scratch {
@@ -433,14 +441,50 @@ fn overflow(depth: u64) -> u64 {
     if depth == u64::MAX { pad[0] } else { overflow(depth + 1).wrapping_add(pad[63]) }
 }
 
+fn unix_us() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_micros()).ok()).unwrap_or(0)
+}
+
+#[cfg(windows)]
+mod error_mode {
+    // SAFETY: GetErrorMode only reads this process's error mode; it takes no pointer.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub safe fn GetErrorMode() -> u32;
+    }
+}
+/// This process's error mode (errhandlingapi.h), on Windows: whether its death is handed to Windows Error Reporting.
+fn error_mode() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        Some(error_mode::GetErrorMode())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// One step of a child, on stderr.
+fn mark(phase: &str) {
+    let mode = error_mode().map_or(String::new(), |m| format!(" error_mode=0x{m:x}"));
+    eprintln!("{PHASE_MARK}{phase} unix_us={}{mode}", unix_us());
+}
+
 /// Not a test of its own: the body of a child process, chosen by the variable. Without it this does nothing.
 #[test]
 fn child_entry() {
     let Ok(spec) = std::env::var(CHILD_ENV) else { return };
+    mark("entered");
+    let step = Duration::from_millis(std::env::var(CHILD_STEP_ENV).ok().and_then(|ms| ms.parse().ok()).unwrap_or(0));
     let (mode, dir) = spec.split_once(':').unwrap();
     let sink = hsk_studio_harness_core::diag_sink::start_process(Some(PathBuf::from(dir)));
     sink.record_run_start("edit");
     sink.record_op(&OpLine { op: "open", n: 1, ok: true, revision: Some(9), frames: 1, error: None, correlation: Some(1000), command_id: None });
+    std::thread::sleep(step);
+    mark("lines_written");
+    std::thread::sleep(step);
+    mark("ending");
     match mode {
         "clean" => sink.record_run_end("edit", 0),
         "panic" => panic!("{CHILD_DECOY_PANIC}"),
@@ -456,12 +500,44 @@ fn child_entry() {
 struct Child {
     code: Option<i32>,
     stderr: String,
+    /// From spawn to the exit seen.
+    ran_for: Duration,
 }
+
+/// The steps a child reported on stderr, in order: (phase, wall clock in microseconds).
+fn phases(stderr: &str) -> Vec<(&str, u64)> {
+    fn step(rest: &str) -> Option<(&str, u64)> {
+        let mut fields = rest.split_whitespace();
+        let phase = fields.next()?;
+        Some((phase, fields.find_map(|f| f.strip_prefix("unix_us="))?.parse().ok()?))
+    }
+    stderr.lines().filter_map(|line| line.strip_prefix(PHASE_MARK)).filter_map(step).collect()
+}
+/// The error mode a child reported at its first step.
+fn reported_error_mode(stderr: &str) -> Option<&str> {
+    stderr.lines().filter_map(|line| line.strip_prefix(PHASE_MARK)).find_map(|rest| rest.split_whitespace().find_map(|f| f.strip_prefix("error_mode=")))
+}
+/// Where a child's time went, from its spawn: each step it reported, then how it ended (`end` at `end_us`).
+fn timeline(mode: &str, pid: u32, spawned_us: u64, stderr: &str, end: &str, end_us: u64) -> String {
+    let at = |us: u64| us.saturating_sub(spawned_us) / 1000;
+    let mut out = format!("child timeline mode={mode} pid={pid} spawn=+0ms");
+    for (phase, us) in phases(stderr) {
+        let _ = write!(out, " {phase}=+{}ms", at(us));
+    }
+    let _ = write!(out, " {end}=+{}ms error_mode={}", at(end_us), reported_error_mode(stderr).unwrap_or("none"));
+    out
+}
+
 fn run_child(mode: &str, dir: &Path) -> Child {
+    run_child_with(mode, dir, CHILD_DEADLINE, Duration::ZERO)
+}
+/// A child of `mode` over `dir`, waiting `step` before each of its later steps, under a guard of `deadline`.
+fn run_child_with(mode: &str, dir: &Path, deadline: Duration, step: Duration) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "child_entry", "--test-threads=1", "--nocapture"])
         .env(CHILD_ENV, format!("{mode}:{}", dir.display()))
+        .env(CHILD_STEP_ENV, step.as_millis().to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -471,26 +547,33 @@ fn run_child(mode: &str, dir: &Path) -> Child {
         // No console of its own: a test never opens a window (HBR-QUIET).
         command.creation_flags(0x0800_0000);
     }
+    let spawned_us = unix_us();
+    let spawned = Instant::now();
     let mut child = command.spawn().unwrap();
+    let pid = child.id();
     let mut stderr_pipe = child.stderr.take().unwrap();
     let reader = std::thread::spawn(move || {
         let mut text = String::new();
         let _ = std::io::Read::read_to_string(&mut stderr_pipe, &mut text);
         text
     });
-    let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if Instant::now() > deadline {
+        if spawned.elapsed() > deadline {
+            let killed_us = unix_us();
             let _ = child.kill();
             let _ = child.wait();
-            panic!("child {mode} did not end in 60 s");
+            let stderr = reader.join().unwrap();
+            panic!("child {mode} did not end in {deadline:?}: {}", timeline(mode, pid, spawned_us, &stderr, "killed", killed_us));
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    Child { code: status.code(), stderr: reader.join().unwrap() }
+    let (ran_for, exit_us) = (spawned.elapsed(), unix_us());
+    let stderr = reader.join().unwrap();
+    println!("{} code={:?}", timeline(mode, pid, spawned_us, &stderr, "exit", exit_us), status.code());
+    Child { code: status.code(), stderr, ran_for }
 }
 
 fn assert_ran_in_order(all: &[Value]) {
@@ -569,4 +652,16 @@ fn an_abort_leaves_the_lines_written_and_no_end_of_run() {
     let scratch = Scratch::new("abort");
     let child = run_child("abort", &scratch.0);
     assert_died_without_a_record(&child, &scratch.0);
+}
+
+/// Lane SMB-FIX-DIAG-SINK-ABORT-1: a child that is slow in every step but behaves correctly is not a hang. Each wait
+/// between its steps is well under the guard's deadline; the whole run is over it (two steps of 3 s against 5 s), as a
+/// child under load is. The guard must let it end and every assertion of the abort test must hold.
+#[test]
+fn a_child_slow_in_every_step_is_not_taken_for_a_hang() {
+    let scratch = Scratch::new("slow-abort");
+    let deadline = Duration::from_secs(5);
+    let child = run_child_with("abort", &scratch.0, deadline, Duration::from_secs(3));
+    assert_died_without_a_record(&child, &scratch.0);
+    assert!(child.ran_for > deadline, "the run is longer than the deadline: {:?}", child.ran_for);
 }
