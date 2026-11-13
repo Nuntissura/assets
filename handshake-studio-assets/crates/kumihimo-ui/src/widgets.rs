@@ -612,3 +612,225 @@ pub fn ruler(b: &mut Builder<'_>, id: &str, label: &str, axis: Axis, origin: f32
 /// components.json `ruler`: a tick every 20 logical px, a major tick every 5 (minor 5 long, major 10).
 pub const RULER_STEP: f32 = 20.0;
 pub const RULER_MAJOR_EVERY: u32 = 5;
+
+// ---- B6 widgets (SMB-GUI-MENU-1): menu popup and menu item (components.json `menu_popup`, `menu_item`,
+// `context_menu`) and the L0 and L1 tooltips (`tooltip_l0`, `tooltip_l1`). Ids, labels, chords and availability come
+// from the caller's descriptors; no widget names a menu, command or reason.
+
+/// components.json `menu_popup` and tooltip sizes design-system.json `size` does not record (logical px).
+pub mod popup {
+    /// `menu_popup.size.pad_y`, the reason line under a greyed item (caption line), the label's right pad.
+    pub const PAD_Y: f32 = 4.0;
+    pub const REASON_LINE: f32 = 14.0;
+    pub const PAD_R: f32 = 8.0;
+    /// Room between a label and its right-aligned chord, and the submenu chevron.
+    pub const CHORD_GAP: f32 = 16.0;
+    pub const CHEVRON: f32 = 12.0;
+    /// `tooltip_l0.size`: h 24, pad_x 8; `tooltip_l1.size.pad`: 8 10.
+    pub const TIP_L0_H: f32 = 24.0;
+    pub const TIP_PAD_X: f32 = 8.0;
+    pub const TIP_L1_PAD_Y: f32 = 8.0;
+    pub const TIP_L1_PAD_X: f32 = 10.0;
+}
+
+/// The height of a menu row: 24, plus the reason line when greyed.
+pub fn menu_row_h(greyed: bool) -> f32 {
+    size::MENU_ITEM_H + if greyed { popup::REASON_LINE } else { 0.0 }
+}
+
+/// One row of a menu popup.
+#[derive(Clone, Debug)]
+pub struct MenuRow<'a> {
+    /// `menu.<command id>` (MENU-INV-5) or the remedy sibling's id.
+    pub id: &'a str,
+    pub label: &'a str,
+    /// The chord resolved at render (STU-SHL-242), right-aligned in text.tertiary.
+    pub chord: Option<&'a str>,
+    /// The reason line under a greyed item (STU-SHL-018: greyed, reason shown, never hidden); None: enabled.
+    pub reason: Option<&'a str>,
+    /// The node's availability as node properties (STU-SHL-019).
+    pub availability: Option<crate::tree::NodeAvailability>,
+    /// The node value: the reason line of a greyed node (the AccessKit description) or None.
+    pub value: Option<&'a str>,
+    /// A submenu: the chevron, and `open` while its cascade shows.
+    pub submenu: bool,
+    pub open: bool,
+    /// Hover or keyboard highlight (surface.row_selected with the accent edge).
+    pub hot: bool,
+    /// A toggle that is on (MenuItemCheckBox).
+    pub checked: bool,
+    /// False: scrolled out of the popup; in the tree with no box.
+    pub shown: bool,
+    /// The remedy sibling: an enabled row whose label is in accent.text.
+    pub remedy: bool,
+}
+
+/// Opens a popup (components.json `menu_popup`: role Menu, surface.raised, radius 6, 1 px edge.subtle, pad_y 4,
+/// clipped) of `w` x `h` logical px. Close with `b.end()`.
+pub fn menu_popup_begin(b: &mut Builder<'_>, id: &str, label: &str, w: f32, h: f32) {
+    b.begin(
+        Node::new(id, Role::Menu)
+            .label(cut_label(label))
+            .layout(LayoutSpec { axis: Axis::Column, w: Size::Fixed(w), h: Size::Fixed(h), pad: [0.0, popup::PAD_Y, 0.0, popup::PAD_Y], cross: Align::Start, ..LayoutSpec::default() })
+            .paint(Paint::Round { fill: Some(ColorToken::SurfaceRaised), radius: radius::R3_POPUP, border: Some(ColorToken::EdgeSubtle) })
+            .flags(|f| f.clip = true),
+    );
+}
+
+/// One menu row (components.json `menu_item`, h 24): icon gutter 24 (a check mark when on), the label, the chord,
+/// the submenu chevron; a greyed row is disabled and carries its reason line under the label in caption style.
+pub fn menu_item(b: &mut Builder<'_>, r: &MenuRow<'_>, check: IconId, chevron: IconId) {
+    let greyed = r.reason.is_some();
+    let mut n = Node::new(r.id, Role::MenuItem).label(cut_label(r.label)).actions(CLICK).availability(r.availability.clone()).flags(|f| {
+        f.disabled = greyed;
+        f.selected = r.hot || r.open;
+        f.toggled = r.checked;
+    });
+    if let Some(v) = r.value {
+        n = n.value(cut_label(v));
+    }
+    if !r.shown {
+        // Scrolled out: in the tree (STU-SHL-018 never hides), no box.
+        b.leaf(n.size(Size::Fixed(0.0), Size::Fixed(0.0)));
+        return;
+    }
+    b.begin(n.layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(menu_row_h(greyed)), cross: Align::Start, ..LayoutSpec::default() }).paint(Paint::Surface { kind: StyleKind::Row, radius: radius::R0_DOCKED }));
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(size::MENU_GUTTER_ICON), h: Size::Fixed(size::MENU_ITEM_H), main: Align::Center, cross: Align::Center, ..LayoutSpec::default() }));
+    if r.checked {
+        b.leaf(icon_leaf(check, frame::ICON_MICRO));
+    }
+    b.end();
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, cross: Align::Start, ..LayoutSpec::default() }));
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(size::MENU_ITEM_H), gap: popup::CHORD_GAP, pad: [0.0, 0.0, popup::PAD_R, 0.0], cross: Align::Center, ..LayoutSpec::default() }));
+    let color = if r.remedy { Some(ColorToken::AccentText) } else { None };
+    b.leaf(Node::deco().paint(Paint::Label { text: cut_label(r.label).into(), token: TextToken::Body, weight: 0, color, align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
+    if let Some(c) = r.chord {
+        b.leaf(text_leaf(c, TextToken::Body, 0, Some(ColorToken::TextTertiary), Size::Hug));
+    }
+    if r.submenu {
+        b.leaf(icon_leaf(chevron, popup::CHEVRON));
+    }
+    b.end();
+    if let Some(reason) = r.reason {
+        b.leaf(
+            Node::deco()
+                .paint(Paint::Label { text: cut_label(reason).into(), token: TextToken::Caption, weight: 0, color: Some(ColorToken::TextTertiary), align: Align::Start, ellipsis: true })
+                .size(Size::Fill, Size::Fixed(popup::REASON_LINE)),
+        );
+    }
+    b.end();
+    b.end();
+}
+
+/// A tooltip (components.json `tooltip_l0` and `tooltip_l1`, role Tooltip, author id `studio.tooltip`).
+#[derive(Clone, Debug)]
+pub struct Tip<'a> {
+    pub id: &'a str,
+    /// 0: L0 (one line: name and chord); 1: L1.
+    pub level: u8,
+    pub name: &'a str,
+    pub chord: Option<&'a str>,
+    /// L1: the one-sentence summary, absent when null (STU-SHL-232 item 2).
+    pub summary: Option<&'a str>,
+    /// L1 on a dimmed element: the reason line (item 4).
+    pub reason: Option<&'a str>,
+    /// L1 on an INAPPLICABLE_HERE element: (id, label) of the one-click remedy button.
+    pub remedy: Option<(&'a str, &'a str)>,
+    /// The node value: the same reason line the element carries (AC-REACH-05 compares them).
+    pub value: Option<&'a str>,
+}
+
+/// The lines a tip shows, in [`tooltip`]'s order (name line, then on L1 the summary, reason and remedy).
+pub fn tip_lines(t: &Tip<'_>) -> usize {
+    if t.level == 0 {
+        return 1;
+    }
+    1 + usize::from(t.summary.is_some()) + usize::from(t.reason.is_some()) + usize::from(t.remedy.is_some())
+}
+
+/// Builds a tooltip box `w` x `h`: surface.raised, radius 6, edge.subtle; L0 one line (name, chord in caption
+/// text.tertiary); L1 the name line, the summary, the reason in text.secondary, the remedy as a button in accent.text.
+pub fn tooltip(b: &mut Builder<'_>, t: &Tip<'_>, w: f32, h: f32) {
+    let (pad_x, pad_y) = if t.level == 0 { (popup::TIP_PAD_X, 0.0) } else { (popup::TIP_L1_PAD_X, popup::TIP_L1_PAD_Y) };
+    let mut n = Node::new(t.id, Role::Tooltip)
+        .label(cut_label(t.name))
+        .layout(LayoutSpec { axis: Axis::Column, w: Size::Fixed(w), h: Size::Fixed(h), pad: [pad_x, pad_y, pad_x, pad_y], cross: Align::Start, main: Align::Center, ..LayoutSpec::default() })
+        .paint(Paint::Round { fill: Some(ColorToken::SurfaceRaised), radius: radius::R3_POPUP, border: Some(ColorToken::EdgeSubtle) })
+        .flags(|f| f.clip = true);
+    if let Some(v) = t.value {
+        n = n.value(cut_label(v));
+    }
+    b.begin(n);
+    let line = TextToken::Body.style().line;
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(line), gap: spacing::S4, cross: Align::Center, ..LayoutSpec::default() }));
+    b.leaf(Node::deco().paint(Paint::Label { text: cut_label(t.name).into(), token: TextToken::Body, weight: 0, color: Some(ColorToken::TextPrimary), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
+    if let Some(c) = t.chord {
+        b.leaf(text_leaf(c, TextToken::Caption, 0, Some(ColorToken::TextTertiary), Size::Hug));
+    }
+    b.end();
+    if t.level > 0 {
+        let body = |b: &mut Builder<'_>, s: &str, color: ColorToken| {
+            b.leaf(Node::deco().paint(Paint::Label { text: cut_label(s).into(), token: TextToken::Body, weight: 0, color: Some(color), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fixed(line)));
+        };
+        if let Some(s) = t.summary {
+            body(b, s, ColorToken::TextSecondary);
+        }
+        if let Some(r) = t.reason {
+            body(b, r, ColorToken::TextSecondary);
+        }
+        if let Some((id, label)) = t.remedy {
+            b.begin(Node::new(id, Role::Button).label(cut_label(label)).actions(CLICK).layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(line), cross: Align::Center, ..LayoutSpec::default() }));
+            b.leaf(Node::deco().paint(Paint::Label { text: cut_label(label).into(), token: TextToken::Body, weight: 0, color: Some(ColorToken::AccentText), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
+            b.end();
+        }
+    }
+    b.end();
+}
+
+/// The B6 state of one menu title: its availability as node properties, greyed with its reason as the value
+/// (STU-SHL-052: every level, titles included, greyed, never hidden), and open while its popup shows.
+#[derive(Clone, Debug, Default)]
+pub struct TitleState {
+    pub availability: Option<crate::tree::NodeAvailability>,
+    pub value: Option<String>,
+    pub greyed: bool,
+    pub open: bool,
+}
+
+/// [`menu_title_row`] for B6: each title carries its [`TitleState`] (`states[i]` for `titles[i]`; a missing state is
+/// the default) instead of one reason for all, and the chevron opens the list of hidden titles (its value names them).
+pub fn menu_title_row_states(b: &mut Builder<'_>, titles: &[MenuTitle<'_>], states: &[TitleState], pad: f32, chevron: Option<(&str, &str, IconId)>) {
+    let none = TitleState::default();
+    for (i, t) in titles.iter().enumerate() {
+        let st = states.get(i).unwrap_or(&none);
+        let mut n = Node::new(t.id, Role::MenuItem).label(cut_label(t.full)).actions(CLICK).availability(st.availability.clone()).flags(|f| {
+            f.disabled = st.greyed;
+            f.selected = st.open;
+        });
+        if let Some(v) = &st.value {
+            n = n.value(cut_label(v));
+        }
+        if t.shown {
+            b.begin(
+                n.layout(LayoutSpec { axis: Axis::Row, w: Size::Hug, h: Size::Fill, pad: [pad, 0.0, pad, 0.0], ..LayoutSpec::default() })
+                    .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R0_DOCKED }),
+            );
+            b.leaf(text_leaf(t.text, TextToken::MenuTitle, 0, Some(ColorToken::TextPrimary), Size::Hug));
+            b.end();
+        } else {
+            b.leaf(n.size(Size::Fixed(0.0), Size::Fixed(0.0)));
+        }
+    }
+    if let Some((id, value, icon)) = chevron {
+        b.begin(
+            Node::new(id, Role::Button)
+                .label("More menus")
+                .value(value)
+                .actions(CLICK)
+                .layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(frame::GROUP_MENU), h: Size::Fill, main: Align::Center, ..LayoutSpec::default() })
+                .paint(Paint::Surface { kind: StyleKind::Ghost, radius: radius::R0_DOCKED }),
+        );
+        b.leaf(icon_leaf(icon, frame::ICON_MICRO));
+        b.end();
+    }
+}

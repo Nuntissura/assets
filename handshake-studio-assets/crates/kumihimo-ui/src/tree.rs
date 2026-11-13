@@ -78,6 +78,9 @@ pub enum Role {
     Canvas,
     ScrollBar,
     Region,
+    /// The B6 roles of components.json `menu_popup`, `context_menu`, `tooltip_l0` and `tooltip_l1` (SMB-GUI-MENU-1).
+    Menu,
+    Tooltip,
 }
 impl Role {
     pub fn name(self) -> &'static str {
@@ -104,6 +107,8 @@ impl Role {
             Role::Canvas => "Canvas",
             Role::ScrollBar => "ScrollBar",
             Role::Region => "Region",
+            Role::Menu => "Menu",
+            Role::Tooltip => "Tooltip",
         }
     }
 }
@@ -206,6 +211,17 @@ impl Action {
     }
 }
 
+/// The availability record of an element as node properties (STU-SHL-019: `availability_state`, `reason_code`,
+/// `reason_text`, `remedy_command_id`), the same record the menu and the tooltip read (SMB-GUI-MENU-1). Codes are the
+/// caller's closed sets (STU-SHL-050, STU-SHL-051); this crate carries them as text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeAvailability {
+    pub state: String,
+    pub reason_code: Option<String>,
+    pub reason_text: Option<String>,
+    pub remedy_command_id: Option<String>,
+}
+
 /// Numeric value of a field or slider (STU-MDL-105 numeric fields).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Numeric {
@@ -225,6 +241,8 @@ pub struct Node {
     pub label: Option<String>,
     pub value: Option<String>,
     pub numeric: Option<Numeric>,
+    /// Availability as node properties (None: the element states none).
+    pub availability: Option<NodeAvailability>,
     pub flags: Flags,
     pub actions: Vec<Action>,
     /// Seams drawn after the children (1 logical px, `edge.seam`).
@@ -244,6 +262,7 @@ impl Node {
             label: None,
             value: None,
             numeric: None,
+            availability: None,
             flags: Flags::default(),
             actions: Vec::new(),
             seams: Seams::default(),
@@ -300,6 +319,11 @@ impl Node {
         {
             self.value = Some(r.to_owned());
         }
+        self
+    }
+    /// The element's availability record as node properties (STU-SHL-019).
+    pub fn availability(mut self, a: Option<NodeAvailability>) -> Self {
+        self.availability = a;
         self
     }
     pub fn interactive(&self) -> bool {

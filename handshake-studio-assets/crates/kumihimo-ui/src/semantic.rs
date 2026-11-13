@@ -3,7 +3,7 @@
 //! fields it requires. Only nodes with an author_id appear; decorative nodes fold into their nearest identified
 //! ancestor. Truncation at a node cap is explicit (STU-MDL-108).
 use crate::geom::Rect;
-use crate::tree::{Numeric, Role, Tree};
+use crate::tree::{NodeAvailability, Numeric, Role, Tree};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticNode {
@@ -17,6 +17,8 @@ pub struct SemanticNode {
     pub label: Option<String>,
     pub value: Option<String>,
     pub numeric: Option<Numeric>,
+    /// STU-SHL-019 node properties; emitted only when present, so trees without them keep their bytes.
+    pub availability: Option<NodeAvailability>,
     pub disabled: bool,
     pub selected: bool,
     pub focused: bool,
@@ -110,6 +112,7 @@ fn collect(tree: &Tree, id: crate::tree::NodeId, into: &mut Vec<SemanticNode>, s
         label: n.label.clone(),
         value: n.value.clone(),
         numeric: n.numeric,
+        availability: n.availability.clone(),
         disabled: tree.effectively_disabled(id),
         selected: n.flags.selected || n.flags.toggled,
         focused: n.flags.focused,
@@ -160,6 +163,21 @@ fn node_json(n: &SemanticNode, out: &mut String) {
     }
     if let Some(m) = n.numeric {
         out.push_str(&format!(",\"numeric\":{{\"value\":{},\"min\":{},\"max\":{},\"step\":{}}}", num(m.value), num(m.min), num(m.max), num(m.step)));
+    }
+    if let Some(a) = &n.availability {
+        let opt = |v: &Option<String>, out: &mut String| match v {
+            Some(s) => esc(s, out),
+            None => out.push_str("null"),
+        };
+        out.push_str(",\"availability\":{\"availability_state\":");
+        esc(&a.state, out);
+        out.push_str(",\"reason_code\":");
+        opt(&a.reason_code, out);
+        out.push_str(",\"reason_text\":");
+        opt(&a.reason_text, out);
+        out.push_str(",\"remedy_command_id\":");
+        opt(&a.remedy_command_id, out);
+        out.push('}');
     }
     out.push_str(&format!(",\"disabled\":{},\"selected\":{},\"focused\":{},\"actions\":[", n.disabled, n.selected, n.focused));
     for (i, a) in n.actions.iter().enumerate() {
