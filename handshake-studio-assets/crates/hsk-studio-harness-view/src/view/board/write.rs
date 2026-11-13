@@ -62,10 +62,21 @@ impl Viewer {
         };
         let profile = serde_json::to_value(&doc.working_space_rgb).unwrap_or(Value::Null);
         let len = t.len();
+        // One paragraph per line: each `\n` ends its paragraph (review F12; the partition tiles the text).
+        let mut paragraphs = Vec::new();
+        let mut start = 0_usize;
+        for (at, _) in t.match_indices('\n') {
+            let end = at.saturating_add(1);
+            paragraphs.push(json!({"start": start, "end": end, "style_ref": paragraph, "paragraph_direction": null}));
+            start = end;
+        }
+        if start < len || paragraphs.is_empty() {
+            paragraphs.push(json!({"start": start, "end": len, "style_ref": paragraph, "paragraph_direction": null}));
+        }
         let story: folio::StudioTextStory = serde_json::from_value(json!({
             "schema_id": "hsk.studio.text_story@1", "story_id": story_id, "text_kind": "area", "story_direction": "left_to_right",
             "content": {"content_kind": "inline", "text_utf8": t},
-            "paragraphs": [{"start": 0, "end": len, "style_ref": paragraph, "paragraph_direction": null}],
+            "paragraphs": paragraphs,
             "character_ranges": [{"start": 0, "end": len, "style_ref": character, "applied_language": "en"}],
         }))
         .map_err(|e| refused("board_text_invalid", e))?;
@@ -494,8 +505,8 @@ impl Viewer {
                 *record = PathRecord::plain(p.clone(), translated(&record.path, d), record.style);
             }
         }
-        let offsets: BTreeMap<String, [f64; 2]> = moving.iter().map(|m| (m.clone(), d)).collect();
-        let moved = c.rects(&offsets);
+        // The records are moved already: the bounds now are the moved bounds.
+        let moved = c.rects(&BTreeMap::new());
         let rerouted = Self::reroute(&mut c, &moved, &moving.iter().cloned().collect())?;
         let Ctx { doc, entry, .. } = c;
         let revision = self.board_commit(op, &doc, &entry, None, &[], &[], node)?;
