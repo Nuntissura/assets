@@ -109,11 +109,12 @@ fn preflight_runs_before_export_and_an_error_refuses_typed() {
     assert!(!r["overset_stories"].as_array().unwrap().is_empty(), "{r}");
 }
 
-/// The editor keeps a text inserted into an empty story as one paragraph: the terminator inside it
-/// is set as a line break (both sides drawn, on two lines), and the lost paragraph boundary is
-/// reported.
+/// Lane SMB-TYPE-CHARACTER-ATTRIBUTES-1 (ledger 2026-11-07T12:31:03Z): a newline typed into a new frame's
+/// empty story ends a paragraph, so the export composes two paragraphs, both drawn, and reports no
+/// paragraph boundary lost (before the lane the editor kept one paragraph and the export set the
+/// terminator as a line break, reported `paragraph_break_inside_paragraph_set_as_line_break`).
 #[test]
-fn a_break_inside_one_paragraph_is_set_as_a_line_break_with_both_sides_drawn() {
+fn a_newline_typed_into_an_empty_frame_makes_two_paragraphs_both_drawn() {
     let dir = Scratch::new("layout-inner-break");
     let mut v = Viewer::new(Prefer::Cpu);
     v.layout_open(Some((400.0, 400.0)), Some(1)).unwrap();
@@ -122,13 +123,13 @@ fn a_break_inside_one_paragraph_is_set_as_a_line_break_with_both_sides_drawn() {
     let frame = ed.selected.clone().unwrap();
     let story = ed.story_of_frame(&frame).unwrap().story_id.clone();
     ed.apply(LayoutEdit::ReplaceText { story, start: 0, end: 0, text: "Above\nBelow".into() }).unwrap();
+    assert_eq!(ed.story_of_frame(&frame).unwrap().paragraphs.len(), 2);
     let out = dir.0.join("break.pdf");
     let r = v.export_layout_pdf(&out, false, &LayoutPdfSettings::default()).unwrap();
-    let lost: Vec<&Value> = r["host_loss"].as_array().unwrap().iter().filter(|l| l["code"] == "paragraph_break_inside_paragraph_set_as_line_break").collect();
-    assert_eq!(lost.len(), 1, "{r}");
-    assert_eq!(lost[0]["count"], 1, "{r}");
-    assert_eq!(r["lines"], 2, "the break ends the first line: {r}");
-    assert_eq!(page_texts(&std::fs::read(&out).unwrap())[0], "AboveBelow", "both sides are drawn");
+    let lost = r["host_loss"].as_array().unwrap().iter().filter(|l| l["code"] == "paragraph_break_inside_paragraph_set_as_line_break").count();
+    assert_eq!(lost, 0, "{r}");
+    assert_eq!(r["lines"], 2, "one line per paragraph: {r}");
+    assert_eq!(page_texts(&std::fs::read(&out).unwrap())[0], "AboveBelow", "both paragraphs are drawn");
 }
 
 #[test]

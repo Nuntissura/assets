@@ -18,6 +18,9 @@
 //! keeps only the paragraph-keyed records (those and the layout-flow paragraph overrides) that name
 //! a paragraph of the edited story: a record of a paragraph merged away is dropped, and of two that
 //! collapse onto one start the record of the first touched paragraph wins, as its style does.
+//! It also moves the Folio local character overrides (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1,
+//! `shift_character_overrides`) the way the character ranges move. An empty story keeps one empty
+//! paragraph (its style), which Folio accepts since that lane.
 //!
 //! Conditional text (STU-LAY-049/153): visibility resolves BEFORE composition. A byte is hidden when
 //! at least one conditional range covers it and none of the covering ranges carries a visible
@@ -101,12 +104,13 @@ pub fn replace_story_text(
             (Some(f), Some(l)) if i == f => {
                 let region_end = mapped[l].end;
                 let mut ranges: Vec<(u64, u64)> = Vec::new();
-                // Text inserted at the first byte of a non-empty story joins the first paragraph
-                // (map_pos moves a start equal to the edit after the inserted text, which left those
-                // bytes in no paragraph; lane SMB-TYPE-INDENT-SPACING-1). An empty story keeps its
-                // one-paragraph fallback below (pinned by harness layout_pdf_host and
-                // harness_drive_typed known_defect_replace_text_newline_keeps_one_paragraph).
-                let region_start = if text.is_empty() { p.start } else { p.start.min(start) };
+                // Text inserted at the first byte of a story joins the first paragraph (map_pos
+                // moves a start equal to the edit after the inserted text, which left those bytes
+                // in no paragraph; lane SMB-TYPE-INDENT-SPACING-1), an empty story's one empty
+                // paragraph included, so its terminators split it like any other edit (lane
+                // SMB-TYPE-CHARACTER-ATTRIBUTES-1: `"one\ntwo"` typed into an empty frame is two
+                // paragraphs, both with the empty paragraph's style).
+                let region_start = p.start.min(start);
                 let mut at = region_start;
                 let from = usize_of(region_start)?;
                 let region = out.get(from..usize_of(region_end)?).ok_or(LayoutError::InvalidInput)?;
@@ -142,12 +146,20 @@ pub fn replace_story_text(
     }
     paragraphs.retain(|p| p.start < p.end || out.is_empty());
     if paragraphs.is_empty() {
-        paragraphs.push(StoryParagraph {
-            start: 0,
-            end: out.len() as u64,
-            style_ref: story.paragraphs.first().and_then(|p| p.style_ref.clone()),
-            paragraph_direction: None,
-        });
+        // A story stored without a paragraph (Folio's older empty form): its new text is split
+        // at every terminator, like an edit of its empty paragraph.
+        let style_ref = story.paragraphs.first().and_then(|p| p.style_ref.clone());
+        let mut at = 0u64;
+        for (k, c) in out.char_indices() {
+            if crate::sentinels::ends_paragraph(c) {
+                let cut = k.checked_add(c.len_utf8()).ok_or(LayoutError::BudgetExceeded)? as u64;
+                if cut < out.len() as u64 {
+                    paragraphs.push(StoryParagraph { start: at, end: cut, style_ref: style_ref.clone(), paragraph_direction: None });
+                    at = cut;
+                }
+            }
+        }
+        paragraphs.push(StoryParagraph { start: at, end: out.len() as u64, style_ref, paragraph_direction: None });
     }
     let mut character_ranges = Vec::with_capacity(story.character_ranges.len());
     for r in &story.character_ranges {
@@ -300,6 +312,23 @@ pub fn shift_paragraph_records(
             None => false,
         }
     });
+    shift_character_overrides(styles, id, start, end, new_len)
+}
+
+/// Moves the Folio local character overrides of `story_id` (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1)
+/// through the edit `[start, end)` -> `new_len` bytes like the story's character ranges: an override
+/// the edit deletes is dropped, text typed inside one joins it, text typed at its first byte joins
+/// the span before it. Called by [`shift_paragraph_records`], so every text-edit path that moves
+/// the paragraph-keyed records moves these too.
+pub fn shift_character_overrides(styles: &mut StudioTypeStyleRecords, story_id: &str, start: u64, end: u64, new_len: u64) -> Result<(), LayoutError> {
+    if start > end {
+        return Err(LayoutError::InvalidInput);
+    }
+    for o in styles.character_overrides.iter_mut().filter(|o| o.text_id == story_id) {
+        o.start = map_pos(o.start, start, end, new_len)?;
+        o.end = map_pos(o.end, start, end, new_len)?;
+    }
+    styles.character_overrides.retain(|o| o.start < o.end);
     Ok(())
 }
 

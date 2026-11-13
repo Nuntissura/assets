@@ -197,8 +197,8 @@ fn every_layout_edit_is_one_named_undo_step_through_the_process() {
     assert_eq!(editor(&columns)["frames"][0]["columns"], 2);
     let text = s.ok("layout.replace_text", json!({"story":story,"start":0,"end":0,"text":"Headline\nBody copy here"}));
     assert_eq!(editor(&text)["stories"][0]["bytes"], 23);
-    // Known defect candidate, pinned by known_defect_replace_text_newline_keeps_one_paragraph.
-    assert_eq!(editor(&text)["stories"][0]["paragraphs"], 1);
+    // The newline ends the first paragraph (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1; was one paragraph).
+    assert_eq!(editor(&text)["stories"][0]["paragraphs"], 2);
     let style = s.ok("layout.style.new_style", json!({"scope":"paragraph","name":"Heading"}));
     let style_id = editor(&style)["styles"]["paragraph"].as_array().and_then(|a| a.iter().find(|r| r["name"] == "Heading")).expect("the new style in state")["style_id"].as_str().unwrap().to_string();
     s.ok("layout.apply_paragraph_style", json!({"story":story,"paragraph":0,"style":style_id}));
@@ -453,11 +453,11 @@ fn known_defect_export_svg_group_duplicate_identity() {
     s.close();
 }
 
-/// KNOWN DEFECT candidate (engine or Studio reading, UNVERIFIED): `layout.replace_text` with a `\n` in
-/// the text keeps one paragraph (`hsk_studio_layout::replace_story_text`, `sentinels::ends_paragraph`).
-/// The decoder passes the text unchanged. This pins today's behaviour.
+/// Lane SMB-TYPE-CHARACTER-ATTRIBUTES-1 (ledger 2026-11-07T12:31:03Z, was the known defect "keeps one
+/// paragraph"): `layout.replace_text` with a `\n` typed into a new frame's empty story makes two
+/// paragraphs (`hsk_studio_layout::replace_story_text` splits after every paragraph terminator).
 #[test]
-fn known_defect_replace_text_newline_keeps_one_paragraph() {
+fn replace_text_newline_makes_two_paragraphs() {
     let dir = Scratch::new("known-newline");
     let package = dir.package("a.handshake");
     let (mut s, _) = Live::open(&package, "lane-h", &dir.0);
@@ -467,7 +467,7 @@ fn known_defect_replace_text_newline_keeps_one_paragraph() {
     let story = drawn["state"]["shell"]["surfaces"]["layout_editor"]["frames"][0]["story_id"].as_str().unwrap().to_string();
     let text = s.ok("layout.replace_text", json!({"story":story,"start":0,"end":0,"text":"one\ntwo"}));
     let st = &text["state"]["shell"]["surfaces"]["layout_editor"]["stories"][0];
-    assert_eq!((st["bytes"].as_u64(), st["paragraphs"].as_u64()), (Some(7), Some(1)), "{st}");
+    assert_eq!((st["bytes"].as_u64(), st["paragraphs"].as_u64()), (Some(7), Some(2)), "{st}");
     s.close();
 }
 
