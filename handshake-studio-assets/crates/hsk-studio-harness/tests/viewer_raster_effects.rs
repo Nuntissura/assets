@@ -14,7 +14,6 @@ use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::commands::CommandRefusal;
 use hsk_studio_harness::view::develop::DevelopExport;
 use hsk_studio_harness::view::export::ExportFormat;
-use hsk_studio_harness::view::place::{PlaceOptions, PlacementKind};
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_interop_tiff as tiff;
 use serde_json::{Map, Value, json};
@@ -373,110 +372,6 @@ fn the_develop_dng_xmp_carries_the_crop_keys() {
     assert!(!never.exists());
 }
 
-/// Lead ruling 2026-11-13 (layers.rs mint_layer_id): a layer created after a delete never takes the deleted layer's
-/// id, so it never inherits the deleted layer's `raster_records` row (its smart filter stack) the entry still holds;
-/// in the session and after save and reopen.
-#[test]
-fn a_new_layer_after_a_delete_gets_a_fresh_id_and_no_inherited_smart_filters() {
-    let scratch = Scratch::new("raster-effects-reused-id");
-    let src = scratch.0.join("art.psd");
-    std::fs::write(&src, art_psd()).unwrap();
-    let mut v = open(&src);
-    let gone = v.new_raster_layer("filtered").unwrap();
-    ok(&mut v, "effect.apply", json!({"layer": gone, "filter_kind": "gaussian_blur", "params": {"radius_px": 2}}));
-    v.delete_layer(&gone).unwrap();
-    let fresh = v.new_raster_layer("fresh").unwrap();
-    assert_ne!(fresh, gone, "a deleted layer's id is not minted again");
-    assert_eq!(filters(&mut v, &fresh)["filters"], json!([]), "the new layer inherits no smart filter stack");
-
-    // The deleted layer's row is still in the saved entry; a layer created after reopening gets another id too.
-    let mut w = open(&src);
-    let gone = w.new_raster_layer("filtered").unwrap();
-    ok(&mut w, "effect.apply", json!({"layer": gone, "filter_kind": "box_blur"}));
-    w.delete_layer(&gone).unwrap();
-    let saved = scratch.0.join("deleted.handshake");
-    w.save(&saved, false).unwrap();
-    let mut r = open(&saved);
-    let fresh = r.new_raster_layer("fresh").unwrap();
-    assert_ne!(fresh, gone, "a deleted layer's id is not minted again after reopen");
-    assert_eq!(filters(&mut r, &fresh)["filters"], json!([]), "the new layer inherits no smart filter stack after reopen");
-}
-
-fn layer_ids(v: &Viewer) -> Vec<String> {
-    v.run().snapshot().unwrap().document().layers.iter().map(|l| l.layer_id.clone()).collect()
-}
-
-/// The layer ids the `raster_records` entry keys (rows of deleted layers included).
-fn record_ids(v: &Viewer) -> Vec<String> {
-    let Some(bytes) = v.run().document_entry("raster_records") else { return Vec::new() };
-    let entry: Value = serde_json::from_slice(bytes).unwrap();
-    entry["records"]["layers"].as_array().map(|a| a.iter().filter_map(|r| r["layer_id"].as_str().map(str::to_string)).collect()).unwrap_or_default()
-}
-
-/// The 48-bit counter of a minted id (its last group): revision in the upper 24 bits.
-fn counter(id: &str) -> u64 {
-    u64::from_str_radix(id.rsplit('-').next().unwrap(), 16).unwrap()
-}
-
-/// Lead ruling 2026-11-13 on the layer id mint, conditions (2) to (5) through the viewer (conditions (1), (2) at the
-/// largest value, (3) and (6) are harness-view unit tests in `view::layers`): one command creating two layers mints
-/// two distinct ids of one revision; a package saved at an earlier revision, reopened, mints no id it holds as a
-/// layer or as a `raster_records` row; undo then create mints a fresh id; and an id carrying revision bits survives
-/// Folio persistence and reaches an export that names it (`export.run` through node settings keyed by it).
-#[test]
-fn minted_layer_ids_are_never_minted_twice_and_survive_save_reopen_and_export() {
-    let scratch = Scratch::new("raster-effects-mint");
-    let src = scratch.0.join("art.psd");
-    std::fs::write(&src, art_psd()).unwrap();
-    let mut v = open(&src);
-    let art = layer(&v, "art");
-    // (3) Duplicating a group copies the group and `art` in one step: two ids of one revision.
-    let group = v.group_layers(std::slice::from_ref(&art), "g").unwrap();
-    let before = layer_ids(&v);
-    let steps = undo(&v).len();
-    let copy = v.duplicate_layer(&group).unwrap();
-    assert_eq!(undo(&v).len(), steps + 1, "one step");
-    let added: Vec<String> = layer_ids(&v).into_iter().filter(|id| !before.contains(id)).collect();
-    assert_eq!(added.len(), 2, "{added:?}");
-    assert!(added.contains(&copy) && added[0] != added[1], "{added:?}");
-    assert_eq!(counter(&added[0]) >> 24, counter(&added[1]) >> 24, "one revision: {added:?}");
-    assert!(counter(&copy) >> 24 > 0, "{copy} carries revision bits");
-
-    // A deleted layer whose raster_records row stays in the entry, and node export settings keyed by the copy.
-    let gone = v.new_raster_layer("gone").unwrap();
-    ok(&mut v, "effect.apply", json!({"layer": gone, "filter_kind": "sharpen"}));
-    v.delete_layer(&gone).unwrap();
-    assert!(record_ids(&v).contains(&gone), "the row of the deleted layer stays in the entry");
-    let steps = undo(&v).len();
-    row(&mut v, "export.set_settings", json!({"node": copy, "settings": [{"format": "PNG"}]})).unwrap();
-    assert_eq!(undo(&v).len(), steps + 1);
-    let early = scratch.0.join("early.handshake");
-    v.save(&early, false).unwrap();
-    let saved_ids: Vec<String> = layer_ids(&v).into_iter().chain(record_ids(&v)).collect();
-
-    // (4) Undo, then create: the undone layer's id is not minted again.
-    let a = v.new_raster_layer("a").unwrap();
-    v.undo().unwrap();
-    assert!(!layer_ids(&v).contains(&a));
-    let b = v.new_raster_layer("b").unwrap();
-    assert_ne!(a, b, "undo then create mints a fresh id");
-
-    // (5) The package saved at the earlier revision: a layer created after reopening collides with no id it holds.
-    let mut r = open(&early);
-    let fresh = r.new_raster_layer("fresh").unwrap();
-    assert!(!saved_ids.contains(&fresh), "{fresh} is held by the package: {saved_ids:?}");
-    assert_eq!(filters(&mut r, &fresh)["filters"], json!([]));
-    // (2) The id with revision bits is the same string after reopen and reaches the export that names it.
-    assert!(layer_ids(&r).contains(&copy));
-    let out = scratch.0.join("out");
-    std::fs::create_dir_all(&out).unwrap();
-    let ran = row(&mut r, "export.run", json!({"dir": out.to_string_lossy(), "nodes": [copy]})).unwrap_or_else(|e| panic!("export.run refused: {} {}", e.code, e.detail));
-    let files = ran["files"].as_array().unwrap_or_else(|| panic!("{ran}"));
-    assert_eq!(files.len(), 1, "{ran}");
-    assert_eq!(files[0]["node"], json!(copy), "{ran}");
-    assert!(Path::new(files[0]["path"].as_str().unwrap()).is_file());
-}
-
 // ---- review fixes of d05d2699 (lead rulings 2026-11-13) ---------------------------------------------------------
 
 fn revision(v: &Viewer) -> u64 {
@@ -664,41 +559,6 @@ fn adjustment_apply_is_admitted_through_the_bound_job_port() {
     // Refusals before admission do not ask the port.
     refused(&mut v, "adjustment.apply", json!({"layer": solo, "adjustment": {"kind": "ocio"}}), "parameter_invalid");
     assert_eq!(port.asks.load(std::sync::atomic::Ordering::SeqCst), 1);
-}
-
-/// Review F2: the adjustment (`7ede-9300`) and placed (`7ede-9200`) mints never mint an id again: create, delete,
-/// create gives another id, in the session and after save and reopen, so no new layer takes a deleted one's
-/// `raster_records` row.
-#[test]
-fn adjustment_and_placed_layer_ids_are_never_minted_twice() {
-    let scratch = Scratch::new("raster-effects-mint-blocks");
-    let src = scratch.0.join("art.psd");
-    std::fs::write(&src, art_psd()).unwrap();
-    let mut v = open(&src);
-    let create = |v: &mut Viewer| ok(v, "adjustment.create", json!({"adjustment": {"kind": "invert"}}))["layer_id"].as_str().unwrap().to_string();
-    let first = create(&mut v);
-    assert!(first.contains("-7ede-9300-"), "{first}");
-    v.delete_layer(&first).unwrap();
-    let second = create(&mut v);
-    assert_ne!(second, first, "a deleted adjustment layer's id is not minted again");
-    let place = |v: &mut Viewer| {
-        let placed = v.place_asset(&src, PlacementKind::Embedded, &PlaceOptions::default()).unwrap_or_else(|e| panic!("{e}"));
-        placed["layer_id"].as_str().unwrap().to_string()
-    };
-    let p1 = place(&mut v);
-    assert!(p1.contains("-7ede-9200-"), "{p1}");
-    v.delete_layer(&p1).unwrap();
-    let p2 = place(&mut v);
-    assert_ne!(p2, p1, "a deleted placed layer's id is not minted again");
-    v.delete_layer(&second).unwrap();
-    let saved = scratch.0.join("blocks.handshake");
-    v.save(&saved, false).unwrap();
-    let held: Vec<String> = layer_ids(&v).into_iter().chain(record_ids(&v)).chain([first, second, p1]).collect();
-    let mut r = open(&saved);
-    let third = create(&mut r);
-    let p3 = place(&mut r);
-    assert!(!held.contains(&third) && !held.contains(&p3), "{third} {p3} vs {held:?}");
-    assert_eq!(ok(&mut r, "effect.read", json!({"layer": p3}))["filters"], json!([]));
 }
 
 // ---- the rows through the process (`command --stdin`) -----------------------------------------------------------

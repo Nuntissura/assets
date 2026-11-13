@@ -557,7 +557,7 @@ impl Viewer {
         let result = (|| -> Result<Value, CommandRefusal> {
             let doc = self.place_doc().map_err(command_refusal)?;
             let mut entry = self.editable_entry(&doc).map_err(command_refusal)?;
-            let layer_id = mint_entry_layer_id(&doc, &entry, "9300").map_err(|code| CommandRefusal::new(code, json!({"revision": doc.revision})))?;
+            let layer_id = mint_entry_layer_id(&doc, &entry, "9300");
             let (kind, payload, appearance, record) = make(&layer_id)?;
             let (parent, place) = self.insertion_point().map_err(|e| CommandRefusal::new("not_open", json!({"message": e})))?;
             let mut layer = new_layer(&layer_id, name, &parent, kind, payload).map_err(|e| CommandRefusal::new("layer_invalid", json!({"message": e})))?;
@@ -990,7 +990,7 @@ impl Viewer {
         let x = opts.x.unwrap_or(canvas.x as f64 + (f64::from(canvas.width) - w * scale) / 2.0);
         let y = opts.y.unwrap_or(canvas.y as f64 + (f64::from(canvas.height) - h * scale) / 2.0);
         let transform = [scale, 0.0, 0.0, scale, x, y];
-        let layer_id = mint_placed_layer_id(&doc, &entry)?;
+        let layer_id = mint_placed_layer_id(&doc, &entry);
         let tiles = self.placement_tiles(&layer_id, &image, transform, filter)?;
         let count = tiles.len();
         let (parent, place) = self.insertion_point().map_err(|e| PlaceRefusal::new("not_open", e))?;
@@ -1391,20 +1391,33 @@ fn time_fields(doc: &StudioDocument) -> (String, String) {
 }
 
 /// A fresh `SLYR` id for a placed layer, from the block `7ede-9200` that no other minter uses (`layers`
-/// mints `7ede-9000`, [`mint_document_id`] `7ede-9100`). Review F1 of 9d83222c: a placed layer minted from the
-/// shared block freed its id on delete, the next new layer of any tool took that id and inherited the stale
-/// record. Lane SMB-PS-FILTER-ADJUST-COMMANDS-1 (review F2, lead ruling 2026-11-13): the block mints with the
-/// revision scheme of `layers::try_mint_block_id`, so a deleted placed layer's id is never minted again (the prune
-/// before the mint no longer frees it); `layer_id_space_exhausted` past 2^24 revisions.
-fn mint_placed_layer_id(doc: &StudioDocument, entry: &Entry) -> Res<String> {
-    mint_entry_layer_id(doc, entry, "9200").map_err(|code| PlaceRefusal::new(code, format!("no fresh placed layer id at revision {}", doc.revision)))
+/// mints `7ede-9000`, [`mint_document_id`] `7ede-9100`): the first counter neither the document nor the
+/// entry's records or instances hold. Review F1 of 9d83222c: a placed layer minted from the shared block
+/// freed its id on delete, the next new layer of any tool took that id and inherited the stale record. A
+/// later place may take a pruned placed id again (the prune runs before the push; the history is linear).
+fn mint_placed_layer_id(doc: &StudioDocument, entry: &Entry) -> String {
+    mint_entry_layer_id(doc, entry, "9200")
 }
 
-/// [`mint_placed_layer_id`] over the id block `7ede-<block>` (adjustment layers mint from `9300`): the revision
-/// scheme, skipping every id the document, the entry's records or its instances hold.
-fn mint_entry_layer_id(doc: &StudioDocument, entry: &Entry, block: &str) -> Result<String, &'static str> {
-    let taken: BTreeSet<&str> = entry.records.layers.iter().map(|r| r.layer_id.as_str()).chain(entry.instances.iter().map(|i| i.layer_id.as_str())).collect();
-    super::layers::try_mint_block_id(doc, block, 1, &|id| taken.contains(id))
+/// [`mint_placed_layer_id`] over the id block `7ede-<block>` (lane SMB-PS-FILTER-ADJUST-COMMANDS-1: adjustment
+/// layers mint from `9300`).
+fn mint_entry_layer_id(doc: &StudioDocument, entry: &Entry, block: &str) -> String {
+    let (high, low) = time_fields(doc);
+    let taken: BTreeSet<&str> = doc
+        .layers
+        .iter()
+        .map(|l| l.layer_id.as_str())
+        .chain(entry.records.layers.iter().map(|r| r.layer_id.as_str()))
+        .chain(entry.instances.iter().map(|i| i.layer_id.as_str()))
+        .collect();
+    let mut n: u64 = 1;
+    loop {
+        let id = format!("SLYR-{high}-{low}-7ede-{block}-{n:012x}");
+        if !taken.contains(id.as_str()) {
+            return id;
+        }
+        n = n.wrapping_add(1);
+    }
 }
 
 /// The tight bounds of the texels with alpha > 0 of `pixels` (row-major over `bounds`) and those texels;

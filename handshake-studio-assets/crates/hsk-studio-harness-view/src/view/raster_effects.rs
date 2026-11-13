@@ -68,8 +68,8 @@
 //!   `cols`, `rows`, `vertices`) unless `full` is set.
 //! - `adjustment.create {adjustment, name?, clipped?}`: a new `adjustment` layer above the selected layer holding
 //!   the Folio `StudioAdjustment` record (tag `kind`, [STU-RAS-151]; payload `hsk.studio.adjustment@1` naming its
-//!   own id, minted from block `7ede-9300` with the revision scheme of `layers`), clipped to the layer below when
-//!   `clipped`; layer and record are one step. Any open document takes one.
+//!   own id, minted from the block `7ede-9300`: the first counter the document and the entry do not hold), clipped
+//!   to the layer below when `clipped`; layer and record are one step. Any open document takes one.
 //! - `adjustment.edit {layer, adjustment}`: the adjustment layer's record replaced (any kind: Layer > Change Layer
 //!   Content); re-editable parameters ([STU-RAS-035]).
 //! - `adjustment.apply {layer, adjustment}`: the explicit destructive apply-in-place form ([STU-RAS-035]), one job
@@ -88,8 +88,8 @@
 //! `tile_format_unsupported`, `effect_instance_unknown`, `effect_stack_full` (Folio's `MAX_SMART_FILTERS`),
 //! `index_out_of_range`, `nothing_to_change`, `parameter_unknown`, `parameter_missing`, `parameter_invalid`,
 //! `effect_param_out_of_range`, `effect_value_range_unsupported`, `effect_render_budget_exceeded`, pigment's
-//! `filter_parameter`, composite's and pigment's adjustment codes, `layer_id_space_exhausted`, `overloaded`,
-//! `stale_revision`, `folio_<code>`, `budget_exceeded`, `canceled` and the run's own codes.
+//! `filter_parameter`, composite's and pigment's adjustment codes, `overloaded`, `stale_revision`,
+//! `folio_<code>`, `budget_exceeded`, `canceled` and the run's own codes.
 //!
 //! Cuts (named, not silent): per-filter and stack masks (`STUDIO_EFFECT_MASK_EDIT`), selection-scoped apply,
 //! destructive filter forms and bake (`STUDIO_EFFECT_BAKE`) are the next slice; the sandbox ->
