@@ -47,12 +47,22 @@ pub(super) fn stack(doc: &StudioDocument, group: Option<&str>) -> Vec<String> {
     }
 }
 
-/// A fresh `SLYR` id: the document id's time fields, a fixed version/variant block and the first
-/// unused counter (never an id the document holds).
+/// A fresh `SLYR` id: the document id's time fields, a fixed version/variant block and a 48-bit counter whose
+/// upper 24 bits are the document revision the id is minted at and whose lower 24 bits are the first value from
+/// `salt` the document does not hold (never an id the document holds).
+///
+/// Lane SMB-PS-FILTER-ADJUST-COMMANDS-1 (lead ruling 2026-11-13): an id is never minted again, so a layer
+/// created after a delete never takes the deleted layer's id and never inherits a record other entries still
+/// key by it (the `raster_records` smart filter stack or adjustment, vector and design records; this function
+/// sees only the document, so the revision stands in for "every id ever seen"). A layer exists only through a
+/// chronicle commit, which moves the revision past the one its id was minted at; revisions only grow (an undo
+/// is a new revision) and a saved document reopens at its revision, so every later mint carries a higher
+/// revision. Ids of the earlier scheme have revision bits 0 and stay distinct from every mint at revision 1 or
+/// later. The revision bits saturate at 2^24 - 1 (16.7 million commits) and `salt` is taken modulo 2^24.
 pub(super) fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
-    let mut n = salt;
+    let mut n = doc.revision.min(0xFF_FFFF).saturating_mul(0x100_0000).saturating_add(salt & 0xFF_FFFF);
     loop {
         let id = format!("SLYR-{high}-{low}-7ede-9000-{n:012x}");
         if !doc.layers.iter().any(|l| l.layer_id == id) {
