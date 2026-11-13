@@ -247,7 +247,7 @@ fn arrange_keeps_board_nodes_and_vector_rewrites_refuse_them() {
     let a = shape(&mut v, 100.0, 100.0, "Discover");
     let b = shape(&mut v, 600.0, 100.0, "Visit");
     let c = text(&ok(&mut v, "board.connector.create", json!({"start": {"endpoint_node_id": a, "magnet": "RIGHT"}, "end": {"endpoint_node_id": b, "magnet": "LEFT"}})), "node_id");
-    v.transform_layers(&[b.clone()], TransformOp::Move { dx: 0.0, dy: 200.0 }, ReferencePoint::Centre).unwrap();
+    v.transform_layers(std::slice::from_ref(&b), TransformOp::Move { dx: 0.0, dy: 200.0 }, ReferencePoint::Centre).unwrap();
     let e = vector_entry(&v);
     let doc = v.run().snapshot().unwrap().document().clone();
     let layer = doc.layers.iter().find(|l| l.layer_id == b).unwrap();

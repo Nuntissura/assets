@@ -9,7 +9,7 @@ use super::super::render::Prefer;
 use super::super::text::{self, TextEntry};
 use super::super::vector::{self, PathRecord, VectorEntry, VectorStyle};
 use super::{
-    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, SHAPE_TEXT_INSET, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, fitted_size, geo_refusal,
+    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, SHAPE_TEXT_INSET, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, fitted_size,
     mint_path, outline, project, rect_json, rects_of, refused, route_points, text_baseline, text_ok, translated, uuid_parts,
 };
 use crate::PlacementWrite;
