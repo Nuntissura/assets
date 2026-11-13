@@ -547,7 +547,6 @@ impl Viewer {
     ) -> Result<Value, CommandRefusal> {
         let result = (|| -> Result<Value, CommandRefusal> {
             let doc = self.place_doc().map_err(command_refusal)?;
-            self.canvas().map_err(|e| CommandRefusal::new("canvas_unavailable", json!({"message": e})))?;
             let mut entry = self.editable_entry(&doc).map_err(command_refusal)?;
             let layer_id = mint_entry_layer_id(&doc, &entry, "9300");
             let (kind, payload, appearance, record) = make(&layer_id)?;

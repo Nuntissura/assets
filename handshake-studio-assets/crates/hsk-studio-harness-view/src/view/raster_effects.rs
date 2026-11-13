@@ -42,7 +42,8 @@
 //!   `out_of_soft_range` (the parameters whose value lies outside a known soft range, [STU-FX-105]).
 //! - `adjustment.create {adjustment, name?, clipped?}`: a new `adjustment` layer above the selected layer holding
 //!   the Folio `StudioAdjustment` record (tag `kind`, [STU-RAS-151]; payload `hsk.studio.adjustment@1` naming its
-//!   own id), clipped to the layer below when `clipped`; layer and record are one step.
+//!   own id), clipped to the layer below when `clipped`; layer and record are one step. Any open document takes
+//!   one (an artboard is not required: the record is document state; the canvas draws it where there is one).
 //! - `adjustment.edit {layer, adjustment}`: the adjustment layer's record replaced (any kind: Layer > Change Layer
 //!   Content); re-editable parameters ([STU-RAS-035]).
 //! - `adjustment.apply {layer, adjustment}`: the explicit destructive apply-in-place form ([STU-RAS-035]): the pixel
@@ -56,7 +57,7 @@
 //! written: composite's conversion (`lower_extensions::adjustment_op`, its codes such as `colour_lookup_unresolved`)
 //! and pigment's `prepare` (`adjust_invalid_parameter` naming the parameter, `adjust_unsupported`).
 //!
-//! Refusal codes: `not_open`, `canvas_unavailable`, `layer_unknown`, `layer_not_pixel`, `layer_not_adjustment`,
+//! Refusal codes: `not_open`, `layer_unknown`, `layer_not_pixel`, `layer_not_adjustment`,
 //! `layer_empty`, `tile_format_unsupported`, `effect_instance_unknown`, `effect_stack_full` (Folio's
 //! `MAX_SMART_FILTERS`), `index_out_of_range`, `nothing_to_change`, `parameter_unknown`, `parameter_missing`,
 //! `parameter_invalid`, `parameter_out_of_range` (opacity), `effect_param_out_of_range`, pigment's
