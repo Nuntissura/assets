@@ -316,6 +316,39 @@ mod through_the_viewer {
         assert_ne!(next, three, "{two} {three} {next}");
     }
 
+    /// R60-a3 probe lead (SMB-DOC-NEW-1; fixed in lane SMB-BOARD-1): add, set_options and delete cycles past
+    /// the reader's row bound (twice the artboard ceiling) never outgrow the options entry: a delete takes its
+    /// artboard's options with it in its own step (an undo brings them back), every set_options still succeeds,
+    /// and the entry holds the live artboards' rows only.
+    #[test]
+    fn add_set_delete_cycles_keep_the_artboard_options_entry_bounded_by_the_live_artboards() {
+        let rows = |v: &Viewer| -> (usize, usize) {
+            let bytes = v.run().document_entry("artboard_options").expect("an options entry");
+            (serde_json::from_slice::<Value>(bytes).unwrap()["artboards"].as_array().unwrap().len(), bytes.len())
+        };
+        let mut v = vector_doc(100.0, 100.0);
+        let first = containers(&v)["artboards"][0]["artboard_id"].as_str().unwrap().to_owned();
+        let on = ArtboardOptionsEdit { show_center_mark: Some(true), ..ArtboardOptionsEdit::default() };
+        v.set_artboard_options(&first, &on).unwrap();
+        let (_, one) = rows(&v);
+        for cycle in 0..2001_u32 {
+            let b = v.add_artboard("B", 50.0, 50.0, None).unwrap();
+            let set = v.set_artboard_options(&b, &on);
+            assert!(set.is_ok(), "set_options refused at cycle {cycle}: {set:?}");
+            v.delete_artboard(&b).unwrap();
+        }
+        let set = v.set_artboard_options(&first, &ArtboardOptionsEdit { show_center_mark: Some(false), ..ArtboardOptionsEdit::default() });
+        assert!(set.is_ok(), "set_options after 2001 cycles: {set:?}");
+        let (count, len) = rows(&v);
+        assert_eq!(count, 1, "one row per live artboard");
+        assert!(len <= one + 8, "{len} bytes against {one} for the one live artboard");
+        // The last delete's undo brings that artboard back with its options.
+        v.undo().unwrap();
+        v.undo().unwrap();
+        assert_eq!(containers(&v)["artboards"][1]["options"]["show_center_mark"], true, "{}", containers(&v));
+        assert_eq!(rows(&v).0, 2);
+    }
+
     /// Hostile sizes, names and targets are typed and change nothing: bounded, no panic.
     #[test]
     fn hostile_artboard_input_is_typed_and_changes_nothing() {
