@@ -735,6 +735,31 @@ mod tests {
         assert!(e.starts_with("board: canceled"), "{e}");
     }
 
+    /// Review F1 (lead ruling 2026-11-13, revised): a board record naming a layer the opened document does not
+    /// hold is dropped at open with a loss note, so a layer that later takes that id never inherits it.
+    #[test]
+    fn a_board_record_without_its_layer_is_dropped_at_open_with_a_loss_note() {
+        let v = &mut board_viewer();
+        let mut entry = v.vector_entry().unwrap();
+        let mut stale = entry.records.board_nodes[0].clone();
+        stale.layer_id = "SLYR-019abcde-0000-7000-8000-00000000dead".to_owned();
+        entry.records.board_nodes.push(stale);
+        let document_id = v.run.snapshot().unwrap().document().document_id.clone();
+        v.run.set_document_entry(super::super::vector::ENTRY, Some(entry.to_bytes(&document_id).unwrap())).unwrap();
+        let dir = std::env::temp_dir().join(format!("hsk-board-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stale.handshake");
+        v.save(&path, true).unwrap();
+        let mut w = Viewer::new(super::super::render::Prefer::Cpu);
+        w.open(&path).unwrap();
+        let records = w.vector_entry().unwrap().records.board_nodes;
+        assert_eq!(records.len(), 3, "{records:?}");
+        assert!(records.iter().all(|n| n.layer_id != "SLYR-019abcde-0000-7000-8000-00000000dead"));
+        let status = w.state_json()["status"].to_string();
+        assert!(status.contains("board_record_dropped") && status.contains("00000000dead"), "{status}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Review F13: an export canceled after its admission settles its job `canceled`, not `failed`, and writes
     /// nothing.
     #[test]
