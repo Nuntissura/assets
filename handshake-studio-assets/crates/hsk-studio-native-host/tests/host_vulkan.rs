@@ -16,11 +16,13 @@ use hsk_studio_native_host::cli::Caller;
 use hsk_studio_native_host::diag::HostRun;
 use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
 
-/// One host entry as the asset-local caller (F-R60-22).
+/// One host entry as the asset-local caller: the run sends exactly one terminal frame (F-R60-22).
 fn observed<T>(run: impl FnOnce(&mut HostRun<'_>) -> T) -> T {
     let (cancel, mut frames) = (CancellationToken::default(), Frames::default());
     let caller = Caller::asset_local();
-    run(&mut HostRun::new(caller.actor, caller.resource, 1, &cancel, &mut frames).expect("host run"))
+    let out = run(&mut HostRun::new(caller.actor, caller.resource, 1, &cancel, &mut frames).expect("host run"));
+    assert_eq!(frames.0, [DeliveryClass::Terminal], "one terminal frame per host run");
+    out
 }
 
 /// The classes of the frames a host run sent.

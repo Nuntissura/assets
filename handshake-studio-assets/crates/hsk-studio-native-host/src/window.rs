@@ -277,10 +277,10 @@ struct App {
 }
 
 /// Runs a window until `frames` frames were presented (and the exercise finished), the window closes, or the
-/// deadline passes. Builds its own event loop: one window run per process. Runs as the caller `host` names.
+/// deadline passes. Builds its own event loop: one window run per process. Runs as the caller `host` names and sends
+/// exactly one terminal frame through it on every exit path, early usage refusals and a panic included (F-R60-22).
 pub fn run(args: &WindowArgs, host: &mut HostRun<'_>) -> Result<WindowResult, HostError> {
-    let _ = host;
-    run_window(args)
+    crate::diag::observed(host, || run_window(args))
 }
 
 fn run_window(args: &WindowArgs) -> Result<WindowResult, HostError> {

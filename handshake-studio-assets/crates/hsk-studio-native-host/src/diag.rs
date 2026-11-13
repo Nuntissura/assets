@@ -44,7 +44,8 @@ pub fn emit_terminal(
 
 /// The caller's side of one host run (HOST INTEGRATION (4), (5)): who runs it, on which resource, under which
 /// correlation and cancellation, and the sink its one terminal frame goes to. A run entry sends that frame;
-/// [`HostRun::terminal`] then holds what its delivery returned. A delivery error never changes the run's result.
+/// [`HostRun::terminal`] then holds what its delivery returned. A delivery error never changes the run's result
+/// (tests/fix_host_terminal_frame.rs `a_refused_delivery_never_changes_the_run_result`).
 pub struct HostRun<'a> {
     observe: Observe,
     correlation_id: u64,
@@ -86,6 +87,28 @@ impl<'a> HostRun<'a> {
         let delivered = self.observe.emit(observation, self.cancel, &mut *self.sink);
         self.terminal = Some(delivered);
         delivered
+    }
+}
+
+/// The terminal outcome of a run that panicked. Observe's closed failure set has no internal-error code; a run that
+/// could not finish is `Unavailable`, as [`outcome`] maps window, io and timeout failures.
+pub const PANIC_OUTCOME: Outcome = Outcome::Failure(FailureCode::Unavailable);
+
+/// Runs one host entry's body and sends its terminal frame through `host` on every exit path. A panic sends
+/// [`PANIC_OUTCOME`], then unwinding resumes, so the panic still reaches the caller. winit catches a panic in its
+/// callbacks and resumes it out of `run_app` (winit 0.30 windows `event_loop.rs`), so the window path is covered; a
+/// `panic = "abort"` build runs no unwinding and leaves no frame.
+pub(crate) fn observed<T>(host: &mut HostRun<'_>, run: impl FnOnce() -> Result<T, HostError>) -> Result<T, HostError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(result) => {
+            // The delivery result stays readable through `terminal()`; it never changes the run's result.
+            let _ = host.finish(result.as_ref().map(|_| ()).map_err(|e| *e));
+            result
+        }
+        Err(payload) => {
+            let _ = host.send(PANIC_OUTCOME);
+            std::panic::resume_unwind(payload)
+        }
     }
 }
 
@@ -148,5 +171,37 @@ impl SinkPort for LineSink {
             }
             None => std::io::stderr().lock().write_all(line.as_bytes()).map_err(|_| DeliveryError::Indeterminate),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Collect(Vec<DeliveryClass>);
+
+    impl SinkPort for Collect {
+        fn try_send(&mut self, class: DeliveryClass, _: &[u8]) -> Result<(), DeliveryError> {
+            self.0.push(class);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_panicking_run_sends_one_failure_frame_and_keeps_unwinding() {
+        let actor = ActorContext::new("acct", "acct", "acct", "acct", "acct", "session").unwrap();
+        let resource = DomainId::parse("SDOC-0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b").unwrap();
+        let cancel = CancellationToken::default();
+        let mut sink = Collect::default();
+        let mut host = HostRun::new(actor, resource, 9, &cancel, &mut sink).unwrap();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            observed(&mut host, || -> Result<(), HostError> { panic!("the run panicked") })
+        }));
+        assert!(unwound.is_err(), "the panic reaches the caller");
+        assert_eq!(host.terminal().map(|t| t.map(|r| r.outcome)), Some(Ok(PANIC_OUTCOME)));
+        assert_eq!(host.finish(Ok(())), Err(Error::Closed));
+        drop(host);
+        assert_eq!(sink.0, [DeliveryClass::Terminal]);
     }
 }

@@ -40,10 +40,10 @@ pub struct OffscreenResult {
     pub receipt: Json,
 }
 
-/// Renders `args.scene` into a pane and reads it back, as the caller `host` names.
+/// Renders `args.scene` into a pane and reads it back, as the caller `host` names. Sends exactly one terminal frame
+/// through `host` on every exit path, a panic included (F-R60-22).
 pub fn run(args: &OffscreenArgs, host: &mut HostRun<'_>) -> Result<OffscreenResult, HostError> {
-    let _ = host;
-    run_scene(args)
+    crate::diag::observed(host, || run_scene(args))
 }
 
 fn run_scene(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {

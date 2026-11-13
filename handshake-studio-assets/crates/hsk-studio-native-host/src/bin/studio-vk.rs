@@ -1,7 +1,7 @@
 //! `studio-vk`: the asset-local Vulkan host binary. Prints one receipt JSON line on success, `error <code>/<detail>` on
-//! stderr otherwise, and exits with the code in `cli::USAGE`. A run is attributed to the caller `--actor`, `--session`
-//! and `--resource` name (else the asset-local test host's fixed context) and its observe frames go to the
-//! `--observe` file, else to stderr ([`LineSink`]).
+//! stderr otherwise, and exits with the code in `cli::USAGE`. Every run but `help` sends one terminal observe frame,
+//! a refused command line included (F-R60-22), attributed to the caller `--actor`, `--session` and `--resource` name
+//! (else the asset-local test host's fixed context), to the `--observe` file, else to stderr ([`LineSink`]).
 use hsk_studio_accord::{CancellationToken, CorrelationSource, TransientCorrelation};
 use hsk_studio_native_host::HostError;
 use hsk_studio_native_host::cli::{self, Caller, Command};
@@ -33,6 +33,9 @@ fn main() {
         }
     };
     let result = run(command.and_then(|c| refused.map_or(Ok(c), Err)), &mut host);
+    if let Some(Err(e)) = host.terminal() {
+        eprintln!("observe_undelivered {}", e.code());
+    }
     match result {
         Ok(line) => println!("{line}"),
         Err(e) => {
@@ -46,9 +49,15 @@ fn run(command: Result<Command, HostError>, host: &mut HostRun<'_>) -> Result<St
     match command {
         Ok(Command::Offscreen(a)) => offscreen::run(&a, host).map(|r| r.receipt.render()),
         Ok(Command::Window(a)) => window::run(&a, host).map(|r| r.receipt.render()),
-        Ok(Command::Help) => Ok(cli::USAGE.to_string()),
+        // `main` answers help before a run starts; this arm still sends its frame.
+        Ok(Command::Help) => {
+            let _ = host.finish(Ok(()));
+            Ok(cli::USAGE.to_string())
+        }
         Err(e) => {
             eprintln!("{}", cli::USAGE);
+            // A refused command line is a run: its failure goes through the caller's sink (F-R60-22).
+            let _ = host.finish(Err(e));
             Err(e)
         }
     }
