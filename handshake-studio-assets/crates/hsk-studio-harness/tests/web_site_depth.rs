@@ -1094,3 +1094,78 @@ fn failed_site_writes_restore_or_stop_with_a_receipt() {
     assert_eq!(after, before, "every restored file is back and the failed instance untouched");
     assert!(dir.read("site/e.html").contains("<footer>f</footer>"), "the instance before the failure is complete");
 }
+
+// ----- R60-a3 probe leads (SMB-WEB-SITE-1), lead message 2026-11-13 ----------------------------------------------
+
+/// Probe lead (1): a reference in a page with `<base href>` resolves against the base, so a move rewrites it, spelled
+/// from the base folder.
+#[test]
+fn a_move_rewrites_references_under_a_base_href() {
+    let dir = Scratch::new("base-href");
+    dir.write("site/index.html", b"<!DOCTYPE html><html><head><title>i</title><base href=\"sub/\"></head><body><img alt=\"a\" src=\"img.png\"></body></html>");
+    dir.write("site/sub/img.png", b"png");
+    with_run(|run| {
+        define(run, &dir);
+        assert_eq!(cmd(run, "web.site_report", json!({}))["orphaned_files"], json!([]), "the image is referenced through the base");
+        cmd(run, "web.move_file", json!({"from": "sub/img.png", "to": "sub/pics/img.png"}));
+        let report = cmd(run, "web.site_report", json!({}));
+        assert_eq!((report["broken_links"].clone(), report["orphaned_files"].clone()), (json!([]), json!([])), "{report}");
+    });
+    assert!(dir.read("site/index.html").contains("<base href=\"sub/\"></head><body><img alt=\"a\" src=\"pics/img.png\">"), "{}", dir.read("site/index.html"));
+}
+
+/// Probe lead (2): a page the walk cannot read by name (a space, a non-ASCII character) is never rewritten; the
+/// receipt lists it as not_scanned and says complete=false.
+#[test]
+fn pages_the_walk_skips_make_the_receipt_incomplete() {
+    let dir = Scratch::new("skipped-pages");
+    let link = b"<!DOCTYPE html><html><head><title>p</title></head><body><a href=\"thanks.html\">t</a></body></html>";
+    dir.write("site/My Page.html", link);
+    dir.write("site/caf\u{e9}.html", link);
+    dir.write("site/index.html", link);
+    dir.write("site/thanks.html", PAGE.as_bytes());
+    with_run(|run| {
+        define(run, &dir);
+        let moved = cmd(run, "web.move_file", json!({"from": "thanks.html", "to": "pages/thanks.html"}));
+        let receipt = &moved["receipt"];
+        assert_eq!(receipt["complete"], false, "{receipt}");
+        let files: Vec<&str> = receipt["not_scanned"].as_array().unwrap().iter().map(|f| f["file"].as_str().unwrap()).collect();
+        assert_eq!(files, ["My Page.html", "caf\u{e9}.html"], "{receipt}");
+    });
+    assert!(dir.read("site/index.html").contains("href=\"pages/thanks.html\""));
+}
+
+/// Probe lead (3): a move that updates the recipe's entry document also updates the recipe values its history steps
+/// hold, so undo then redo restores the moved value.
+#[test]
+fn redo_after_a_move_keeps_the_moved_recipe_file() {
+    let dir = Scratch::new("recipe-redo");
+    dir.write("site/thanks.html", PAGE.as_bytes());
+    with_run(|run| {
+        define(run, &dir);
+        cmd(run, "web.export_recipe", json!({"output_root": s(&dir.at("out")), "documents": "site", "file": "thanks.html"}));
+        let moved = cmd(run, "web.move_file", json!({"from": "thanks.html", "to": "pages/thanks.html"}));
+        assert_eq!(moved["web"]["recipe"]["file"], "pages/thanks.html");
+        cmd(run, "web.undo", json!({}));
+        let redone = cmd(run, "web.redo", json!({}));
+        assert_eq!(redone["web"]["recipe"]["file"], "pages/thanks.html", "{redone}");
+    });
+}
+
+/// Probe lead (4): a save onto the site lock file refuses `save_onto_site_lock` (any letter case) and never leaves
+/// the site locked.
+#[test]
+fn a_save_onto_the_site_lock_file_is_refused() {
+    let dir = Scratch::new("save-lock-file");
+    let index = dir.write("site/index.html", PAGE.as_bytes());
+    dir.write("site/a.png", b"png");
+    with_run(|run| {
+        cmd(run, "web.open", json!({"path": s(&index)}));
+        define(run, &dir);
+        for name in [".studio-site.lock", ".STUDIO-SITE.LOCK"] {
+            assert_eq!(refused(run, "web.save", json!({"path": s(&dir.at(&format!("site/{name}"))), "overwrite": true})), "save_onto_site_lock", "{name}");
+        }
+        assert!(!dir.at("site/.studio-site.lock").exists(), "no lock left");
+        cmd(run, "web.move_file", json!({"from": "a.png", "to": "b.png"}));
+    });
+}
