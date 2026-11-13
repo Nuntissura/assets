@@ -1,7 +1,9 @@
-//! Whiteboard records (lane SMB-BOARD-1; [STU-WB-001], [STU-WB-002], [STU-WB-102] to [STU-WB-109],
-//! [STU-WB-115], [STU-WB-120]): the boards of a document and the additional fields of its board nodes, as
-//! two members of `StudioVectorRecords` (`boards`, `board_nodes`), each skipped when empty, so record sets
-//! written before them are byte-identical.
+//! Whiteboard records (lane SMB-BOARD-1; [STU-WB-102] to [STU-WB-109], [STU-WB-115]): the additional fields
+//! of a document's board nodes, as the member `board_nodes` of `StudioVectorRecords`, skipped when empty, so
+//! record sets written before it are byte-identical. Whiteboard mode itself ([STU-WB-001]) is a document-level
+//! fact the harness writes at creation (its artboard options entry; review F4 of e4d033aa, lead ruling); a board
+//! ([STU-WB-120]) is an artboard of a whiteboard document. Builds before this lane refuse a record set with
+//! board nodes (`deny_unknown_fields`) and a layer of a board kind (`PayloadMismatch`).
 //!
 //! [STU-WB-102]: a board node is a `StudioLayer` whose `kind` is its board node kind token. The kinds this
 //! build draws ([`BOARD_VECTOR_KINDS`]: sticky, shape_with_text, connector, section) are vector-backed:
@@ -13,9 +15,7 @@
 //! bound as area text (`area_texts`) inside the node's own path; Studio reading: the spec's "text
 //! sublayer" is that bound story, not a separate layer (declared, UNVERIFIED against the source, D5).
 //!
-//! [STU-WB-120]: a board is a page-kind container, an artboard (`SART`). A document whose `boards` lists
-//! one is in whiteboard mode, and then every artboard of it is a board (a node names its own in
-//! `board_id`).
+//! [STU-WB-120]: a board is a page-kind container, an artboard (`SART`); a node names its own in `board_id`.
 //!
 //! History: a record whose layer the document no longer holds belongs to a revision the history can
 //! return to and is not checked against the document; a connector endpoint naming a node the document
@@ -44,8 +44,6 @@ pub const BOARD_NODE_KINDS: [&str; 12] = [
 ];
 /// The board node kinds this build binds to a layer: vector-backed (`Payload::Vector`).
 pub const BOARD_VECTOR_KINDS: [&str; 4] = ["sticky", "shape_with_text", "connector", "section"];
-/// Most boards of one record set (the artboard ceiling of New Document).
-pub const MAX_BOARDS: usize = 1000;
 /// Most board node records of one record set (a Folio hard ceiling; the spec declares none).
 pub const MAX_BOARD_NODES: usize = 65_536;
 /// Longest `author_name`, bytes (Studio-declared).
@@ -110,14 +108,6 @@ pub const FIGMA_SHAPE_VOCABULARY_VERSION: &str = "1.141.0";
 /// True for a kind this build binds to a vector-backed board layer ([`BOARD_VECTOR_KINDS`]).
 pub fn is_board_vector_kind(kind: &str) -> bool {
     BOARD_VECTOR_KINDS.contains(&kind)
-}
-
-/// [STU-WB-120]: one board, a page-kind container.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct StudioBoard {
-    /// `SART` artboard of the document.
-    pub artboard_id: String,
 }
 
 /// [STU-WB-107] connector line types (normative, closed, three members; default `ELBOWED`).
@@ -350,7 +340,7 @@ impl StudioBoardNodeFields {
 pub struct StudioBoardNode {
     /// `SLYR` layer of kind [`StudioBoardNodeFields::kind`].
     pub layer_id: String,
-    /// `SART` artboard of the board ([`StudioBoard`]).
+    /// `SART` artboard of the board ([STU-WB-120]).
     pub board_id: String,
     pub node: StudioBoardNodeFields,
 }
@@ -383,26 +373,13 @@ fn endpoint(e: &StudioConnectorEndpoint, own: &str, target: &str) -> Result<()> 
     Ok(())
 }
 
-/// Checks `boards` and `board_nodes` (module docs): ids, uniqueness, closed tokens, finite bounded
-/// numbers, and a node whose layer the document holds is a vector-backed
-/// layer of its own kind.
-pub(crate) fn validate_board_records(boards: &[StudioBoard], nodes: &[StudioBoardNode], layers: &BTreeMap<&str, &StudioLayer>, cx: &mut Ctx<'_>) -> Result<()> {
-    if boards.len() > MAX_BOARDS {
-        return Err(err(Code::BudgetExceeded, "boards"));
-    }
+/// Checks `board_nodes` (module docs): ids, uniqueness, closed tokens, finite bounded numbers, and a node
+/// whose layer the document holds is a vector-backed layer of its own kind.
+pub(crate) fn validate_board_records(nodes: &[StudioBoardNode], layers: &BTreeMap<&str, &StudioLayer>, cx: &mut Ctx<'_>) -> Result<()> {
     if nodes.len() > MAX_BOARD_NODES {
         return Err(err(Code::BudgetExceeded, "board_nodes"));
     }
-    cx.nodes(boards.len(), "boards")?;
     cx.nodes(nodes.len(), "board_nodes")?;
-    let mut listed = BTreeSet::new();
-    for b in boards {
-        cx.tick()?;
-        id(&b.artboard_id, "SART", "boards/artboard_id")?;
-        if !listed.insert(b.artboard_id.as_str()) {
-            return Err(err(Code::DuplicateIdentity, b.artboard_id.as_str()));
-        }
-    }
     let mut seen = BTreeSet::new();
     for n in nodes {
         cx.tick()?;
@@ -492,7 +469,6 @@ mod tests {
 
     fn records() -> Value {
         json!({"schema_id":"hsk.studio.vector_records@1","document_id":identity("SDOC",1),
-            "boards":[{"artboard_id":identity("SART",1)}],
             "board_nodes":[
                 {"layer_id":identity("SLYR",1),"board_id":identity("SART",1),"node":{"node_kind":"sticky","author_visible":true,"author_name":"Ilse","is_wide_width":false}},
                 {"layer_id":identity("SLYR",2),"board_id":identity("SART",1),"node":{"node_kind":"shape_with_text","shape_type":{"vocabulary":"figma_plugin_api","vocabulary_version":"1.141.0","token":"ENG_DATABASE"}}},
@@ -563,7 +539,7 @@ mod tests {
         assert_eq!(with("/board_nodes/2/node/rotation", json!(720.0)), Err(Code::InvalidField));
         assert_eq!(with("/board_nodes/2/node/last_route", json!(vec![json!({"x":0.0,"y":0.0}); MAX_CONNECTOR_ROUTE_POINTS.saturating_add(1)])), Err(Code::InvalidField));
         assert_eq!(with("/board_nodes/1/layer_id", json!(identity("SLYR", 1))), Err(Code::DuplicateIdentity));
-        assert_eq!(with("/boards/0/artboard_id", json!(identity("SLYR", 1))), Err(Code::InvalidId));
+        assert_eq!(with("/board_nodes/0/board_id", json!(identity("SLYR", 1))), Err(Code::InvalidId));
         assert_eq!(with("/board_nodes/0/node/surprise", json!(1)), Err(Code::InvalidJson), "unknown fields are refused");
         // A record whose layer is gone is history, not an error; an endpoint naming a gone node is the broken state.
         assert_eq!(with("/board_nodes/0/layer_id", json!(identity("SLYR", 9))), Ok(()));
@@ -583,9 +559,6 @@ mod tests {
             .collect();
         x["board_nodes"] = json!(many);
         assert_eq!(check(&x), Err(Code::BudgetExceeded), "aggregate over budget");
-        let mut y = records();
-        y["boards"] = json!((0..=u32::try_from(MAX_BOARDS).unwrap()).map(|n| json!({"artboard_id": identity("SART", n)})).collect::<Vec<_>>());
-        assert_eq!(check(&y), Err(Code::BudgetExceeded));
     }
 
     #[test]

@@ -530,10 +530,6 @@ pub struct StudioVectorRecords {
     /// byte-identical).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub live_filters: Vec<crate::StudioLiveFilterStack>,
-    /// Boards of the document (lane SMB-BOARD-1, `board.rs`, STU-WB-120; absent when empty, so record
-    /// sets written before them are byte-identical).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub boards: Vec<crate::StudioBoard>,
     /// Board node records (lane SMB-BOARD-1, `board.rs`, STU-WB-102..108, 115; absent when empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub board_nodes: Vec<crate::StudioBoardNode>,
@@ -567,7 +563,6 @@ impl StudioVectorRecords {
             colour_book_refs: Vec::new(),
             swatch_book_links: Vec::new(),
             live_filters: Vec::new(),
-            boards: Vec::new(),
             board_nodes: Vec::new(),
         }
     }
@@ -1093,7 +1088,7 @@ fn validate_vector_records_in(
     path_text::validate_area_texts(r, &layers, &mut cx)?;
     mesh::validate_meshes(r, &layers, &mut cx)?;
     crate::vector_markers::validate_stroke_markers(r, design, &mut cx)?;
-    crate::board::validate_board_records(&r.boards, &r.board_nodes, &layers, &mut cx)?;
+    crate::board::validate_board_records(&r.board_nodes, &layers, &mut cx)?;
 
     cx.nodes(r.pattern_paints.len(), "pattern_paints")?;
     let styles: BTreeMap<&str, &StudioPaintStyle> = design
