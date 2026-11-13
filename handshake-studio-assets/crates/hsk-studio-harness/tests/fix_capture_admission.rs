@@ -14,13 +14,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Counts asks and releases and records each asked scope; refuses every ask when `saturated`.
+/// Counts asks and releases and records each asked scope; refuses every ask when `saturated`; with
+/// `create_on_admit` writes those bytes to that path inside the ask (a concurrent writer in the window between the
+/// cheap checks and the write, review F1 of b9074096).
 #[derive(Default)]
 struct Port {
     saturated: bool,
     asks: AtomicU64,
     released: AtomicU64,
     scopes: Mutex<Vec<(String, Action)>>,
+    create_on_admit: Option<(PathBuf, Vec<u8>)>,
 }
 
 impl Port {
@@ -45,6 +48,9 @@ impl JobPort for Port {
     fn admit(&self, scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
         let n = self.asks.fetch_add(1, Ordering::SeqCst);
         self.scopes.lock().unwrap().push((scope.resource.as_str().to_string(), scope.action));
+        if let Some((path, bytes)) = &self.create_on_admit {
+            std::fs::write(path, bytes).unwrap();
+        }
         if self.saturated { Err(JobRefused { retry_after_ms: 5 }) } else { Ok(JobTicket(n.saturating_add(1))) }
     }
     fn release(&self, _ticket: JobTicket) {
@@ -64,6 +70,12 @@ impl Scratch {
     }
     fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)
+    }
+    /// The names in the folder, sorted (a left temp shows up here).
+    fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(&self.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
     }
 }
 
@@ -202,4 +214,45 @@ fn the_job_resource_is_the_prototype_files_or_the_open_documents() {
     let scopes = port.scopes();
     assert_eq!(scopes.last().map(|s| s.0.as_str()), Some(document.as_str()), "the open document: {scopes:?}");
     assert_ne!(document, derived);
+}
+
+/// Review F1 of b9074096 (lead ruling 2026-11-13): a file that appears after the `overwrite_required` check (here
+/// created inside the port's admit, standing in for a concurrent writer) is never replaced by a capture without
+/// overwrite: refused typed `overwrite_required`, the file unchanged, the job settled once `failed`, its ticket
+/// released once, no temp left.
+#[test]
+fn a_file_that_appears_after_the_check_is_never_replaced_without_overwrite() {
+    let scratch = Scratch::new("appears");
+    let frame = scratch.path("frame.png");
+    let port = Arc::new(Port { create_on_admit: Some((frame.clone(), b"kept".to_vec())), ..Port::default() });
+    let mut v = session(&port);
+    let (code, detail) = capture(&mut v, json!({"path": frame.to_str().unwrap()})).expect_err("refused");
+    assert_eq!(code, "overwrite_required", "{detail}");
+    assert_eq!(std::fs::read(&frame).unwrap(), b"kept", "the file that appeared is unchanged");
+    assert_eq!((port.asks(), port.released()), (1, 1));
+    let counts = v.job_counts();
+    assert_eq!((counts.admitted, counts.completed, counts.failed, counts.abandoned, counts.released, counts.in_flight), (1, 0, 1, 0, 1, 0), "settled once: {counts:?}");
+    assert_eq!(scratch.names(), ["frame.png"], "no temp left");
+}
+
+/// Review F2 of b9074096: a write that fails after admission (the parent folder is missing) is refused
+/// `export_write`, settles once `failed` (never `abandoned`), releases its ticket once and leaves nothing; a refused
+/// admission leaves no file and no temp either.
+#[test]
+fn a_write_failure_after_admission_settles_once_failed_and_leaves_nothing() {
+    let scratch = Scratch::new("write-fails");
+    let port = Port::open();
+    let mut v = session(&port);
+    let missing = scratch.path("missing").join("frame.png");
+    let (code, detail) = capture(&mut v, json!({"path": missing.to_str().unwrap()})).expect_err("refused");
+    assert_eq!(code, "export_write", "{detail}");
+    assert_eq!((port.asks(), port.released()), (1, 1));
+    let counts = v.job_counts();
+    assert_eq!((counts.admitted, counts.completed, counts.failed, counts.abandoned, counts.released, counts.in_flight), (1, 0, 1, 0, 1, 0), "settled once: {counts:?}");
+    assert!(scratch.names().is_empty(), "nothing left: {:?}", scratch.names());
+    let saturated = Port::saturated();
+    let mut w = session(&saturated);
+    let (code, _) = capture(&mut w, json!({"path": scratch.path("frame.png").to_str().unwrap()})).expect_err("refused");
+    assert_eq!(code, "overloaded");
+    assert!(scratch.names().is_empty(), "a refused admission leaves no file and no temp: {:?}", scratch.names());
 }
