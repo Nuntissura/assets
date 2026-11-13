@@ -1,7 +1,7 @@
 //! Smart filter effects and adjustment layers as typed commands (lane SMB-PS-FILTER-ADJUST-COMMANDS-1; [STU-FX-007],
-//! [STU-FX-012c], [STU-FX-103]..[STU-FX-106], [STU-FX-123], [STU-RAS-035], [STU-RAS-037], [STU-RAS-103]..[STU-RAS-112]).
-//! egui-free and drawing nothing: the rows `effect.*` and `adjustment.*` of `action::commands::photo` reach [`run`]
-//! through `Viewer::run_command`.
+//! [STU-FX-012c], [STU-FX-104], [STU-FX-105], [STU-FX-123], [STU-RAS-035], [STU-RAS-037], [STU-RAS-103]..[STU-RAS-112]).
+//! egui-free and drawing nothing: the rows `effect.*` and `adjustment.*` of `action::commands::photo` reach
+//! [`Viewer::effect_command`] and [`Viewer::adjustment_command`] through `Viewer::run_command`.
 //!
 //! # Manual (no-context operator or model)
 //!
@@ -11,68 +11,97 @@
 //! its command id and attributed to the viewer's run context (the caller's); a refusal is a typed code and changes
 //! nothing.
 //!
+//! Steps (review F5, lead ruling 2026-11-13, option b): `effect.apply`, `update`, `reorder`, `toggle`, `remove` and
+//! `adjustment.edit` are ENTRY-ONLY steps (`Run::set_tiles_and_entry` without tiles): the session's history step, not a
+//! document revision. They pass no chronicle provider and no CommitPort, the document revision stays as it was
+//! (test `effect_and_adjustment_edits_are_entry_only_steps_and_leave_the_revision`), and a package preview rendered
+//! for that revision is not marked stale by them (no preview-staleness mechanism is reachable from the viewer:
+//! NOT_PROVEN, next-lane candidate "revisioned raster-records step"). `adjustment.create` (layer and entry, one
+//! chronicle step) and `adjustment.apply` (tiles, one chronicle step) are revisions.
+//!
 //! - `effect.parameters {filter_kind?}` (no document needed): the parameter specs of every kind, or one, without
-//!   running anything ([STU-RAS-110]). A numeric parameter carries the [STU-RAS-103] fields as separate values:
-//!   `hard_min`, `hard_max` (what the engine accepts; outside is a refusal, never a clamp), `soft_min`, `soft_max`
-//!   (what a control presents; a value beyond them inside the hard range is legal, [STU-FX-105]), `default`, `unit`
-//!   (a [STU-RAS-105] token), `precision`, `step`, `coarse_step`, `fine_step` (the [STU-RAS-108] derivation),
-//!   `observed_min`, `observed_max` (evidence only, never a bound, [STU-RAS-107]; `absent` for every kind here) and
-//!   `bound_classification` (`declared`, `observed`, `derived`, `unknown` per value, [STU-RAS-112]). A value no
-//!   source declared is the token `unknown` ([STU-RAS-106]): nothing is invented, clamped or narrowed to an
-//!   observation. `declared` values come from the 14.9.7 effect parameter tables the kernels cite (Fast Box Blur,
-//!   Directional Blur, Radial Blur, Solarize, Mosaic, Minimax, Dust & Scratches); `derived` hard bounds are the
-//!   engine's own (pigment `filter_math` Studio readings, a type's domain, a mathematical domain such as
-//!   `> 0`, flagged `hard_min_exclusive`). The result also carries `findings` of the `STUDIO_EFFECT_PARAM_CONTRACT`
-//!   check ([STU-FX-123], [STU-RAS-111]; [`parameter_contract_findings`]) run over every spec it lists: empty for
-//!   the shipped table.
+//!   running anything ([STU-RAS-110]), as [STU-RAS-103] records (`hsk.studio.parameter_spec@1`; the raster rows
+//!   govern this lane's filters, lead ruling Q2: no [STU-FX-103] `hsk.studio.effect_parameter@1` record is emitted).
+//!   A numeric parameter carries as separate values `hard_min`, `hard_max` (what the engine accepts; outside is a
+//!   refusal, never a clamp), `soft_min`, `soft_max` (what a control presents; a value beyond them inside the hard
+//!   range is legal, [STU-FX-105]), `default`, `unit` (a [STU-RAS-105] token; `table_unit` keeps a source's own
+//!   word where the engine reads it otherwise), `precision`, `step`, `coarse_step`, `fine_step` (the [STU-RAS-108]
+//!   derivation), `observed_min`, `observed_max` (evidence only, never a bound, [STU-RAS-107]; `absent` for every
+//!   kind here) and `bound_classification` (`declared`, `observed`, `derived`, `unknown` per value, [STU-RAS-112]).
+//!   A value no source declared is the token `unknown` ([STU-RAS-106]): nothing is invented, clamped or narrowed to
+//!   an observation. An enumeration lists every member with its integer discriminant ([STU-RAS-109]: the 14.9.7
+//!   tables' where they declare one, else Studio's own contiguous numbering from 1, classified `derived`). Each kind
+//!   also carries its `input_schema` ([STU-RAS-110]): JSON Schema with the known hard bounds as `minimum` /
+//!   `maximum` / `exclusiveMinimum` (none fabricated for an `unknown` bound) and the soft bounds, default, unit,
+//!   precision, steps and classifications as `x-` annotations; `effect_apply_input_schema` is the whole row's
+//!   (`oneOf` by `filter_kind`). The result carries `findings` of the `STUDIO_EFFECT_PARAM_CONTRACT` check
+//!   ([STU-FX-123], [STU-RAS-111]; [`parameter_contract_findings`]) over every spec it lists: empty for the
+//!   shipped table. `declared` values come from the 14.9.7 tables the kernels cite (Fast Box Blur, Directional Blur,
+//!   Radial Blur, Solarize, Mosaic, Minimax, Dust & Scratches); `derived` hard bounds are the engine's own (pigment
+//!   `filter_math` Studio readings, a type's domain, a mathematical domain such as `> 0`, `hard_min_exclusive`).
 //! - `effect.apply {layer, filter_kind, params?, opacity?, enabled?, at?}` (`STUDIO_EFFECT_APPLY`): adds an entry
 //!   to the stack of raster layer `layer` (the stack is created when absent) at render position `at` (default:
-//!   last, applied last). Each parameter of the kind is checked here against its spec: an unknown key is
-//!   `parameter_unknown`, a wrong type `parameter_invalid`, a value outside the hard bounds
-//!   `effect_param_out_of_range` naming the parameter, the value and both hard bounds ([STU-FX-104]); an omitted
-//!   parameter takes its declared default, and one whose default is `unknown` is `parameter_missing`. `opacity`
-//!   is percent `0..=100` (default 100). The entry then passes Folio's record validation and pigment's own
-//!   (`SmartFilterOp::check`). Returns `{layer_id, instance_id, filter_kind, index, defaulted, revision}`.
+//!   last, applied last). Each parameter is checked against its spec on the value the record stores (the 32-bit
+//!   float for a float field, review F8): an unknown key is `parameter_unknown`, a wrong type `parameter_invalid`,
+//!   a value outside the hard bounds `effect_param_out_of_range` naming the parameter, the value and both hard
+//!   bounds ([STU-FX-104]); an omitted parameter takes its declared default (the radial blur centre: the centre of
+//!   the layer's content bounds), and one whose default is `unknown` is `parameter_missing`. `opacity` is percent
+//!   `0..=100` (default 100; outside, `effect_param_out_of_range` with `param: opacity`). The entry then passes
+//!   pigment's check (`SmartFilterOp::check`) and the render's own admission over the layer (review F1): the stack
+//!   renders only unit-range content (pigment `RgbaPlane::validate`, the stack's first check), else
+//!   `effect_value_range_unsupported`; and the entry must fit pigment's budget over the layer's content bounds
+//!   inside the canvas (`FilterKernel::admit`, `filter_math::filter_window_cost` against `StackLimits::default()`,
+//!   so a box blur above `MAX_BOX_KERNEL_TAPS` taps refuses), else `effect_render_budget_exceeded {needed, limit}`;
+//!   a liquify mesh must cover exactly those bounds. Returns `{layer_id, instance_id, filter_kind, index, defaulted,
+//!   revision}`.
 //! - `effect.update {layer, instance, params?, opacity?}` (`STUDIO_EFFECT_UPDATE`): the given parameters over the
-//!   entry's current ones, checked as above; the kind stays.
+//!   entry's current ones, checked and admitted as above; the kind stays. An opacity-only update and a liquify
+//!   update without a new `mesh` do not decode the mesh again (review F9).
 //! - `effect.reorder {layer, instance, to}` (`STUDIO_EFFECT_REORDER`), `effect.toggle {layer, instance?, enabled}`
 //!   (`STUDIO_EFFECT_TOGGLE`; without `instance`: the stack's master switch), `effect.remove {layer, instance}`
 //!   (`STUDIO_EFFECT_REMOVE`; the last entry removes the stack when it has no stack mask).
-//! - `effect.read {layer}`: the stack: each entry's kind, parameters, opacity, enable, whether it holds a mask, and
-//!   `out_of_soft_range` (the parameters whose value lies outside a known soft range, [STU-FX-105]).
+//! - `effect.read {layer, full?}`: the layer's content bounds and its stack: each entry's kind, parameters, opacity,
+//!   enable, whether it holds a mask, and `out_of_soft_range` (the parameters whose value lies outside a known soft
+//!   range, [STU-FX-105]). A liquify mesh is summarised (`origin_x`, `origin_y`, `width`, `height`, `spacing`,
+//!   `cols`, `rows`, `vertices`) unless `full` is set.
 //! - `adjustment.create {adjustment, name?, clipped?}`: a new `adjustment` layer above the selected layer holding
 //!   the Folio `StudioAdjustment` record (tag `kind`, [STU-RAS-151]; payload `hsk.studio.adjustment@1` naming its
-//!   own id), clipped to the layer below when `clipped`; layer and record are one step. Any open document takes
-//!   one (an artboard is not required: the record is document state; the canvas draws it where there is one).
+//!   own id, minted from block `7ede-9300` with the revision scheme of `layers`), clipped to the layer below when
+//!   `clipped`; layer and record are one step. Any open document takes one.
 //! - `adjustment.edit {layer, adjustment}`: the adjustment layer's record replaced (any kind: Layer > Change Layer
 //!   Content); re-editable parameters ([STU-RAS-035]).
-//! - `adjustment.apply {layer, adjustment}`: the explicit destructive apply-in-place form ([STU-RAS-035]): the pixel
-//!   layer's colour becomes `f(colour)` per texel with alpha > 0 (alpha kept), the same per-pixel function an
-//!   adjustment layer applies to its backdrop (pigment `PreparedAdjustment::apply`, float working depth), so an
-//!   adjustment layer over a lone pixel layer and the in-place form give the same frame. A layer holding values
-//!   outside 0..=1 takes only the kinds pigment defines there (exposure, `apply_in` extended); the others refuse
-//!   `adjust_unsupported`. A placed asset layer refuses `layer_not_pixel` (rasterize it first).
+//! - `adjustment.apply {layer, adjustment}`: the explicit destructive apply-in-place form ([STU-RAS-035]), one job
+//!   admitted through the viewer's bound JobPort (`overloaded`, `canceled`, `stale_revision` refuse before any
+//!   pixel is read; the result carries the settlement as `job`). Each texel with alpha > 0 becomes what the
+//!   adjustment layer's composite makes of it over a lone layer: pigment `composite_adjustment_in` with the range,
+//!   working depth and blend of the viewer's records envelope (`OutputStage::default()`, Normal, coverage 1), alpha
+//!   kept (review F7). So a layer holding values outside 0..=1 refuses `adjust_out_of_domain`, as the composite
+//!   does. A placed asset layer refuses `layer_not_pixel` (rasterize it first).
 //!
 //! An adjustment record is checked by Folio (structure, declared bounds) and by the engine before anything is
 //! written: composite's conversion (`lower_extensions::adjustment_op`, its codes such as `colour_lookup_unresolved`)
 //! and pigment's `prepare` (`adjust_invalid_parameter` naming the parameter, `adjust_unsupported`).
 //!
-//! Refusal codes: `not_open`, `layer_unknown`, `layer_not_pixel`, `layer_not_adjustment`,
-//! `layer_empty`, `tile_format_unsupported`, `effect_instance_unknown`, `effect_stack_full` (Folio's
-//! `MAX_SMART_FILTERS`), `index_out_of_range`, `nothing_to_change`, `parameter_unknown`, `parameter_missing`,
-//! `parameter_invalid`, `parameter_out_of_range` (opacity), `effect_param_out_of_range`, pigment's
-//! `filter_parameter`, composite's and pigment's adjustment codes, `folio_<code>`, `budget_exceeded`, `canceled`
-//! and the run's own codes.
+//! Refusal codes: `not_open`, `layer_unknown`, `layer_not_pixel`, `layer_not_adjustment`, `layer_empty`,
+//! `tile_format_unsupported`, `effect_instance_unknown`, `effect_stack_full` (Folio's `MAX_SMART_FILTERS`),
+//! `index_out_of_range`, `nothing_to_change`, `parameter_unknown`, `parameter_missing`, `parameter_invalid`,
+//! `effect_param_out_of_range`, `effect_value_range_unsupported`, `effect_render_budget_exceeded`, pigment's
+//! `filter_parameter`, composite's and pigment's adjustment codes, `layer_id_space_exhausted`, `overloaded`,
+//! `stale_revision`, `folio_<code>`, `budget_exceeded`, `canceled` and the run's own codes.
 //!
 //! Cuts (named, not silent): per-filter and stack masks (`STUDIO_EFFECT_MASK_EDIT`), selection-scoped apply,
 //! destructive filter forms and bake (`STUDIO_EFFECT_BAKE`) are the next slice; the sandbox ->
-//! `StudioValidationDescriptor` -> `PromotionGate` route of [STU-FX-007] is not built (an edit commits through the
-//! session's chronicle provider after the checks here); adjustment presets and default-valued one-click creation
-//! (most adjustment defaults are `unknown`, [STU-RAS-153]); the `ocio`, `normals`, `tone_stretch`, `desaturate`,
-//! `equalize` and auto kinds have no Folio `StudioAdjustment` member yet; adjustment parameter specs (the
-//! [STU-RAS-151] table) are not emitted, and pigment's adjustment ranges are narrower than the spec's `unknown`
-//! hard bounds on several kinds (vibrance, colour balance, photo filter density, ...): a pigment defect, named.
-//! Photoshop parity of every kernel and default is UNVERIFIED (D5).
+//! `StudioValidationDescriptor` -> `PromotionGate` route of [STU-FX-007] is not built, and the effect edits are
+//! entry-only steps (above); the [STU-FX-103] / [STU-FX-106] `hsk.studio.effect_parameter@1` record and its
+//! `bound_state` (a spec conflict with [STU-RAS-104] / [STU-RAS-106], SD proposal in the lane notes); the
+//! adjustment layer's built-in mask ([STU-RAS-035]: `adjustment.create` makes none); adjustment presets and
+//! default-valued one-click creation (most adjustment defaults are `unknown`, [STU-RAS-153]); the `ocio`, `normals`,
+//! `tone_stretch`, `desaturate`, `equalize` and auto kinds have no Folio `StudioAdjustment` member yet; adjustment
+//! parameter specs (the [STU-RAS-151] table) are not emitted, and pigment's adjustment ranges are narrower than the
+//! spec's `unknown` hard bounds on several kinds (vibrance, colour balance, photo filter density, ...): a pigment
+//! defect, named; the catalog row's own `help --json` parameters carry no schema bounds (schemars is not an
+//! approved harness-core dependency): the bounds are in `effect.parameters`. Photoshop parity of every kernel and
+//! default is UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
@@ -81,8 +110,13 @@ use hsk_studio_folio::{
     self as folio, MAX_LIQUIFY_VERTICES, MAX_SMART_FILTERS, StudioAdjustment, StudioRasterLayerRecord, StudioRasterRecords, StudioSmartFilter,
     StudioSmartFilterKind, StudioSmartFilterStack,
 };
-use hsk_studio_pigment::adjust_math::{AdjustError, PreparedAdjustment};
-use hsk_studio_pigment::render_plan::SampleRange;
+use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::adjust_math::{AdjustError, PreparedAdjustment, composite_adjustment_in};
+use hsk_studio_pigment::blend_math::{Rgba, StudioBlendMode};
+use hsk_studio_pigment::filter_math::filter_window_cost;
+use hsk_studio_pigment::render_plan::OutputStage;
+use hsk_studio_pigment::retouch::RgbaPlane;
+use hsk_studio_pigment::smart_filter::{SmartFilterOp, StackFilter, StackLimits};
 use serde_json::{Map, Value, json};
 
 /// Schema id of a parameter spec record ([STU-RAS-103]).
@@ -162,11 +196,14 @@ const fn above(v: f64) -> Bound {
     Bound { value: Some(v), class: Classification::Derived, open: true }
 }
 
-/// A parameter's factory value ([STU-FX-103] `default`).
+/// A parameter's factory value ([STU-RAS-103] `default`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DefaultValue {
     Number(f64, Classification),
     Token(&'static str, Classification),
+    /// `fraction` of the layer's content bounds on one axis (`y` false: x), as a source declares it; the command
+    /// resolves it from the layer (review F10: the Radial Blur table's centre, (50 %, 50 %) of the layer).
+    LayerFraction { fraction: f64, y: bool },
     Unknown,
 }
 
@@ -179,21 +216,23 @@ pub enum Int {
     I32,
 }
 
+/// One enumeration member: its token, its [STU-RAS-109] integer discriminant and where that number comes from.
+pub type Member = (&'static str, u16, Classification);
+
 /// What a parameter holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ParamType {
     Float,
     Int(Int),
     Bool,
-    /// Tokens with their [STU-RAS-109] integer discriminants where a source declares them.
-    Enum(&'static [(&'static str, Option<u16>)]),
+    Enum(&'static [Member]),
     /// The 25 `i32` weights of a 5x5 convolution, row-major.
     Weights,
     /// A liquify mesh (Folio `StudioLiquifyMesh`).
     Mesh,
 }
 
-/// One parameter of a smart filter kind ([STU-FX-103] / [STU-RAS-103]).
+/// One parameter of a smart filter kind ([STU-RAS-103]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EffectParam {
     pub key: &'static str,
@@ -203,6 +242,8 @@ pub struct EffectParam {
     pub default: DefaultValue,
     /// A [STU-RAS-105] token; `None` = `unknown`.
     pub unit: Option<&'static str>,
+    /// The source table's own unit word where the engine reads the value in another unit (review F10).
+    pub table_unit: Option<&'static str>,
     /// Decimal places; `None` = `unknown`.
     pub precision: Option<u8>,
     /// `observed_min`, `observed_max` ([STU-RAS-107]); `None` = `absent`.
@@ -221,7 +262,7 @@ pub struct FilterSpec {
 }
 
 const fn p(key: &'static str, ty: ParamType, hard: [Bound; 2], soft: [Bound; 2], default: DefaultValue, unit: Option<&'static str>, precision: Option<u8>) -> EffectParam {
-    EffectParam { key, ty, hard, soft, default, unit, precision, observed: None, nonzero: false }
+    EffectParam { key, ty, hard, soft, default, unit, table_unit: None, precision, observed: None, nonzero: false }
 }
 
 /// A float parameter with only engine (derived or unknown) hard bounds: soft, default and precision `unknown`.
@@ -239,6 +280,7 @@ const fn other(key: &'static str, ty: ParamType, default: DefaultValue) -> Effec
 }
 
 const D: Classification = Classification::Declared;
+const DERIVED: Classification = Classification::Derived;
 const PX: Option<&str> = Some("pixels");
 const PCT: Option<&str> = Some("percent");
 const DEG: Option<&str> = Some("degrees");
@@ -246,12 +288,14 @@ const LEVELS: Option<&str> = Some("levels_0_255");
 const COUNT: Option<&str> = Some("count");
 const NO_UNIT: Option<&str> = None;
 
-const DIMENSIONS: &[(&str, Option<u16>)] = &[("horizontal_and_vertical", Some(1)), ("horizontal", Some(2)), ("vertical", Some(3))];
-const RADIAL: &[(&str, Option<u16>)] = &[("spin", Some(1)), ("zoom", Some(2))];
-const NOISE: &[(&str, Option<u16>)] = &[("uniform", None), ("gaussian", None)];
-const PRESERVE: &[(&str, Option<u16>)] = &[("squareness", None), ("roundness", None)];
+/// 14.9.7 tables (1-based, declared).
+const DIMENSIONS: &[Member] = &[("horizontal_and_vertical", 1, D), ("horizontal", 2, D), ("vertical", 3, D)];
+const RADIAL: &[Member] = &[("spin", 1, D), ("zoom", 2, D)];
+/// Studio's own enumerations (review F6, lead ruling: contiguous from 1, Folio member order).
+const NOISE: &[Member] = &[("uniform", 1, DERIVED), ("gaussian", 2, DERIVED)];
+const PRESERVE: &[Member] = &[("squareness", 1, DERIVED), ("roundness", 2, DERIVED)];
 /// [STU-RAS-141] resample members 2..=4.
-const RESAMPLE: &[(&str, Option<u16>)] = &[("nearest_neighbour", Some(2)), ("bilinear", Some(3)), ("bicubic", Some(4))];
+const RESAMPLE: &[Member] = &[("nearest_neighbour", 2, D), ("bilinear", 3, D), ("bicubic", 4, D)];
 
 const PIGMENT_FILTER: &str = "pigment filter_math (Studio readings; Photoshop ranges UNVERIFIED, D5): hard bounds derived from the engine";
 const PIGMENT_KERNEL: &str = "pigment filter_kernels: hard bounds derived from the engine's domain (no table declares them)";
@@ -283,12 +327,12 @@ pub const FILTER_SPECS: &[FilterSpec] = &[
     },
     FilterSpec {
         kind: "liquify",
-        source: "Folio StudioLiquifyMesh and pigment LiquifyMesh::validate (structure, not a range)",
+        source: "Folio StudioLiquifyMesh and pigment LiquifyMesh::validate (structure, not a range); the mesh covers the layer's content bounds",
         params: &[other("mesh", ParamType::Mesh, DefaultValue::Unknown), other("resample", ParamType::Enum(RESAMPLE), DefaultValue::Unknown)],
     },
     FilterSpec {
         kind: "box_blur",
-        source: "14.9.7 Fast Box Blur table (ADBE Box Blur2)",
+        source: "14.9.7 Fast Box Blur table (ADBE Box Blur2); budget: 2 floor(radius + 0.5) iterations + 1 taps at most MAX_BOX_KERNEL_TAPS (6001), an admission refusal, not a bound",
         params: &[
             p("radius_px", ParamType::Float, [dec(0.0), dec(30_000.0)], [dec(0.0), dec(127.0)], DefaultValue::Number(0.0, D), PX, Some(1)),
             p("iterations", ParamType::Int(Int::U32), [dec(1.0), dec(50.0)], [dec(1.0), dec(5.0)], DefaultValue::Number(3.0, D), COUNT, Some(0)),
@@ -305,10 +349,10 @@ pub const FILTER_SPECS: &[FilterSpec] = &[
     },
     FilterSpec {
         kind: "radial_blur",
-        source: "14.9.7 Radial Blur table (ADBE Radial Blur); its centre default (50 % of the layer) has no pixel value here",
+        source: "14.9.7 Radial Blur table (ADBE Radial Blur): the centre's default is (50 %, 50 %) of the layer, resolved over its content bounds",
         params: &[
-            engine("centre_x_px", [UNK, UNK], PX),
-            engine("centre_y_px", [UNK, UNK], PX),
+            p("centre_x_px", ParamType::Float, [UNK, UNK], [UNK, UNK], DefaultValue::LayerFraction { fraction: 0.5, y: false }, PX, None),
+            p("centre_y_px", ParamType::Float, [UNK, UNK], [UNK, UNK], DefaultValue::LayerFraction { fraction: 0.5, y: true }, PX, None),
             p("amount", ParamType::Float, [dec(0.0), dec(1000.0)], [dec(0.0), dec(100.0)], DefaultValue::Number(10.0, D), NO_UNIT, Some(1)),
             other("kind", ParamType::Enum(RADIAL), DefaultValue::Token("spin", D)),
         ],
@@ -351,10 +395,13 @@ pub const FILTER_SPECS: &[FilterSpec] = &[
     FilterSpec { kind: "minimum", source: "14.9.7 Minimax table (Radius); preserve is Studio's (STU-FX-022)", params: MORPH },
     FilterSpec {
         kind: "dust_and_scratches",
-        source: "14.9.7 Dust & Scratches table (soft equal to hard as the table declares; threshold unit `pixel` as declared)",
+        source: "14.9.7 Dust & Scratches table (soft equal to hard as the table declares); the table's threshold unit `pixel` is kept as table_unit: the engine compares a 0..1 channel difference (D5 question)",
         params: &[
             p("radius_px", ParamType::Int(Int::U32), [dec(0.0), dec(255.0)], [dec(0.0), dec(255.0)], DefaultValue::Number(1.0, D), PX, Some(0)),
-            p("threshold", ParamType::Float, [dec(0.0), dec(1.0)], [dec(0.0), dec(1.0)], DefaultValue::Number(0.0, D), PX, Some(1)),
+            EffectParam {
+                table_unit: Some("pixel"),
+                ..p("threshold", ParamType::Float, [dec(0.0), dec(1.0)], [dec(0.0), dec(1.0)], DefaultValue::Number(0.0, D), Some("normalized_0_1"), Some(1))
+            },
         ],
     },
     FilterSpec {
@@ -407,24 +454,25 @@ fn numeric(ty: ParamType) -> Option<&'static str> {
     }
 }
 
+fn default_spec(p: &EffectParam) -> (Value, Classification) {
+    match p.default {
+        DefaultValue::Number(v, c) => (number_json(p.ty, v), c),
+        DefaultValue::Token(t, c) => (json!(t), c),
+        DefaultValue::LayerFraction { fraction, y } => (json!({"fraction_of_layer_content_bounds": fraction, "axis": if y { "y" } else { "x" }}), D),
+        DefaultValue::Unknown => (json!(UNKNOWN), Classification::Unknown),
+    }
+}
+
 /// One parameter's spec record as the command surface shows it.
 pub fn param_spec_json(index: usize, p: &EffectParam) -> Value {
-    let default = match p.default {
-        DefaultValue::Number(v, _) => number_json(p.ty, v),
-        DefaultValue::Token(t, _) => json!(t),
-        DefaultValue::Unknown => json!(UNKNOWN),
-    };
-    let default_class = match p.default {
-        DefaultValue::Number(_, c) | DefaultValue::Token(_, c) => c,
-        DefaultValue::Unknown => Classification::Unknown,
-    };
+    let (default, default_class) = default_spec(p);
     let Some(kind) = numeric(p.ty) else {
         let mut spec = json!({"param_key": p.key, "param_index": index, "default": default, "default_classification": default_class.token()});
         match p.ty {
             ParamType::Bool => spec["kind"] = json!("boolean"),
             ParamType::Enum(options) => {
                 spec["kind"] = json!("enumeration");
-                spec["options"] = Value::Array(options.iter().map(|(t, d)| json!({"token": t, "discriminant": d.map_or_else(|| json!(UNKNOWN), |d| json!(d))})).collect());
+                spec["options"] = Value::Array(options.iter().map(|(t, d, c)| json!({"token": t, "discriminant": d, "discriminant_classification": c.token()})).collect());
             }
             ParamType::Weights => {
                 spec["kind"] = json!("integer_list");
@@ -451,17 +499,88 @@ pub fn param_spec_json(index: usize, p: &EffectParam) -> Value {
     if p.nonzero {
         spec["excludes"] = json!([0]);
     }
+    if let Some(t) = p.table_unit {
+        spec["table_unit"] = json!(t);
+    }
+    if let ParamType::Int(t) = p.ty {
+        spec["integer_type"] = json!(int_name(t));
+    }
     spec
 }
 
-/// The `STUDIO_EFFECT_PARAM_CONTRACT` check ([STU-FX-123], [STU-RAS-111]) over one numeric spec record (a
-/// non-numeric record passes when an enumeration lists its options). Findings, each `{param_key, code}`:
-/// `field_missing:<field>` (a [STU-RAS-103] field absent), `classification_missing:<bound>`,
+const fn int_name(t: Int) -> &'static str {
+    match t {
+        Int::U8 => "u8",
+        Int::U32 => "u32",
+        Int::U64 => "u64",
+        Int::I32 => "i32",
+    }
+}
+
+/// [STU-RAS-110] input schema of one parameter: JSON Schema, the known hard bounds as schema bounds (none for an
+/// `unknown` one), the rest of the spec as `x-` annotations.
+fn param_input_schema(p: &EffectParam) -> Value {
+    let spec = param_spec_json(0, p);
+    match p.ty {
+        ParamType::Float | ParamType::Int(_) => {
+            let mut s = json!({"type": if matches!(p.ty, ParamType::Int(_)) { "integer" } else { "number" }});
+            if let Some(v) = p.hard[0].value {
+                s[if p.hard[0].open { "exclusiveMinimum" } else { "minimum" }] = json!(v);
+            }
+            if let Some(v) = p.hard[1].value {
+                s["maximum"] = json!(v);
+            }
+            if p.nonzero {
+                s["not"] = json!({"const": 0});
+            }
+            if spec["default"].is_number() {
+                s["default"] = spec["default"].clone();
+            }
+            for (field, annotation) in [("soft_min", "x-soft-min"), ("soft_max", "x-soft-max"), ("unit", "x-unit"), ("precision", "x-precision"), ("step", "x-step"), ("coarse_step", "x-coarse-step"), ("fine_step", "x-fine-step"), ("bound_classification", "x-bound-classification"), ("integer_type", "x-integer-type"), ("table_unit", "x-table-unit")] {
+                if let Some(v) = spec.get(field) {
+                    s[annotation] = v.clone();
+                }
+            }
+            if spec["default"].is_object() {
+                s["x-default"] = spec["default"].clone();
+            }
+            s
+        }
+        ParamType::Bool => json!({"type": "boolean"}),
+        ParamType::Enum(options) => {
+            let mut s = json!({"type": "string", "enum": options.iter().map(|(t, _, _)| *t).collect::<Vec<_>>(), "x-discriminants": spec["options"].clone()});
+            if spec["default"] != UNKNOWN {
+                s["default"] = spec["default"].clone();
+            }
+            s
+        }
+        ParamType::Weights => json!({"type": "array", "minItems": 25, "maxItems": 25, "items": {"type": "integer", "minimum": -2_147_483_648_i64, "maximum": 2_147_483_647_i64}}),
+        ParamType::Mesh => json!({"type": "object", "x-record": "hsk.studio StudioLiquifyMesh {origin_x, origin_y, width, height, spacing, cols, rows, displacement, freeze}"}),
+    }
+}
+
+/// [STU-RAS-110] the input schema of `params` for one kind.
+fn kind_input_schema(spec: &FilterSpec) -> Value {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for p in spec.params {
+        properties.insert(p.key.into(), param_input_schema(p));
+        if p.default == DefaultValue::Unknown {
+            required.push(p.key);
+        }
+    }
+    json!({"type": "object", "additionalProperties": false, "properties": properties, "required": required})
+}
+
+/// The `STUDIO_EFFECT_PARAM_CONTRACT` check ([STU-FX-123], [STU-RAS-111]) over one numeric spec record (an
+/// enumeration passes when it lists its members, each with an integer discriminant). Findings, each
+/// `{param_key, code}`: `field_missing:<field>` (a [STU-RAS-103] field absent), `classification_missing:<bound>`,
 /// `classification_mismatch:<bound>` (a number classified `unknown`, or `unknown` classified otherwise),
 /// `hard_soft_equated` (soft equal to hard without `declared` on all four, [STU-RAS-104]),
 /// `hard_bound_observed:<bound>` (a hard bound classified `observed`: a clamp to an observation, [STU-RAS-107]),
 /// `observed_used_as_bound:<bound>` (a bound equal to its observed value without `declared`), `unit_not_in_vocabulary`,
-/// `step_disagrees` (not the [STU-RAS-108] derivation), `default_outside_hard`, `options_missing`.
+/// `step_disagrees` (not the [STU-RAS-108] derivation), `default_outside_hard`, `options_missing`,
+/// `discriminant_missing:<token>` ([STU-RAS-109]).
 pub fn parameter_contract_findings(spec: &Value) -> Vec<Value> {
     let key = spec["param_key"].as_str().unwrap_or("");
     let mut out = Vec::new();
@@ -469,8 +588,13 @@ pub fn parameter_contract_findings(spec: &Value) -> Vec<Value> {
     match spec["kind"].as_str() {
         Some("number" | "integer") => {}
         Some("enumeration") => {
-            if spec["options"].as_array().is_none_or(Vec::is_empty) {
-                find("options_missing".into());
+            match spec["options"].as_array().filter(|o| !o.is_empty()) {
+                None => find("options_missing".into()),
+                Some(options) => {
+                    for o in options.iter().filter(|o| o["discriminant"].as_u64().is_none()) {
+                        find(format!("discriminant_missing:{}", o["token"].as_str().unwrap_or("?")));
+                    }
+                }
             }
             return out;
         }
@@ -531,7 +655,7 @@ pub fn parameter_contract_findings(spec: &Value) -> Vec<Value> {
     out
 }
 
-/// `effect.parameters`: the specs of `kind` (or every kind) and the contract findings over them.
+/// `effect.parameters`: the specs and input schemas of `kind` (or every kind) and the contract findings over them.
 pub fn parameters(kind: Option<&str>) -> Result<Value, CommandRefusal> {
     let specs: Vec<&FilterSpec> = match kind {
         Some(k) => vec![filter_spec(k).ok_or_else(|| unknown_kind(k))?],
@@ -539,6 +663,7 @@ pub fn parameters(kind: Option<&str>) -> Result<Value, CommandRefusal> {
     };
     let mut findings = Vec::new();
     let mut kinds = Vec::with_capacity(specs.len());
+    let mut variants = Vec::with_capacity(specs.len());
     for s in specs {
         let params: Vec<Value> = s.params.iter().enumerate().map(|(i, p)| param_spec_json(i, p)).collect();
         for spec in &params {
@@ -546,9 +671,17 @@ pub fn parameters(kind: Option<&str>) -> Result<Value, CommandRefusal> {
                 findings.push(json!({"filter_kind": s.kind, "finding": f}));
             }
         }
-        kinds.push(json!({"filter_kind": s.kind, "source": s.source, "parameters": params}));
+        let schema = kind_input_schema(s);
+        variants.push(json!({"properties": {"filter_kind": {"const": s.kind}, "params": schema}}));
+        kinds.push(json!({"filter_kind": s.kind, "source": s.source, "parameters": params, "input_schema": schema}));
     }
-    Ok(json!({"schema_id": PARAMETER_SPEC_SCHEMA, "check": PARAM_CONTRACT_CHECK, "findings": findings, "kinds": kinds}))
+    let apply = json!({
+        "type": "object", "required": ["layer", "filter_kind"],
+        "properties": {"layer": {"type": "string"}, "filter_kind": {"type": "string"}, "params": {"type": "object"},
+            "opacity": {"type": "number", "minimum": 0, "maximum": 100, "default": 100}, "enabled": {"type": "boolean", "default": true}, "at": {"type": "integer", "minimum": 0}},
+        "oneOf": variants,
+    });
+    Ok(json!({"schema_id": PARAMETER_SPEC_SCHEMA, "check": PARAM_CONTRACT_CHECK, "findings": findings, "kinds": kinds, "effect_apply_input_schema": apply}))
 }
 
 // ---- parameter decoding --------------------------------------------------------------------------------------
@@ -661,13 +794,16 @@ fn check_param(kind: &str, p: &EffectParam, v: &Value) -> Result<Value, CommandR
     match p.ty {
         ParamType::Float => {
             let n = v.as_f64().filter(|n| n.is_finite()).ok_or_else(|| invalid(&key, "finite number"))?;
-            if !within_hard(p, n) {
-                return Err(out_of_range(kind, p, v));
-            }
             if n.abs() > f64::from(f32::MAX) {
                 return Err(invalid(&key, "a number a 32-bit float holds"));
             }
-            Ok(json!(n))
+            // Review F8: the bound is checked on the value the record stores (a value that rounds to 0 in 32 bits
+            // is the 0 the engine sees).
+            let stored = f64::from(n as f32);
+            if !within_hard(p, stored) {
+                return Err(out_of_range(kind, p, v));
+            }
+            Ok(json!(stored))
         }
         ParamType::Int(t) => {
             let (lo, hi) = int_domain(t);
@@ -681,7 +817,7 @@ fn check_param(kind: &str, p: &EffectParam, v: &Value) -> Result<Value, CommandR
         }
         ParamType::Bool => v.as_bool().map(Value::Bool).ok_or_else(|| invalid(&key, "boolean")),
         ParamType::Enum(options) => {
-            let tokens: Vec<&str> = options.iter().map(|(t, _)| *t).collect();
+            let tokens: Vec<&str> = options.iter().map(|(t, _, _)| *t).collect();
             v.as_str().filter(|t| tokens.contains(t)).map(|t| json!(t)).ok_or_else(|| invalid(&key, &tokens.join("|")))
         }
         ParamType::Weights => {
@@ -694,30 +830,41 @@ fn check_param(kind: &str, p: &EffectParam, v: &Value) -> Result<Value, CommandR
         }
         ParamType::Mesh => {
             let m = v.as_object().ok_or_else(|| invalid(&key, "a liquify mesh {origin_x, origin_y, width, height, spacing, cols, rows, displacement, freeze}"))?;
-            // Hostile size: the vertex lists are refused before Folio decodes them (V4-02).
-            let cap = usize::try_from(MAX_LIQUIFY_VERTICES).unwrap_or(usize::MAX);
-            for list in ["displacement", "freeze"] {
-                if m.get(list).and_then(Value::as_array).is_some_and(|a| a.len() > cap) {
-                    return Err(CommandRefusal::new("budget_exceeded", json!({"key": format!("{key}.{list}"), "at_most": MAX_LIQUIFY_VERTICES})));
-                }
-            }
+            mesh_lists_within(&key, m, usize::try_from(MAX_LIQUIFY_VERTICES).unwrap_or(usize::MAX))?;
             Ok(v.clone())
         }
     }
 }
 
-/// A declared default as the parameter's JSON value (an integer parameter's as an integer).
-fn default_json(p: &EffectParam) -> Option<Value> {
+/// Hostile size (V4-02, review F9): a mesh's vertex lists longer than `cap` (Folio's `MAX_LIQUIFY_VERTICES`) are
+/// refused `budget_exceeded` before Folio decodes them.
+fn mesh_lists_within(key: &str, m: &Map<String, Value>, cap: usize) -> Result<(), CommandRefusal> {
+    for list in ["displacement", "freeze"] {
+        if m.get(list).and_then(Value::as_array).is_some_and(|a| a.len() > cap) {
+            return Err(CommandRefusal::new("budget_exceeded", json!({"key": format!("{key}.{list}"), "at_most": cap})));
+        }
+    }
+    Ok(())
+}
+
+/// A declared default as the parameter's JSON value (an integer parameter's as an integer); a layer fraction
+/// resolved over `content` (the layer's content bounds), `None` without them.
+fn default_json(p: &EffectParam, content: Option<Rect>) -> Option<Value> {
     match p.default {
         DefaultValue::Number(n, _) => Some(number_json(p.ty, n)),
         DefaultValue::Token(t, _) => Some(json!(t)),
+        DefaultValue::LayerFraction { fraction, y } => content.map(|b| {
+            let (origin, size) = if y { (b.y, b.height) } else { (b.x, b.width) };
+            json!(origin as f64 + f64::from(size) * fraction)
+        }),
         DefaultValue::Unknown => None,
     }
 }
 
 /// The Folio kind block of `kind` from `given` parameters (each checked), and the keys that took their declared
-/// default. Pigment then checks the entry as it will render it (`SmartFilterOp::check`).
-fn decode_kind(kind: &str, given_params: &Map<String, Value>) -> Result<(StudioSmartFilterKind, Vec<&'static str>), CommandRefusal> {
+/// default (a layer fraction over `content`). Pigment then checks the entry as it will render it
+/// (`SmartFilterOp::check`).
+fn decode_kind(kind: &str, given_params: &Map<String, Value>, content: Option<Rect>) -> Result<(StudioSmartFilterKind, Vec<&'static str>), CommandRefusal> {
     let spec = filter_spec(kind).ok_or_else(|| unknown_kind(kind))?;
     if let Some(k) = given_params.keys().find(|k| !spec.params.iter().any(|p| p.key == k.as_str())) {
         return Err(CommandRefusal::new("parameter_unknown", json!({"key": format!("params.{k}"), "filter_kind": kind})));
@@ -729,7 +876,7 @@ fn decode_kind(kind: &str, given_params: &Map<String, Value>) -> Result<(StudioS
         let value = match given(given_params, p.key) {
             Some(v) => v.clone(),
             None => {
-                let d = default_json(p).ok_or_else(|| CommandRefusal::new("parameter_missing", json!({"key": format!("params.{}", p.key), "filter_kind": kind, "default": UNKNOWN})))?;
+                let d = default_json(p, content).ok_or_else(|| CommandRefusal::new("parameter_missing", json!({"key": format!("params.{}", p.key), "filter_kind": kind, "default": default_spec(p).0})))?;
                 defaulted.push(p.key);
                 d
             }
@@ -738,20 +885,96 @@ fn decode_kind(kind: &str, given_params: &Map<String, Value>) -> Result<(StudioS
     }
     let parsed: StudioSmartFilterKind =
         serde_json::from_value(Value::Object(block)).map_err(|e| CommandRefusal::new("parameter_invalid", json!({"key": "params", "filter_kind": kind, "message": e.to_string()})))?;
-    let probe = StudioSmartFilterStack {
-        enabled: true,
-        stack_mask: None,
-        filters: vec![StudioSmartFilter { instance_id: "probe".into(), enabled: true, opacity: 100.0, mask: None, params: parsed.clone() }],
-    };
-    let accepted = hsk_studio_pigment::smart_filter::SmartFilterOp::from_record(&probe, |_| None).is_ok_and(|op| op.check());
-    if !accepted {
-        return Err(CommandRefusal::new("filter_parameter", json!({"filter_kind": kind, "message": "the engine refused the entry (pigment SmartFilterOp::check)"})));
-    }
+    engine_op(&parsed)?;
     Ok((parsed, defaulted))
 }
 
-/// The kind tag and the parameters (without the tag) of a Folio kind block.
-fn kind_params(kind: &StudioSmartFilterKind) -> (String, Map<String, Value>) {
+/// The entry as pigment lowers it, refused when pigment's own check refuses it.
+fn engine_op(kind: &StudioSmartFilterKind) -> Result<StackFilter, CommandRefusal> {
+    let probe = StudioSmartFilterStack {
+        enabled: true,
+        stack_mask: None,
+        filters: vec![StudioSmartFilter { instance_id: "probe".into(), enabled: true, opacity: 100.0, mask: None, params: kind.clone() }],
+    };
+    let refused = || CommandRefusal::new("filter_parameter", json!({"filter_kind": kind_tag(kind), "message": "the engine refused the entry (pigment SmartFilterOp::check)"}));
+    let op = SmartFilterOp::from_record(&probe, |_| None).map_err(|_| refused())?;
+    if !op.check() {
+        return Err(refused());
+    }
+    op.entries.into_iter().next().map(|e| e.filter).ok_or_else(refused)
+}
+
+fn kind_tag(kind: &StudioSmartFilterKind) -> String {
+    serde_json::to_value(kind).ok().and_then(|v| v["filter_kind"].as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// The layer a stack renders over (review F1): its pixels over its tiles' bounds and those bounds cut to the canvas
+/// (the content plane render-cpu filters over), as `place::layer_content` reads them.
+pub(super) struct LayerContent {
+    pub(super) plane: RgbaPlane,
+    pub(super) bounds: Option<Rect>,
+}
+
+/// The render's own admission of one entry over `content` (review F1, lead ruling Q1): the stack's unit-range check
+/// on the content (pigment `RgbaPlane::validate`), then the entry's cost over the content bounds against pigment's
+/// stack limits (`FilterKernel::admit`; `filter_window_cost` for a core filter), and a liquify mesh over exactly
+/// those bounds. No layer content: nothing renders, nothing to admit.
+fn admit(layer: &str, op: &StackFilter, kind: &str, content: Option<&LayerContent>) -> Result<(), CommandRefusal> {
+    let Some(content) = content else { return Ok(()) };
+    if content.plane.validate().is_err() {
+        return Err(CommandRefusal::new("effect_value_range_unsupported", json!({"layer": layer, "filter_kind": kind, "message": "the smart filter stack renders unit-range content (0..=1); this layer holds other values"})));
+    }
+    let Some(bounds) = content.bounds else { return Ok(()) };
+    let limits = StackLimits::default().filter;
+    let budget = |needed: u64, limit: u64| CommandRefusal::new("effect_render_budget_exceeded", json!({"layer": layer, "filter_kind": kind, "needed": needed, "limit": limit}));
+    let filter_refusal = |e: hsk_studio_pigment::filter_math::FilterError| match e {
+        hsk_studio_pigment::filter_math::FilterError::OverBudget { needed, limit } => budget(needed, limit),
+        hsk_studio_pigment::filter_math::FilterError::Overflow => budget(u64::MAX, limits.max_work),
+        other => CommandRefusal::new(other.code(), json!({"layer": layer, "filter_kind": kind})),
+    };
+    match op {
+        StackFilter::Kernel(k) => k.admit(bounds, limits).map_err(filter_refusal),
+        StackFilter::Filter(f) => {
+            let (bytes, work) = filter_window_cost(f, bounds).map_err(filter_refusal)?;
+            if bytes > limits.max_bytes {
+                return Err(budget(bytes, limits.max_bytes));
+            }
+            if work > limits.max_work {
+                return Err(budget(work, limits.max_work));
+            }
+            Ok(())
+        }
+        StackFilter::Liquify { mesh, .. } => {
+            if mesh.bounds == bounds {
+                Ok(())
+            } else {
+                Err(CommandRefusal::new(
+                    "parameter_invalid",
+                    json!({"key": "params.mesh", "expected": "a mesh over the layer's content bounds", "content_bounds": rect_json(bounds), "filter_kind": kind}),
+                ))
+            }
+        }
+    }
+}
+
+fn rect_json(r: Rect) -> Value {
+    json!({"x": r.x, "y": r.y, "width": r.width, "height": r.height})
+}
+
+/// The kind tag and the parameters (without the tag) of a Folio kind block; a liquify mesh summarised unless `full`
+/// (review F9).
+fn kind_params(kind: &StudioSmartFilterKind, full: bool) -> (String, Map<String, Value>) {
+    if let StudioSmartFilterKind::Liquify { mesh, resample } = kind
+        && !full
+    {
+        let mut map = Map::new();
+        map.insert("resample".into(), serde_json::to_value(resample).unwrap_or(Value::Null));
+        map.insert(
+            "mesh".into(),
+            json!({"summary": true, "origin_x": mesh.origin_x, "origin_y": mesh.origin_y, "width": mesh.width, "height": mesh.height, "spacing": mesh.spacing, "cols": mesh.cols, "rows": mesh.rows, "vertices": mesh.displacement.len()}),
+        );
+        return ("liquify".into(), map);
+    }
     let mut map = match serde_json::to_value(kind) {
         Ok(Value::Object(m)) => m,
         _ => Map::new(),
@@ -773,8 +996,13 @@ fn out_of_soft_range(kind: &str, params: &Map<String, Value>) -> Vec<&'static st
         .collect()
 }
 
-fn percent(key: &str, v: f64) -> Result<f64, CommandRefusal> {
-    if (0.0..=100.0).contains(&v) { Ok(v) } else { Err(CommandRefusal::new("parameter_out_of_range", json!({"key": key, "value": v, "min": 0, "max": 100}))) }
+/// Stack-entry opacity, percent `0..=100` ([STU-FX-104] shape, review F10).
+fn opacity(v: f64) -> Result<f64, CommandRefusal> {
+    if (0.0..=100.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err(CommandRefusal::new("effect_param_out_of_range", json!({"param": "opacity", "value": v, "hard_min": 0.0, "hard_max": 100.0})))
+    }
 }
 
 fn nothing() -> CommandRefusal {
@@ -848,15 +1076,16 @@ fn adjust_refusal(e: AdjustError) -> CommandRefusal {
     match e {
         AdjustError::InvalidParameter(param) => CommandRefusal::new(e.code(), json!({"param": param})),
         AdjustError::Unsupported(feature) => CommandRefusal::new(e.code(), json!({"feature": feature})),
-        AdjustError::OutOfDomain => CommandRefusal::new(e.code(), json!({})),
+        AdjustError::OutOfDomain => CommandRefusal::new(e.code(), json!({"message": "a colour outside the range the adjustment layer's composite takes (unit, 0..=1)"})),
     }
 }
 
-/// The engine's per-pixel form of `a` (the one an adjustment layer renders with), or its refusal.
-fn prepared(a: &StudioAdjustment) -> Result<PreparedAdjustment, CommandRefusal> {
+/// The engine's per-pixel form of `a` at the working depth of `stage` (the one an adjustment layer renders with),
+/// or its refusal.
+fn prepared(a: &StudioAdjustment, stage: OutputStage) -> Result<PreparedAdjustment, CommandRefusal> {
     let op = hsk_studio_composite::lower_extensions::adjustment_op(a, hsk_studio_composite::BlendSpace::LinearLight)
         .map_err(|code| CommandRefusal::new(code, json!({"kind": adjustment_kind(a)})))?;
-    op.prepare().map_err(adjust_refusal)
+    op.prepare().map(|p| p.with_eight_bit(stage.is_eight_bit())).map_err(adjust_refusal)
 }
 
 /// A new layer's name: at most 128 bytes, no control character, not empty.
@@ -874,7 +1103,7 @@ fn layer_name(name: Option<String>, fallback: &str) -> Result<String, CommandRef
 fn run(v: &mut Viewer, id: &str, params: &Map<String, Value>) -> Result<Value, CommandRefusal> {
     match id {
         "effect.parameters" => parameters(opt_text(params, "filter_kind")?.as_deref()),
-        "effect.read" => v.effect_read(&text(params, "layer")?),
+        "effect.read" => v.effect_read(&text(params, "layer")?, opt_flag(params, "full")?.unwrap_or(false)),
         "effect.apply" => v.effect_apply(params),
         "effect.update" => v.effect_update(params),
         "effect.reorder" => {
@@ -925,7 +1154,7 @@ fn run(v: &mut Viewer, id: &str, params: &Map<String, Value>) -> Result<Value, C
         }
         "adjustment.create" => {
             let a = adjustment(params)?;
-            prepared(&a)?;
+            prepared(&a, OutputStage::default())?;
             let kind = adjustment_kind(&a);
             let name = layer_name(opt_text(params, "name")?, &kind)?;
             let clipped = opt_flag(params, "clipped")?.unwrap_or(false);
@@ -943,7 +1172,7 @@ fn run(v: &mut Viewer, id: &str, params: &Map<String, Value>) -> Result<Value, C
         "adjustment.edit" => {
             let layer = text(params, "layer")?;
             let a = adjustment(params)?;
-            prepared(&a)?;
+            prepared(&a, OutputStage::default())?;
             let kind = adjustment_kind(&a);
             v.edit_raster_records(id, &layer, |records, _| {
                 let current = records
@@ -962,10 +1191,17 @@ fn run(v: &mut Viewer, id: &str, params: &Map<String, Value>) -> Result<Value, C
         "adjustment.apply" => {
             let layer = text(params, "layer")?;
             let a = adjustment(params)?;
-            let f = prepared(&a)?;
-            let mut out = v.map_layer_pixels(id, &layer, |extended, rgb| {
-                let range = if extended { SampleRange::Extended } else { SampleRange::Unit };
-                f.apply_in(range, rgb).map_err(adjust_refusal)
+            // Review F7: the composite's own rule: the records envelope's default output stage (range, working
+            // depth), Normal blend, coverage 1, through pigment's composite_adjustment_in.
+            let stage = OutputStage::default();
+            let f = prepared(&a, stage)?;
+            let mut out = v.map_layer_pixels(id, &layer, |rgb, alpha| {
+                composite_adjustment_in(stage.sample_range, StudioBlendMode::Normal, Rgba { rgb, a: alpha }, &f, 1.0)
+                    .map(|c| c.rgb)
+                    .map_err(|e| match e {
+                        hsk_studio_pigment::adjust_math::AdjustLayerError::Adjust(e) => adjust_refusal(e),
+                        hsk_studio_pigment::adjust_math::AdjustLayerError::Blend(e) => CommandRefusal::new("adjust_blend", json!({"message": format!("{e:?}")})),
+                    })
             })?;
             out["kind"] = json!(adjustment_kind(&a));
             Ok(out)
@@ -993,25 +1229,26 @@ impl Viewer {
     }
 
     /// `effect.read` (module docs).
-    pub fn effect_read(&self, layer_id: &str) -> Result<Value, CommandRefusal> {
+    pub fn effect_read(&self, layer_id: &str, full: bool) -> Result<Value, CommandRefusal> {
         let doc = self.run.snapshot().map(|s| s.document().clone()).ok_or_else(|| CommandRefusal::new("not_open", json!({})))?;
         if !doc.layers.iter().any(|l| l.layer_id == layer_id) {
             return Err(CommandRefusal::new("layer_unknown", json!({"layer": layer_id})));
         }
+        let bounds = self.layer_content_bounds(layer_id).map(rect_json);
         let Some(stack) = self.editable_raster_record(layer_id)?.and_then(|r| r.smart_filters) else {
-            return Ok(json!({"layer_id": layer_id, "enabled": Value::Null, "has_stack_mask": false, "filters": []}));
+            return Ok(json!({"layer_id": layer_id, "content_bounds": bounds, "enabled": Value::Null, "has_stack_mask": false, "filters": []}));
         };
         let filters: Vec<Value> = stack
             .filters
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                let (kind, params) = kind_params(&f.params);
+                let (kind, params) = kind_params(&f.params, full);
                 let soft = out_of_soft_range(&kind, &params);
                 json!({"index": i, "instance_id": f.instance_id, "filter_kind": kind, "enabled": f.enabled, "opacity": f.opacity, "has_mask": f.mask.is_some(), "params": params, "out_of_soft_range": soft})
             })
             .collect();
-        Ok(json!({"layer_id": layer_id, "enabled": stack.enabled, "has_stack_mask": stack.stack_mask.is_some(), "filters": filters}))
+        Ok(json!({"layer_id": layer_id, "content_bounds": bounds, "enabled": stack.enabled, "has_stack_mask": stack.stack_mask.is_some(), "filters": filters}))
     }
 
     fn effect_apply(&mut self, params: &Map<String, Value>) -> Result<Value, CommandRefusal> {
@@ -1019,10 +1256,14 @@ impl Viewer {
         let layer = text(params, "layer")?;
         let kind = text(params, "filter_kind")?;
         let given_params = opt_object(params, "params", "an object of the kind's parameters")?.unwrap_or_default();
-        let opacity = percent("opacity", opt_number(params, "opacity")?.unwrap_or(100.0))?;
+        let opacity = opacity(opt_number(params, "opacity")?.unwrap_or(100.0))?;
         let enabled = opt_flag(params, "enabled")?.unwrap_or(true);
         let at = opt_index(params, "at")?;
-        let (block, defaulted) = decode_kind(&kind, &given_params)?;
+        filter_spec(&kind).ok_or_else(|| unknown_kind(&kind))?;
+        let content = self.layer_content(&layer)?;
+        let (block, defaulted) = decode_kind(&kind, &given_params, content.as_ref().and_then(|c| c.bounds))?;
+        admit(&layer, &engine_op(&block)?, &kind, content.as_ref())?;
+        drop(content);
         self.edit_raster_records(OP, &layer, |records, doc| {
             raster_layer(doc, &layer)?;
             let record = record_mut(records, &layer);
@@ -1044,34 +1285,65 @@ impl Viewer {
         const OP: &str = "effect.update";
         let layer = text(params, "layer")?;
         let instance = text(params, "instance")?;
-        let changes = opt_object(params, "params", "an object of the kind's parameters")?;
-        let opacity = opt_number(params, "opacity")?.map(|o| percent("opacity", o)).transpose()?;
-        if changes.as_ref().is_none_or(Map::is_empty) && opacity.is_none() {
+        let changes = opt_object(params, "params", "an object of the kind's parameters")?.filter(|c| !c.is_empty());
+        let opacity = opt_number(params, "opacity")?.map(opacity).transpose()?;
+        if changes.is_none() && opacity.is_none() {
             return Err(nothing());
         }
-        // The current entry (read first, so the merged parameters are checked before the edit runs).
-        let current = self
-            .editable_raster_record(&layer)?
-            .and_then(|r| r.smart_filters)
-            .and_then(|s| s.filters.into_iter().find(|f| f.instance_id == instance))
-            .ok_or_else(|| instance_unknown(&layer, &instance))?;
-        let (kind, mut merged) = kind_params(&current.params);
+        // The new kind block, decoded and admitted before the edit runs. Review F9: no decode (no mesh copy) for an
+        // opacity-only update; a liquify update without a new mesh keeps the stored mesh as it is.
+        let block = match &changes {
+            None => None,
+            Some(changes) => {
+                let current = self
+                    .editable_raster_record(&layer)?
+                    .and_then(|r| r.smart_filters)
+                    .and_then(|s| s.filters.into_iter().find(|f| f.instance_id == instance))
+                    .ok_or_else(|| instance_unknown(&layer, &instance))?;
+                let content = self.layer_content(&layer)?;
+                let block = match current.params {
+                    StudioSmartFilterKind::Liquify { mesh, resample } if !changes.contains_key("mesh") => {
+                        let spec = filter_spec("liquify").ok_or_else(|| unknown_kind("liquify"))?;
+                        if let Some(k) = changes.keys().find(|k| k.as_str() != "resample") {
+                            return Err(CommandRefusal::new("parameter_unknown", json!({"key": format!("params.{k}"), "filter_kind": "liquify"})));
+                        }
+                        let resample = match (changes.get("resample"), spec.params.iter().find(|p| p.key == "resample")) {
+                            (Some(v), Some(p)) => serde_json::from_value(check_param("liquify", p, v)?).map_err(|_| invalid("params.resample", "a resample token"))?,
+                            _ => resample,
+                        };
+                        StudioSmartFilterKind::Liquify { mesh, resample }
+                    }
+                    other => {
+                        let (kind, mut merged) = kind_params(&other, true);
+                        for (k, value) in changes {
+                            merged.insert(k.clone(), value.clone());
+                        }
+                        let (block, _) = decode_kind(&kind, &merged, content.as_ref().and_then(|c| c.bounds))?;
+                        admit(&layer, &engine_op(&block)?, &kind, content.as_ref())?;
+                        block
+                    }
+                };
+                Some(block)
+            }
+        };
         let changed: Vec<String> = changes.iter().flat_map(|c| c.keys().cloned()).collect();
-        for (k, value) in changes.unwrap_or_default() {
-            merged.insert(k, value);
-        }
-        let (block, _) = decode_kind(&kind, &merged)?;
         self.edit_raster_records(OP, &layer, |records, _| {
             let (stack, at) = entry_mut(records, &layer, &instance)?;
             let entry = &mut stack.filters[at];
-            let before = entry.clone();
-            entry.params = block;
+            let before_opacity = entry.opacity;
+            let mut differs = false;
+            if let Some(block) = block {
+                differs |= entry.params != block;
+                entry.params = block;
+            }
             if let Some(o) = opacity {
+                differs |= before_opacity != o;
                 entry.opacity = o;
             }
-            if *entry == before {
+            if !differs {
                 return Err(nothing());
             }
+            let (kind, _) = kind_params(&entry.params, false);
             Ok(json!({"layer_id": layer, "instance_id": instance, "filter_kind": kind, "changed": changed}))
         })
     }
@@ -1092,7 +1364,7 @@ mod tests {
                     _ => return None,
                 }
             } else {
-                match (p.ty, default_json(p)) {
+                match (p.ty, default_json(p, Some(Rect { x: 0, y: 0, width: 8, height: 8 }))) {
                     (_, Some(d)) => d,
                     (ParamType::Float | ParamType::Int(_), None) => json!(1),
                     (ParamType::Bool, None) => json!(false),
@@ -1111,8 +1383,7 @@ mod tests {
         let mut block = m.clone();
         block.insert("filter_kind".into(), json!(kind));
         let Ok(parsed) = serde_json::from_value::<StudioSmartFilterKind>(Value::Object(block)) else { return false };
-        let probe = StudioSmartFilterStack { enabled: true, stack_mask: None, filters: vec![StudioSmartFilter { instance_id: "p".into(), enabled: true, opacity: 100.0, mask: None, params: parsed }] };
-        hsk_studio_pigment::smart_filter::SmartFilterOp::from_record(&probe, |_| None).is_ok_and(|op| op.check())
+        engine_op(&parsed).is_ok()
     }
 
     /// Every known hard bound of the table is the engine's: the bound itself (or, for an open bound, just inside
@@ -1170,6 +1441,14 @@ mod tests {
         for p in FILTER_SPECS.iter().flat_map(|s| s.params) {
             assert!(p.unit.is_none_or(|u| UNITS.contains(&u)), "{}", p.key);
         }
+        // STU-RAS-109: every enumeration member has an integer discriminant.
+        for p in FILTER_SPECS.iter().flat_map(|s| s.params) {
+            if let ParamType::Enum(members) = p.ty {
+                let mut d: Vec<u16> = members.iter().map(|m| m.1).collect();
+                d.dedup();
+                assert_eq!(d.len(), members.len(), "{}: distinct discriminants", p.key);
+            }
+        }
     }
 
     #[test]
@@ -1201,5 +1480,41 @@ mod tests {
         let mut default = good;
         default["default"] = json!(-1.0);
         assert!(codes(&default).contains(&"default_outside_hard".to_owned()));
+        // STU-RAS-109: an enumeration member without an integer discriminant.
+        let mut noise = param_spec_json(1, &FILTER_SPECS[4].params[1]);
+        assert!(parameter_contract_findings(&noise).is_empty(), "{noise}");
+        noise["options"][1]["discriminant"] = json!("unknown");
+        assert_eq!(codes(&noise), vec!["discriminant_missing:gaussian".to_owned()]);
+    }
+
+    #[test]
+    fn the_input_schema_carries_known_hard_bounds_only() {
+        let box_blur = kind_input_schema(filter_spec("box_blur").unwrap());
+        let radius = &box_blur["properties"]["radius_px"];
+        assert_eq!((radius["minimum"].as_f64(), radius["maximum"].as_f64(), radius["x-soft-max"].as_f64()), (Some(0.0), Some(30_000.0), Some(127.0)), "{radius}");
+        assert_eq!(box_blur["required"], json!([]), "every box blur parameter has a declared default");
+        let angle = &kind_input_schema(filter_spec("motion_blur").unwrap())["properties"]["angle_deg"];
+        assert!(angle.get("minimum").is_none() && angle.get("maximum").is_none(), "no fabricated bound for unknown: {angle}");
+        let sigma = &kind_input_schema(filter_spec("bilateral_blur").unwrap())["properties"]["range_sigma"];
+        assert_eq!(sigma["exclusiveMinimum"].as_f64(), Some(0.0), "{sigma}");
+        let scale = &kind_input_schema(filter_spec("custom_convolution").unwrap())["properties"]["scale"];
+        assert_eq!(scale["not"], json!({"const": 0}));
+        let centre = &kind_input_schema(filter_spec("radial_blur").unwrap())["properties"]["centre_x_px"];
+        assert_eq!(centre["x-default"]["fraction_of_layer_content_bounds"].as_f64(), Some(0.5), "{centre}");
+    }
+
+    /// Review F9: the vertex-list cap (Folio's `MAX_LIQUIFY_VERTICES` in `check_param`, here a small cap so the test
+    /// allocates no 4-million-entry list).
+    #[test]
+    fn a_mesh_list_over_the_cap_is_refused_before_decoding() {
+        let mesh = |n: usize| json!({"displacement": vec![[0.0, 0.0]; n], "freeze": vec![0.0; 3]});
+        let m = mesh(3);
+        assert!(mesh_lists_within("params.mesh", m.as_object().unwrap(), 3).is_ok());
+        let r = mesh_lists_within("params.mesh", mesh(4).as_object().unwrap(), 3).unwrap_err();
+        assert_eq!((r.code.as_str(), &r.detail), ("budget_exceeded", &json!({"key": "params.mesh.displacement", "at_most": 3})));
+        let freeze = json!({"displacement": [], "freeze": vec![0.0; 4]});
+        assert_eq!(mesh_lists_within("params.mesh", freeze.as_object().unwrap(), 3).unwrap_err().detail["key"], "params.mesh.freeze");
+        // The real cap is Folio's (`check_param` passes it).
+        assert_eq!(usize::try_from(MAX_LIQUIFY_VERTICES).unwrap(), 1 << 22);
     }
 }

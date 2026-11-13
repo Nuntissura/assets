@@ -1,4 +1,4 @@
-//! Photo rows of the command corpus: selection, fill, liquify, info and develop records.
+//! Photo rows of the command corpus: selection, fill, liquify, info and develop records, smart filter effects and adjustment layers.
 
 use super::super::ValueType;
 use super::{CommandEntry, ParamSpec, flag as b, index as i, list as l, number as n, one_of as o, output_path as out, path as file, point, points, record as r, samples, text as t, typed, vector3};
@@ -107,7 +107,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("effect.reorder", EFFECT, "Reorder smart filter", true, &[t("layer"), t("instance"), i("to")]),
     typed("effect.toggle", EFFECT, "Enable or disable smart filter", true, &[t("layer"), t("instance").opt(), b("enabled")]),
     typed("effect.remove", EFFECT, "Remove smart filter", true, &[t("layer"), t("instance")]),
-    typed("effect.read", EFFECT, "Read smart filters", false, &[t("layer")]),
+    typed("effect.read", EFFECT, "Read smart filters", false, &[t("layer"), b("full").opt()]),
     typed("effect.parameters", EFFECT, "Smart filter parameter specs", false, &[o("filter_kind", FILTER_KINDS).opt()]),
     typed("adjustment.create", ADJUST, "New adjustment layer", true, &[r("adjustment", ADJUSTMENT), t("name").opt(), b("clipped").opt()]),
     typed("adjustment.edit", ADJUST, "Edit adjustment layer", true, &[t("layer"), r("adjustment", ADJUSTMENT)]),

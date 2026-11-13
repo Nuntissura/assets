@@ -352,7 +352,7 @@ impl Viewer {
         let mut entry = self.editable_entry(&doc)?;
         let name = label(&opts.name.clone().unwrap_or_else(|| path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
         let (source_id, shared) = self.source_for(&mut entry, &doc, uri.as_ref(), &digest, bytes, (w, h), &name)?;
-        let layer_id = mint_placed_layer_id(&doc, &entry);
+        let layer_id = mint_placed_layer_id(&doc, &entry)?;
         let tiles = self.source_tiles(&layer_id, &image)?;
         let count = tiles.len();
         let parent = Parent::Node(NodeRef { node_kind: NodeKind::PageSpread, node_id: frame.spread_id.clone() });

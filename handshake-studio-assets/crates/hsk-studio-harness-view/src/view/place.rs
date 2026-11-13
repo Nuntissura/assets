@@ -189,6 +189,15 @@ fn folio_refusal(d: &folio::Diagnostic) -> PlaceRefusal {
     PlaceRefusal::new(&code, d.target.clone())
 }
 
+/// The failure code of an in-place job's settlement (`JobOutcome::Failed` takes a static code): the code itself when
+/// it is one a map or the pixel path refuses with, else `adjustment_apply_failed` (the caller still gets the full
+/// refusal).
+fn static_code(code: &str) -> &'static str {
+    const CODES: [&str; 9] =
+        ["adjust_out_of_domain", "adjust_invalid_parameter", "adjust_unsupported", "adjust_blend", "budget_exceeded", "tile_invalid", "no_working_profile", "canceled", "transform_invalid"];
+    CODES.iter().copied().find(|c| *c == code).unwrap_or("adjustment_apply_failed")
+}
+
 /// A refusal of this module as a command refusal (code kept, detail as `message`).
 fn command_refusal(r: PlaceRefusal) -> CommandRefusal {
     CommandRefusal::new(&r.code, json!({"message": r.detail}))
@@ -548,7 +557,7 @@ impl Viewer {
         let result = (|| -> Result<Value, CommandRefusal> {
             let doc = self.place_doc().map_err(command_refusal)?;
             let mut entry = self.editable_entry(&doc).map_err(command_refusal)?;
-            let layer_id = mint_entry_layer_id(&doc, &entry, "9300");
+            let layer_id = mint_entry_layer_id(&doc, &entry, "9300").map_err(|code| CommandRefusal::new(code, json!({"revision": doc.revision})))?;
             let (kind, payload, appearance, record) = make(&layer_id)?;
             let (parent, place) = self.insertion_point().map_err(|e| CommandRefusal::new("not_open", json!({"message": e})))?;
             let mut layer = new_layer(&layer_id, name, &parent, kind, payload).map_err(|e| CommandRefusal::new("layer_invalid", json!({"message": e})))?;
@@ -569,15 +578,69 @@ impl Viewer {
         self.effects_reported(op, result)
     }
 
+    /// The layer a smart filter stack renders over (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, review F1): the pixels of
+    /// raster layer `layer_id` over its tiles' bounds (straight linear RGBA, `layer_rgba`) and those bounds cut to
+    /// the canvas when the document has one (the content plane render-cpu filters over, inside the plan extent);
+    /// `None` for a layer without tiles. Refused: `not_open`, `layer_unknown`, `layer_not_pixel`,
+    /// `tile_format_unsupported`, `budget_exceeded`.
+    pub(super) fn layer_content(&self, layer_id: &str) -> Result<Option<super::raster_effects::LayerContent>, CommandRefusal> {
+        let doc = self.place_doc().map_err(command_refusal)?;
+        let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| CommandRefusal::new("layer_unknown", json!({"layer": layer_id})))?;
+        let Payload::Raster { tiles } = &layer.payload else {
+            return Err(CommandRefusal::new("layer_not_pixel", json!({"layer": layer_id, "kind": layer.kind})));
+        };
+        if tiles.is_empty() {
+            return Ok(None);
+        }
+        if tiles.iter().any(|t| t.format != "rgb_f32le") {
+            return Err(CommandRefusal::new("tile_format_unsupported", json!({"layer": layer_id, "expected": "rgb_f32le"})));
+        }
+        let (region, pixels) = self.layer_rgba(layer_id).map_err(command_refusal)?;
+        let bounds = match self.canvas() {
+            Ok(canvas) => region.intersect(canvas).ok().flatten(),
+            Err(_) => Some(region),
+        };
+        Ok(Some(super::raster_effects::LayerContent { plane: hsk_studio_pigment::retouch::RgbaPlane { bounds: region, data: pixels }, bounds }))
+    }
+
+    /// The content bounds of [`Self::layer_content`] without reading the pixels (`effect.read`); `None` without tiles.
+    pub(super) fn layer_content_bounds(&self, layer_id: &str) -> Option<Rect> {
+        let snap = self.run.snapshot()?;
+        let layer = snap.document().layers.iter().find(|l| l.layer_id == layer_id)?;
+        let Payload::Raster { tiles } = &layer.payload else { return None };
+        let px = |l: &folio::Length| (l.value.is_finite() && l.value >= 1.0 && l.value <= 4096.0 && l.value.fract() == 0.0).then_some(l.value as u32);
+        let (gw, gh) = (tiles.iter().filter_map(|t| px(&t.width)).max()?, tiles.iter().filter_map(|t| px(&t.height)).max()?);
+        let mut union: Option<Rect> = None;
+        for t in tiles {
+            let r = Rect { x: t.column.checked_mul(i64::from(gw))?, y: t.row.checked_mul(i64::from(gh))?, width: px(&t.width)?, height: px(&t.height)? };
+            union = Some(match union {
+                None => r,
+                Some(u) => {
+                    let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
+                    let x1 = u.x.saturating_add(i64::from(u.width)).max(r.x.saturating_add(i64::from(r.width)));
+                    let y1 = u.y.saturating_add(i64::from(u.height)).max(r.y.saturating_add(i64::from(r.height)));
+                    Rect { x: x0, y: y0, width: u32::try_from(x1.saturating_sub(x0)).ok()?, height: u32::try_from(y1.saturating_sub(y0)).ok()? }
+                }
+            });
+        }
+        let union = union?;
+        match self.canvas() {
+            Ok(canvas) => union.intersect(canvas).ok().flatten(),
+            Err(_) => Some(union),
+        }
+    }
+
     /// ONE tile step rewriting a pixel layer's colour in place (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, the
-    /// destructive apply of `view::raster_effects`): `map` gets each texel's straight linear colour (alpha > 0
-    /// only; alpha is kept) and whether the layer holds values outside 0..=1 (`extended`). The tiles are
-    /// written again on the 256-pixel grid at the same pixels (identity, nearest neighbour: an exact copy of
-    /// what `map` returns) and committed with `Run::set_tiles`. Refused: `layer_unknown`, `layer_not_pixel`
-    /// (not a raster layer, or a placed asset layer: its tiles are the source rendered, V4-06 sibling of
-    /// [`Viewer::refuse_placed_pixels`]), `layer_empty`, `tile_format_unsupported`, `budget_exceeded`, `canceled`,
-    /// and `map`'s own refusal. Result: `{layer_id, tiles, pixels, extended, revision}`.
-    pub(super) fn map_layer_pixels(&mut self, op: &str, layer_id: &str, mut map: impl FnMut(bool, [f32; 3]) -> Result<[f32; 3], CommandRefusal>) -> Result<Value, CommandRefusal> {
+    /// destructive apply of `view::raster_effects`), run as ONE job admitted through the viewer's bound JobPort
+    /// (review Q5, HOST INTEGRATION (6): `Action::Edit`, its cost the layer's texel bytes; `overloaded`,
+    /// `canceled`, `stale_revision` refuse before any pixel is read; the result carries the settlement as `job`).
+    /// `map` gets each texel's straight linear colour and alpha (alpha > 0 only; alpha is kept). The tiles are
+    /// written again on the 256-pixel grid at the same pixels (identity, nearest neighbour: an exact copy of what
+    /// `map` returns) and committed with `Run::set_tiles`. Refused first, unadmitted: `layer_unknown`,
+    /// `layer_not_pixel` (not a raster layer, or a placed asset layer: its tiles are the source rendered, V4-06
+    /// sibling of [`Viewer::refuse_placed_pixels`]), `layer_empty`, `tile_format_unsupported`; then
+    /// `budget_exceeded`, `canceled` and `map`'s own refusal. Result: `{layer_id, tiles, pixels, revision, job}`.
+    pub(super) fn map_layer_pixels(&mut self, op: &str, layer_id: &str, mut map: impl FnMut([f32; 3], f32) -> Result<[f32; 3], CommandRefusal>) -> Result<Value, CommandRefusal> {
         let result = (|| -> Result<Value, CommandRefusal> {
             let doc = self.place_doc().map_err(command_refusal)?;
             let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| CommandRefusal::new("layer_unknown", json!({"layer": layer_id})))?;
@@ -594,26 +657,46 @@ impl Viewer {
             if tiles.iter().any(|t| t.format != "rgb_f32le") {
                 return Err(CommandRefusal::new("tile_format_unsupported", json!({"layer": layer_id, "expected": "rgb_f32le"})));
             }
-            let (bounds, mut pixels) = self.layer_rgba(layer_id).map_err(command_refusal)?;
-            let extended = sample_range(&pixels) == SampleRange::Extended;
-            let mut count: u64 = 0;
-            for (k, p) in pixels.iter_mut().enumerate() {
-                if k.trailing_zeros() >= 16 {
-                    self.cancel.check().map_err(|_| CommandRefusal::new("canceled", json!({})))?;
+            // The job's cost: the texel bytes it reads and writes (16 per texel), counted saturating.
+            let texels = tiles.iter().fold(0u64, |acc, t| acc.saturating_add((t.width.value.max(0.0) as u64).saturating_mul(t.height.value.max(0.0) as u64)));
+            let admission = self.job_admission();
+            let head = self.document_head();
+            let correlation = admission.next_correlation();
+            let job = admission
+                .admit(admission.request(hsk_studio_session::Action::Edit, texels.saturating_mul(16), head, correlation), head, self.cancel)
+                .map_err(|r| CommandRefusal::new(r.code(), super::job_admission::refusal_json(r)))?;
+            let work = (|| -> Result<Value, CommandRefusal> {
+                let (bounds, mut pixels) = self.layer_rgba(layer_id).map_err(command_refusal)?;
+                let mut count: u64 = 0;
+                for (k, p) in pixels.iter_mut().enumerate() {
+                    if k.trailing_zeros() >= 16 {
+                        self.cancel.check().map_err(|_| CommandRefusal::new("canceled", json!({})))?;
+                    }
+                    // NaN alpha compares false: not content, as everywhere in this module.
+                    if p[3] > 0.0 {
+                        let [r, g, b] = map([p[0], p[1], p[2]], p[3])?;
+                        *p = [r, g, b, p[3]];
+                        count = count.saturating_add(1);
+                    }
                 }
-                // NaN alpha compares false: not content, as everywhere in this module.
-                if p[3] > 0.0 {
-                    let [r, g, b] = map(extended, [p[0], p[1], p[2]])?;
-                    *p = [r, g, b, p[3]];
-                    count = count.saturating_add(1);
+                let new_tiles = self.resampled_tiles(layer_id, bounds, &pixels, Affine2::IDENTITY, ResampleFilter::NearestNeighbour, None).map_err(command_refusal)?;
+                let n = new_tiles.len();
+                if !self.run.set_tiles(op, layer_id, new_tiles) {
+                    return Err(command_refusal(self.run_refusal(op)));
+                }
+                Ok(json!({"layer_id": layer_id, "tiles": n, "pixels": count, "revision": self.revision_now()}))
+            })();
+            match work {
+                Ok(mut v) => {
+                    v["job"] = super::job_admission::settlement_json(&job.settle(hsk_studio_session::JobOutcome::Completed));
+                    Ok(v)
+                }
+                Err(e) => {
+                    let outcome = if e.code == "canceled" { hsk_studio_session::JobOutcome::Canceled } else { hsk_studio_session::JobOutcome::Failed(static_code(&e.code)) };
+                    job.settle(outcome);
+                    Err(e)
                 }
             }
-            let new_tiles = self.resampled_tiles(layer_id, bounds, &pixels, Affine2::IDENTITY, ResampleFilter::NearestNeighbour, None).map_err(command_refusal)?;
-            let n = new_tiles.len();
-            if !self.run.set_tiles(op, layer_id, new_tiles) {
-                return Err(command_refusal(self.run_refusal(op)));
-            }
-            Ok(json!({"layer_id": layer_id, "tiles": n, "pixels": count, "extended": extended, "revision": self.revision_now()}))
         })();
         self.effects_reported(op, result)
     }
@@ -906,7 +989,7 @@ impl Viewer {
         let x = opts.x.unwrap_or(canvas.x as f64 + (f64::from(canvas.width) - w * scale) / 2.0);
         let y = opts.y.unwrap_or(canvas.y as f64 + (f64::from(canvas.height) - h * scale) / 2.0);
         let transform = [scale, 0.0, 0.0, scale, x, y];
-        let layer_id = mint_placed_layer_id(&doc, &entry);
+        let layer_id = mint_placed_layer_id(&doc, &entry)?;
         let tiles = self.placement_tiles(&layer_id, &image, transform, filter)?;
         let count = tiles.len();
         let (parent, place) = self.insertion_point().map_err(|e| PlaceRefusal::new("not_open", e))?;
@@ -1307,33 +1390,20 @@ fn time_fields(doc: &StudioDocument) -> (String, String) {
 }
 
 /// A fresh `SLYR` id for a placed layer, from the block `7ede-9200` that no other minter uses (`layers`
-/// mints `7ede-9000`, [`mint_document_id`] `7ede-9100`): the first counter neither the document nor the
-/// entry's records or instances hold. Review F1 of 9d83222c: a placed layer minted from the shared block
-/// freed its id on delete, the next new layer of any tool took that id and inherited the stale record. A
-/// later place may take a pruned placed id again (the prune runs before the push; the history is linear).
-fn mint_placed_layer_id(doc: &StudioDocument, entry: &Entry) -> String {
-    mint_entry_layer_id(doc, entry, "9200")
+/// mints `7ede-9000`, [`mint_document_id`] `7ede-9100`). Review F1 of 9d83222c: a placed layer minted from the
+/// shared block freed its id on delete, the next new layer of any tool took that id and inherited the stale
+/// record. Lane SMB-PS-FILTER-ADJUST-COMMANDS-1 (review F2, lead ruling 2026-11-13): the block mints with the
+/// revision scheme of `layers::try_mint_block_id`, so a deleted placed layer's id is never minted again (the prune
+/// before the mint no longer frees it); `layer_id_space_exhausted` past 2^24 revisions.
+fn mint_placed_layer_id(doc: &StudioDocument, entry: &Entry) -> Res<String> {
+    mint_entry_layer_id(doc, entry, "9200").map_err(|code| PlaceRefusal::new(code, format!("no fresh placed layer id at revision {}", doc.revision)))
 }
 
-/// [`mint_placed_layer_id`] over the id block `7ede-<block>` (lane SMB-PS-FILTER-ADJUST-COMMANDS-1: adjustment
-/// layers mint from `9300`).
-fn mint_entry_layer_id(doc: &StudioDocument, entry: &Entry, block: &str) -> String {
-    let (high, low) = time_fields(doc);
-    let taken: BTreeSet<&str> = doc
-        .layers
-        .iter()
-        .map(|l| l.layer_id.as_str())
-        .chain(entry.records.layers.iter().map(|r| r.layer_id.as_str()))
-        .chain(entry.instances.iter().map(|i| i.layer_id.as_str()))
-        .collect();
-    let mut n: u64 = 1;
-    loop {
-        let id = format!("SLYR-{high}-{low}-7ede-{block}-{n:012x}");
-        if !taken.contains(id.as_str()) {
-            return id;
-        }
-        n = n.wrapping_add(1);
-    }
+/// [`mint_placed_layer_id`] over the id block `7ede-<block>` (adjustment layers mint from `9300`): the revision
+/// scheme, skipping every id the document, the entry's records or its instances hold.
+fn mint_entry_layer_id(doc: &StudioDocument, entry: &Entry, block: &str) -> Result<String, &'static str> {
+    let taken: BTreeSet<&str> = entry.records.layers.iter().map(|r| r.layer_id.as_str()).chain(entry.instances.iter().map(|i| i.layer_id.as_str())).collect();
+    super::layers::try_mint_block_id(doc, block, 1, &|id| taken.contains(id))
 }
 
 /// The tight bounds of the texels with alpha > 0 of `pixels` (row-major over `bounds`) and those texels;
@@ -1396,5 +1466,203 @@ fn mint_document_id(doc: &StudioDocument, records: &StudioRasterRecords) -> Stri
             return id;
         }
         n = n.wrapping_add(1);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)] // test fixtures: small pixel indices and ramps
+mod in_place_tests {
+    //! Review F7 and F1 of d05d2699 (lead rulings 2026-11-13, lane SMB-PS-FILTER-ADJUST-COMMANDS-1) over a layer whose
+    //! straight linear pixels the test sets exactly (in the crate, so both forms are read in linear light at full
+    //! float precision): `adjustment.apply` in place against the adjustment layer's own render, kind by kind for the
+    //! 20 Folio adjustment kinds, over opaque, partly transparent and transparent texels; and a layer holding values
+    //! outside 0..=1, which both forms and the smart filter stack refuse by the one range rule.
+    use super::*;
+    use crate::view::render::{Prefer, render_linear_with_records};
+    use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
+    use serde_json::Map;
+
+    const W: u32 = 16;
+    const H: u32 = 8;
+
+    /// Rows 0-1 opaque ramps; rows 2-3 alpha 0.5 and 0.25 (powers of two: a premultiplied round trip is exact);
+    /// rows 4-5 alpha 0.3 (not a power of two); rows 6-7 alpha 0.
+    fn fixture() -> Vec<[f32; 4]> {
+        let mut px = Vec::new();
+        for y in 0..H {
+            for x in 0..W {
+                let t = x as f32 / (W - 1) as f32;
+                let rgb = if y % 2 == 0 { [0.05 + 0.9 * t, 0.9 - 0.8 * t, 0.35] } else { [0.6, 0.1 + 0.7 * t, 0.95 - 0.9 * t] };
+                let a = match y {
+                    0 | 1 => 1.0,
+                    2 => 0.5,
+                    3 => 0.25,
+                    4 | 5 => 0.3,
+                    _ => 0.0,
+                };
+                px.push([rgb[0], rgb[1], rgb[2], a]);
+            }
+        }
+        px
+    }
+
+    /// A new raster document holding only layer `px` with `pixels` (straight linear RGBA over `W x H` at the origin).
+    fn seeded(pixels: &[[f32; 4]]) -> (Viewer, String) {
+        // A test actor of its own (Viewer::new is the asset-local test host's, behind its feature).
+        let actor = hsk_studio_accord::ActorContext::new("lane-fx-account", "lane-fx-principal", "owner", "owner-principal", "space", "lane-fx-session").unwrap();
+        let context = hsk_studio_harness_core::RunContext::new(
+            actor,
+            hsk_studio_harness_core::ClientSessionId::parse("lane-fx-window").unwrap(),
+            std::sync::Arc::new(hsk_studio_harness_core::TransientCorrelation::starting_at(1)),
+        );
+        let mut v = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context);
+        v.new_document(&NewDocument::new(DocumentProfile::Raster, Some((f64::from(W), f64::from(H)))), None).unwrap();
+        let id = v.new_raster_layer("px").unwrap();
+        let others: Vec<String> = v.run.snapshot().unwrap().document().layers.iter().filter(|l| l.layer_id != id).map(|l| l.layer_id.clone()).collect();
+        for other in others {
+            v.delete_layer(&other).unwrap();
+        }
+        let tiles = v.resampled_tiles(&id, Rect { x: 0, y: 0, width: W, height: H }, pixels, Affine2::IDENTITY, ResampleFilter::NearestNeighbour, None).unwrap();
+        assert!(v.run.set_tiles("seed", &id, tiles), "seed tiles");
+        let (_, read) = v.layer_rgba(&id).unwrap();
+        // The seeded texels read back exactly (alpha-0 texels are not stored: they read as transparent black).
+        for (k, (got, want)) in read.iter().zip(pixels).enumerate() {
+            if want[3] > 0.0 {
+                assert_eq!(got, want, "texel {k}");
+            }
+        }
+        (v, id)
+    }
+
+    /// The document rendered by the read-back path in linear light: `(frame rect, straight RGBA)`.
+    fn linear(v: &Viewer) -> Result<(Rect, Vec<[f32; 4]>), String> {
+        let snap = v.run.snapshot().ok_or("no document")?;
+        let f = render_linear_with_records(snap, &v.assets, None, None, v.records.as_ref(), v.cancel).map_err(|e| format!("{}: {}", e.code, e.detail))?;
+        Ok((Rect { x: f.x, y: f.y, width: f.width, height: f.height }, f.pixels))
+    }
+
+    fn command(v: &mut Viewer, id: &str, params: Value) -> Result<Value, CommandRefusal> {
+        let map: Map<String, Value> = params.as_object().cloned().unwrap_or_default();
+        v.run_command(id, &map)
+    }
+
+    fn colour(r: f64, g: f64, b: f64) -> Value {
+        json!({"r": r, "g": g, "b": b, "colour_profile_id": null})
+    }
+
+    /// One record of each of the 20 Folio `StudioAdjustment` kinds, parameters off the identity (colours black, white
+    /// or primaries: a linear-light plan takes no other adjustment colour).
+    fn kinds() -> Vec<Value> {
+        let stop = |p: f64, c: Value| json!({"position": p, "midpoint": null, "opacity": 100.0, "colour": c});
+        let q = |c: f64| json!([c, 0.0, 0.0, 0.0]);
+        let cube: Vec<Value> = (0..8).map(|i: i32| json!([f64::from(i >> 2), f64::from(i & 1), f64::from((i >> 1) & 1)])).collect();
+        let zero = json!({"hue": 0.0, "saturation": 0.0, "lightness": 0.0});
+        vec![
+            json!({"kind": "levels", "records": [{"channel": "composite", "input_black": 0.1, "input_white": 0.9, "output_black": 0.0, "output_white": 1.0, "gamma": 1.4}]}),
+            json!({"kind": "curves", "curves": [{"channel": "composite", "points": [{"input": 0.0, "output": 0.0, "corner": false}, {"input": 128.0, "output": 160.0, "corner": false}, {"input": 255.0, "output": 255.0, "corner": false}]}]}),
+            json!({"kind": "hue_saturation", "master": {"hue": 30.0, "saturation": 20.0, "lightness": -10.0}, "colorize": false, "colorization": zero}),
+            json!({"kind": "brightness_contrast", "brightness": 20.0, "contrast": 30.0, "use_legacy": false}),
+            json!({"kind": "exposure", "exposure": 0.5, "offset": 0.0, "gamma": 1.0, "use_legacy": false}),
+            json!({"kind": "invert"}),
+            json!({"kind": "threshold", "level": 128.0}),
+            json!({"kind": "posterize", "levels": 4}),
+            json!({"kind": "vibrance", "vibrance": 40.0, "saturation": -10.0}),
+            json!({"kind": "colour_balance", "shadows": [0.0, 0.0, 0.0], "midtones": [50.0, 0.0, -20.0], "highlights": [0.0, 10.0, 0.0], "preserve_luminosity": true}),
+            json!({"kind": "photo_filter", "filter_colour": colour(1.0, 0.0, 0.0), "density": 25.0, "preserve_luminosity": false}),
+            json!({"kind": "black_and_white", "red": 40.0, "yellow": 60.0, "green": 40.0, "cyan": 60.0, "blue": 20.0, "magenta": 80.0, "tint_enabled": true, "tint_hue": 35.0, "tint_saturation": 25.0}),
+            json!({"kind": "channel_mixer", "outputs": [{"weights": [100.0, 50.0, 0.0], "constant": 10.0}, {"weights": [0.0, 100.0, 0.0], "constant": 0.0}, {"weights": [0.0, 0.0, 100.0], "constant": 0.0}], "monochrome": false}),
+            json!({"kind": "selective_colour", "method": "absolute", "reds": q(-25.0), "yellows": q(0.0), "greens": q(0.0), "cyans": q(0.0), "blues": q(0.0), "magentas": q(0.0), "whites": q(0.0), "neutrals": q(0.0), "blacks": q(5.0)}),
+            json!({"kind": "gradient_map", "stops": [stop(0.0, colour(0.0, 0.0, 0.0)), stop(100.0, colour(1.0, 0.0, 0.0))], "reverse": false, "dither": false}),
+            json!({"kind": "colour_lookup", "lut": "luts/rotate.cube", "lut_kind": "3dlut", "dither": false, "table": {"side": 2, "values": cube}}),
+            json!({"kind": "shadows_highlights", "shadow_amount": 35.0, "shadow_tone_width": 50.0, "shadow_radius": 0.0, "highlight_amount": 0.0, "highlight_tone_width": 50.0, "highlight_radius": 0.0, "colour_correction": 20.0, "midtone_contrast": 0.0, "black_clip": 0.01, "white_clip": 0.01}),
+            json!({"kind": "tone_compression", "method": "exposure_gamma", "exposure": 1.0, "gamma": 2.0, "compression": 0.0}),
+            json!({"kind": "match_colour", "luminance": 100.0, "colour_intensity": 120.0, "fade": 10.0, "neutralize": true, "source": {"source_mean": [0.6, 0.5, 0.4], "source_std": [0.2, 0.2, 0.2], "target_mean": [0.4, 0.4, 0.4], "target_std": [0.1, 0.1, 0.1]}}),
+            json!({"kind": "replace_colour", "fuzziness": 40.0, "samples": [colour(1.0, 0.0, 0.0)], "shift": {"hue": 120.0, "saturation": 0.0, "lightness": 0.0}}),
+        ]
+    }
+
+    /// Largest channel difference between the two renders over the texels of `rows`; alpha must match exactly
+    /// everywhere and colour is compared only where alpha > 0.
+    fn max_diff(frame: Rect, a: &[[f32; 4]], b: &[[f32; 4]], rows: std::ops::Range<u32>) -> f32 {
+        let mut worst = 0.0_f32;
+        for y in rows {
+            for x in 0..W {
+                let k = usize::try_from((i64::from(y) - frame.y) * i64::from(frame.width) + (i64::from(x) - frame.x)).unwrap();
+                let (p, q) = (a[k], b[k]);
+                assert_eq!(p[3], q[3], "alpha at ({x}, {y})");
+                if p[3] > 0.0 {
+                    for c in 0..3 {
+                        worst = worst.max((p[c] - q[c]).abs());
+                    }
+                }
+            }
+        }
+        worst
+    }
+
+    /// Review F7: for every kind both forms take the record or both refuse it with the same code; when taken, the
+    /// in-place layer renders as the adjustment layer over it renders. Exact over opaque texels and over alpha 0.5
+    /// and 0.25 (a premultiplied round trip by a power of two is exact); over alpha 0.3 the render composites
+    /// premultiplied, so the colour the adjustment layer reads back is (c a) / a, within one f32 rounding of the
+    /// texel's c, and the kind's slope carries that difference: at most 1e-5 (the gain of these records is below 10;
+    /// one rounding of values below 1 is below 6e-8).
+    #[test]
+    fn apply_in_place_renders_as_the_adjustment_layer_for_every_kind() {
+        let pixels = fixture();
+        let mut report = Vec::new();
+        for record in kinds() {
+            let kind = record["kind"].as_str().unwrap().to_owned();
+            let (mut layered, px) = seeded(&pixels);
+            layered.select(Some(px.clone()));
+            let created = command(&mut layered, "adjustment.create", json!({"adjustment": record}));
+            let (mut applied, px2) = seeded(&pixels);
+            let done = command(&mut applied, "adjustment.apply", json!({"layer": px2, "adjustment": record}));
+            match (created, done) {
+                (Err(a), Err(b)) => {
+                    assert_eq!(a.code, b.code, "{kind}: both forms refuse alike");
+                    report.push(format!("{kind}: refused {}", a.code));
+                }
+                (Ok(_), Ok(out)) => {
+                    assert_eq!(out["pixels"].as_u64(), Some(u64::from(W * 6)), "{kind}: every texel with alpha > 0: {out}");
+                    let (frame, layer_form) = linear(&layered).unwrap_or_else(|e| panic!("{kind}: the adjustment layer renders: {e}"));
+                    let (frame2, in_place) = linear(&applied).unwrap_or_else(|e| panic!("{kind}: the applied layer renders: {e}"));
+                    assert_eq!(frame, frame2);
+                    let exact = max_diff(frame, &layer_form, &in_place, 0..4);
+                    let partial = max_diff(frame, &layer_form, &in_place, 4..6);
+                    max_diff(frame, &layer_form, &in_place, 6..8);
+                    report.push(format!("{kind}: exact rows {exact:e}, alpha 0.3 {partial:e}"));
+                    assert_eq!(exact, 0.0, "{kind}: opaque and power-of-two alpha texels are exact");
+                    assert!(partial <= 1e-5, "{kind}: alpha 0.3 within one rounding times the slope: {partial:e}");
+                }
+                (c, d) => panic!("{kind}: the forms disagree: create {:?} apply {:?}", c.err().map(|e| e.code), d.err().map(|e| e.code)),
+            }
+        }
+        eprintln!("{}", report.join("\n"));
+        assert_eq!(report.len(), 20);
+    }
+
+    /// Review F7 and F1: a layer holding a value outside 0..=1 (a float layer) is refused by the one range rule: the
+    /// adjustment layer's composite refuses to render over it, `adjustment.apply` refuses `adjust_out_of_domain`
+    /// with nothing written, and a smart filter entry refuses `effect_value_range_unsupported` (the stack renders
+    /// unit-range content only) while the layer itself still renders.
+    #[test]
+    fn a_layer_outside_the_unit_range_is_refused_by_both_forms_and_the_stack() {
+        let mut pixels = fixture();
+        pixels[3] = [1.5, 0.25, 0.5, 1.0];
+        let (mut layered, px) = seeded(&pixels);
+        assert!(linear(&layered).is_ok(), "the plain float layer renders");
+        layered.select(Some(px.clone()));
+        command(&mut layered, "adjustment.create", json!({"adjustment": {"kind": "invert"}})).unwrap();
+        let fail = linear(&layered).expect_err("the adjustment layer does not render over values outside 0..=1");
+        let (mut applied, px2) = seeded(&pixels);
+        let before = applied.layer_rgba(&px2).unwrap();
+        let steps = applied.run.history();
+        let r = command(&mut applied, "adjustment.apply", json!({"layer": px2, "adjustment": {"kind": "invert"}})).unwrap_err();
+        assert_eq!(r.code, "adjust_out_of_domain", "{} (layer form: {fail})", r.detail);
+        assert_eq!(applied.layer_rgba(&px2).unwrap(), before, "nothing written");
+        assert_eq!(applied.run.history(), steps, "no step");
+        let r = command(&mut applied, "effect.apply", json!({"layer": px2, "filter_kind": "sharpen"})).unwrap_err();
+        assert_eq!(r.code, "effect_value_range_unsupported", "{}", r.detail);
+        assert!(linear(&applied).is_ok(), "the layer still renders");
     }
 }

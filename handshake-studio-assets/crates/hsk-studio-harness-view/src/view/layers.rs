@@ -65,9 +65,18 @@ const ID_HALF: u64 = 0x100_0000;
 /// is a new revision) and a saved document reopens at its revision, so every later mint carries a higher
 /// revision. Ids of the earlier scheme have revision bits 0 and stay distinct from every mint at revision 1 or
 /// later. Nothing wraps or is truncated: a revision of 2^24 or more, a `salt` of 2^24 or more, or lower bits
-/// that run out refuse [`LAYER_ID_SPACE_EXHAUSTED`]. Every id is a string end to end (Folio, the package,
-/// IDML, PSD loss notes, export reports): no path narrows it to a number.
+/// that run out refuse [`LAYER_ID_SPACE_EXHAUSTED`]. An id is a string in Folio and the package; the tests prove the
+/// largest value parses as a `DomainId` and survives save, reopen and an `export.run` that names it (unit test
+/// `the_counter_carries_the_revision_and_the_largest_values_are_valid_ids`, harness test
+/// `minted_layer_ids_are_never_minted_twice_and_survive_save_reopen_and_export`); other writers were read, not run.
 pub(super) fn try_mint_layer_id(doc: &StudioDocument, salt: u64) -> Result<String, &'static str> {
+    try_mint_block_id(doc, "9000", salt, &|_| false)
+}
+
+/// [`try_mint_layer_id`] over the id block `7ede-<block>` (`9000` the layer tools, `9200` placed layers, `9300`
+/// adjustment layers; lane SMB-PS-FILTER-ADJUST-COMMANDS-1, review F2): the revision scheme, skipping the ids the
+/// document holds and the ids `taken` names (a caller's second guard, such as the entry's records).
+pub(super) fn try_mint_block_id(doc: &StudioDocument, block: &str, salt: u64, taken: &dyn Fn(&str) -> bool) -> Result<String, &'static str> {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
     if doc.revision >= ID_HALF {
@@ -80,8 +89,8 @@ pub(super) fn try_mint_layer_id(doc: &StudioDocument, salt: u64) -> Result<Strin
             return Err(LAYER_ID_SPACE_EXHAUSTED);
         }
         let n = base.checked_add(at).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
-        let id = format!("SLYR-{high}-{low}-7ede-9000-{n:012x}");
-        if !doc.layers.iter().any(|l| l.layer_id == id) {
+        let id = format!("SLYR-{high}-{low}-7ede-{block}-{n:012x}");
+        if !doc.layers.iter().any(|l| l.layer_id == id) && !taken(&id) {
             return Ok(id);
         }
         at = at.checked_add(1).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
