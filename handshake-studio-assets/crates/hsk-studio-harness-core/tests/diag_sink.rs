@@ -26,7 +26,9 @@ const CHILD_STEP_ENV: &str = "HSK_DIAG_SINK_TEST_STEP_MS";
 /// The line a child writes on stderr at each of its steps, with the wall clock, so the parent can tell where its time
 /// went: `entered`, `lines_written`, `ending` (the abort, overflow, panic or end of run comes next).
 const PHASE_MARK: &str = "hsk-diag-child phase=";
-/// The guard of the process tests' children.
+/// A child's steps, in order: each new one is a sign of life for the guard.
+const CHILD_STEPS: [&str; 3] = ["entered", "lines_written", "ending"];
+/// The guard of the process tests' children: the longest a child may go without a new step (spawn counts as one).
 const CHILD_DEADLINE: Duration = Duration::from_secs(60);
 
 struct Scratch(PathBuf);
@@ -445,23 +447,60 @@ fn unix_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_micros()).ok()).unwrap_or(0)
 }
 
+/// Lane SMB-FIX-DIAG-SINK-ABORT-1, measured: a child whose death Windows hands to Windows Error Reporting is held by
+/// `WerFault.exe -u -p <child>` until the report is done, 3 s to 13 s alone and past 60 s under load, while the clean
+/// and panic children end in 50 ms. The error mode keeps an unhandled exception (the stack overflow) out of it, but not
+/// `std::process::abort`, which is a fast fail there (exit 0xC0000409): Windows reports every fast fail, whatever the
+/// error mode (a child at error mode 0x3 was still held 3.2 s to 6.2 s).
 #[cfg(windows)]
-mod error_mode {
-    // SAFETY: GetErrorMode only reads this process's error mode; it takes no pointer.
+mod win {
+    /// SEM_NOGPFAULTERRORBOX (errhandlingapi.h): an unhandled exception is not handed to Windows Error Reporting.
+    pub const NO_GP_FAULT_ERROR_BOX: u32 = 0x0002;
+    /// `_set_abort_behavior` flags (stdlib.h): the abort message, and handing the abort to the crash reporter.
+    pub const WRITE_ABORT_MSG: u32 = 0x1;
+    pub const CALL_REPORTFAULT: u32 = 0x2;
+    // SAFETY: none of these takes a pointer: they read or set this process's error mode or abort behaviour, or abort.
     #[link(name = "kernel32")]
     unsafe extern "system" {
         pub safe fn GetErrorMode() -> u32;
+        pub safe fn SetErrorMode(mode: u32) -> u32;
+    }
+    unsafe extern "C" {
+        /// The C runtime's `abort`: SIGABRT, then `_exit(3)` when the abort behaviour does not hand it on.
+        pub safe fn abort() -> !;
+        pub safe fn _set_abort_behavior(flags: u32, mask: u32) -> u32;
     }
 }
 /// This process's error mode (errhandlingapi.h), on Windows: whether its death is handed to Windows Error Reporting.
 fn error_mode() -> Option<u32> {
     #[cfg(windows)]
     {
-        Some(error_mode::GetErrorMode())
+        Some(win::GetErrorMode())
     }
     #[cfg(not(windows))]
     {
         None
+    }
+}
+/// A child's death is never handed to Windows Error Reporting (see `win`), so it ends as soon as the OS ends it.
+fn keep_the_crash_reporter_out() {
+    #[cfg(windows)]
+    {
+        win::SetErrorMode(win::GetErrorMode() | win::NO_GP_FAULT_ERROR_BOX);
+        win::_set_abort_behavior(0, win::WRITE_ABORT_MSG | win::CALL_REPORTFAULT);
+    }
+}
+/// An abort: no hook, no destructor, no `run_end`. On Windows the C runtime's abort (exit code 3), because
+/// `std::process::abort` is a fast fail there, which Windows Error Reporting holds (see `win`); elsewhere
+/// `std::process::abort`, which is the C abort.
+fn abort() -> ! {
+    #[cfg(windows)]
+    {
+        win::abort()
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::abort()
     }
 }
 
@@ -475,6 +514,7 @@ fn mark(phase: &str) {
 #[test]
 fn child_entry() {
     let Ok(spec) = std::env::var(CHILD_ENV) else { return };
+    keep_the_crash_reporter_out();
     mark("entered");
     let step = Duration::from_millis(std::env::var(CHILD_STEP_ENV).ok().and_then(|ms| ms.parse().ok()).unwrap_or(0));
     let (mode, dir) = spec.split_once(':').unwrap();
@@ -488,11 +528,13 @@ fn child_entry() {
     match mode {
         "clean" => sink.record_run_end("edit", 0),
         "panic" => panic!("{CHILD_DECOY_PANIC}"),
-        "abort" => std::process::abort(),
+        "abort" => abort(),
         "overflow" => {
             let thread = std::thread::Builder::new().stack_size(256 * 1024).spawn(|| overflow(0)).unwrap();
             let _ = thread.join();
         }
+        // A child that stops after its last step, for the guard to find (bounded, should the guard ever miss it).
+        "hang" => std::thread::sleep(Duration::from_secs(300)),
         other => panic!("unknown mode {other}"),
     }
 }
@@ -513,6 +555,16 @@ fn phases(stderr: &str) -> Vec<(&str, u64)> {
     }
     stderr.lines().filter_map(|line| line.strip_prefix(PHASE_MARK)).filter_map(step).collect()
 }
+/// How many of [`CHILD_STEPS`] a child has reported, in order.
+fn steps_reached(stderr: &str) -> usize {
+    let mut reached = 0;
+    for (phase, _) in phases(stderr) {
+        if CHILD_STEPS.get(reached) == Some(&phase) {
+            reached += 1;
+        }
+    }
+    reached
+}
 /// The error mode a child reported at its first step.
 fn reported_error_mode(stderr: &str) -> Option<&str> {
     stderr.lines().filter_map(|line| line.strip_prefix(PHASE_MARK)).find_map(|rest| rest.split_whitespace().find_map(|f| f.strip_prefix("error_mode=")))
@@ -528,11 +580,27 @@ fn timeline(mode: &str, pid: u32, spawned_us: u64, stderr: &str, end: &str, end_
     out
 }
 
+/// A child the guard ended: it showed no new step for longer than the deadline.
+struct Hang {
+    /// Its last step, or `spawn`.
+    after: &'static str,
+    /// How long it had shown nothing new when it was killed.
+    quiet: Duration,
+    timeline: String,
+}
+
 fn run_child(mode: &str, dir: &Path) -> Child {
     run_child_with(mode, dir, CHILD_DEADLINE, Duration::ZERO)
 }
 /// A child of `mode` over `dir`, waiting `step` before each of its later steps, under a guard of `deadline`.
 fn run_child_with(mode: &str, dir: &Path, deadline: Duration, step: Duration) -> Child {
+    run_child_guarded(mode, dir, deadline, step)
+        .unwrap_or_else(|hang| panic!("child {mode} showed no new step for {:?} after {}: {}", hang.quiet, hang.after, hang.timeline))
+}
+/// The guard counts from the child's last sign of life, not from its spawn: each new step it reports (spawn counts as
+/// one) starts the deadline again, so a child that is slow in every step but keeps going is never taken for a hang,
+/// and one that stops is killed one deadline after its last step. A run is at most `CHILD_STEPS.len() + 1` deadlines.
+fn run_child_guarded(mode: &str, dir: &Path, deadline: Duration, step: Duration) -> Result<Child, Hang> {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "child_entry", "--test-threads=1", "--nocapture"])
@@ -551,29 +619,48 @@ fn run_child_with(mode: &str, dir: &Path, deadline: Duration, step: Duration) ->
     let spawned = Instant::now();
     let mut child = command.spawn().unwrap();
     let pid = child.id();
-    let mut stderr_pipe = child.stderr.take().unwrap();
+    // Each stderr line as it comes, so the steps are seen while the child runs.
+    let stderr_pipe = child.stderr.take().unwrap();
+    let (sender, received) = std::sync::mpsc::channel::<String>();
     let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut stderr_pipe, &mut text);
-        text
+        let mut pipe = std::io::BufReader::new(stderr_pipe);
+        let mut line = Vec::new();
+        while matches!(std::io::BufRead::read_until(&mut pipe, b'\n', &mut line), Ok(count) if count > 0) {
+            if sender.send(String::from_utf8_lossy(&line).into_owned()).is_err() {
+                break;
+            }
+            line.clear();
+        }
     });
+    let mut stderr = String::new();
+    let (mut steps, mut life) = (0, spawned);
     let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
+        let exited = child.try_wait().unwrap();
+        stderr.extend(received.try_iter());
+        let reached = steps_reached(&stderr);
+        if reached > steps {
+            (steps, life) = (reached, Instant::now());
+        }
+        if let Some(status) = exited {
             break status;
         }
-        if spawned.elapsed() > deadline {
+        let quiet = life.elapsed();
+        if quiet > deadline {
             let killed_us = unix_us();
             let _ = child.kill();
             let _ = child.wait();
-            let stderr = reader.join().unwrap();
-            panic!("child {mode} did not end in {deadline:?}: {}", timeline(mode, pid, spawned_us, &stderr, "killed", killed_us));
+            let _ = reader.join();
+            stderr.extend(received.try_iter());
+            let after = steps.checked_sub(1).map_or("spawn", |last| CHILD_STEPS[last]);
+            return Err(Hang { after, quiet, timeline: timeline(mode, pid, spawned_us, &stderr, "killed", killed_us) });
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     let (ran_for, exit_us) = (spawned.elapsed(), unix_us());
-    let stderr = reader.join().unwrap();
+    let _ = reader.join();
+    stderr.extend(received.try_iter());
     println!("{} code={:?}", timeline(mode, pid, spawned_us, &stderr, "exit", exit_us), status.code());
-    Child { code: status.code(), stderr, ran_for }
+    Ok(Child { code: status.code(), stderr, ran_for })
 }
 
 fn assert_ran_in_order(all: &[Value]) {
@@ -626,6 +713,10 @@ fn a_panic_leaves_a_typed_record_and_keeps_the_exit_and_the_message_on_stderr() 
 
 fn assert_died_without_a_record(child: &Child, dir: &Path) {
     assert_ne!(child.code, Some(0), "{}", child.stderr);
+    if cfg!(windows) {
+        let mode = reported_error_mode(&child.stderr).and_then(|m| u32::from_str_radix(m.trim_start_matches("0x"), 16).ok());
+        assert!(mode.is_some_and(|m| m & 0x0002 != 0), "the death is not handed to Windows Error Reporting (SEM_NOGPFAULTERRORBOX): {mode:?} {}", child.stderr);
+    }
     assert!(!file_names(dir).iter().any(|n| n.starts_with("studio-panic-")), "no hook runs: {:?}", file_names(dir));
     let all = lines(dir);
     assert_ran_in_order(&all);
@@ -652,6 +743,10 @@ fn an_abort_leaves_the_lines_written_and_no_end_of_run() {
     let scratch = Scratch::new("abort");
     let child = run_child("abort", &scratch.0);
     assert_died_without_a_record(&child, &scratch.0);
+    if cfg!(windows) {
+        // The C runtime's abort with no crash reporter: exit code 3, not some other way to die (see `abort`).
+        assert_eq!(child.code, Some(3), "{}", child.stderr);
+    }
 }
 
 /// Lane SMB-FIX-DIAG-SINK-ABORT-1: a child that is slow in every step but behaves correctly is not a hang. Each wait
@@ -664,4 +759,22 @@ fn a_child_slow_in_every_step_is_not_taken_for_a_hang() {
     let child = run_child_with("abort", &scratch.0, deadline, Duration::from_secs(3));
     assert_died_without_a_record(&child, &scratch.0);
     assert!(child.ran_for > deadline, "the run is longer than the deadline: {:?}", child.ran_for);
+}
+
+/// Lane SMB-FIX-DIAG-SINK-ABORT-1: the guard still ends a child that hangs, and names where. The child stops after its
+/// last step; the guard kills it once it has shown nothing new for longer than the deadline, never waiting it out, and
+/// what it wrote stays.
+#[test]
+fn a_child_that_hangs_is_killed_and_named_by_the_guard() {
+    let scratch = Scratch::new("hang");
+    let deadline = Duration::from_secs(5);
+    let hang = match run_child_guarded("hang", &scratch.0, deadline, Duration::ZERO) {
+        Err(hang) => hang,
+        Ok(child) => panic!("a hung child ended by itself: {:?} {}", child.code, child.stderr),
+    };
+    assert_eq!(hang.after, "ending", "{}", hang.timeline);
+    assert!(hang.quiet > deadline, "{:?} {}", hang.quiet, hang.timeline);
+    let all = lines(&scratch.0);
+    assert_ran_in_order(&all);
+    assert_eq!(all.last().unwrap()["kind"], "op", "{all:?}");
 }
