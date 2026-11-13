@@ -6,9 +6,9 @@
 //! restart. Every reply carries the player's state and the events since the last row. Play mode changes
 //! no document authority; one session per viewer (no session id yet).
 //!
-//! Cancellation (lane SMB-PROTOTYPE-PLAY-CANCEL-1; STU-ARC-013, HBR-HOST-004): start_session imports and
-//! capture_frame renders under the viewer's token, passed per call (`PrototypePlay::open_with`,
-//! `PrototypePlay::render_with`); once it is set they refuse `canceled`.
+//! Cancellation (lane SMB-PROTOTYPE-PLAY-CANCEL-1; STU-ARC-013, HBR-HOST-004): start_session imports under the
+//! viewer's token (`Viewer::open_prototype` -> `PrototypePlay::open_with`), and capture_frame renders under it,
+//! passed per call (`PrototypePlay::render_with`); once it is set they refuse `canceled`.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
@@ -117,12 +117,19 @@ fn capture_frame(v: &mut Viewer, f: &Fields<'_>) -> Result<Value, CommandRefusal
 /// The frame rendered and written as an 8-bit RGB PNG at `path` (the cheap checks passed, the job admitted); the
 /// reply. The render runs under the viewer's token (lane SMB-PROTOTYPE-PLAY-CANCEL-1, `PrototypePlay::render_with`):
 /// a cancel raised after admission refuses it `canceled` before any frame is rendered (`before the render`) or, seen
-/// by a later render step, with that step's code as the detail. Review of b9074096: the token is checked again after
-/// the render and the encode, before the write, so a cancel raised after the render also settles `canceled` and
-/// writes nothing (F4); without `overwrite` the file is written by `write_new`, as `export_document` does, so a file
-/// that appeared after the cheap check is never replaced and is refused `overwrite_required` (F1).
+/// by a later render step, with that step's code as the detail. Then the write half, [`write_frame`].
 fn render_and_write(play: &mut PrototypePlay, path: &std::path::Path, overwrite: bool, cancel: &CancellationToken) -> Result<Value, Refusal> {
     let screen = play.render_with(cancel).map_err(|e| Refusal { code: e.code, detail: e.detail })?;
+    write_frame(play, &screen, path, overwrite, cancel)
+}
+
+/// The write half of a capture (review F2 of 2adb7501): `screen` encoded as an 8-bit RGB PNG, the token checked again
+/// after the encode and before the write, the write, the reply. Review of b9074096: a cancel raised after the render
+/// (during the encode, or while every frame came from the play's caches, which run no check) settles `canceled`
+/// (`before the write`) and writes nothing (F4); without `overwrite` the file is written by `write_new`, as
+/// `export_document` does, so a file that appeared after the cheap check is never replaced and is refused
+/// `overwrite_required` (F1). Test: `the_write_half_refuses_a_canceled_token_before_the_write`.
+fn write_frame(play: &mut PrototypePlay, screen: &Screen, path: &std::path::Path, overwrite: bool, cancel: &CancellationToken) -> Result<Value, Refusal> {
     let samples = hsk_studio_interop_raster::Samples::U8(screen.rgb.clone());
     let request = hsk_studio_interop_raster::PngEncodeRequest {
         width: screen.width,
@@ -137,7 +144,7 @@ fn render_and_write(play: &mut PrototypePlay, path: &std::path::Path, overwrite:
     let written = if overwrite { super::super::export::write_atomic(path, &png) } else { super::super::export::write_new(path, &png) };
     written.map_err(|code| Refusal { code: if code == "destination_exists" { "overwrite_required" } else { code }, detail: path.to_string_lossy().into_owned() })?;
     let mut r = state(play);
-    r["screen"] = screen_json(&screen);
+    r["screen"] = screen_json(screen);
     Ok(r)
 }
 
@@ -158,9 +165,7 @@ fn trigger(f: &Fields<'_>) -> Result<PlayerInput, CommandRefusal> {
 pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, CommandRefusal> {
     if id == "prototype.start_session" {
         let bytes = read_bounded(&f.path("path")?, crate::import::MAX_SOURCE_BYTES)?;
-        // Under the viewer's token, passed per call (module docs); otherwise as `Viewer::open_prototype`.
-        let play = PrototypePlay::open_with(&bytes, None, v.cancel).map_err(refusal)?;
-        v.prototype = Some((play, std::time::Instant::now()));
+        v.open_prototype(&bytes).map_err(refusal)?;
     }
     if v.prototype.is_none() {
         return Err(CommandRefusal::new("prototype_closed", json!({"hint": "prototype.start_session first"})));
@@ -220,7 +225,9 @@ pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, Comm
 
 /// Review of b9074096 (lead rulings 2026-11-13): F3 the derived resource follows the `.fig` digest and a session
 /// without one is refused `job_resource_invalid`; F4 a canceled viewer token refuses the capture at admission, and a
-/// cancel raised after admission settles the job `canceled` before the write.
+/// cancel raised after admission settles the job `canceled` with nothing written. Lane SMB-PROTOTYPE-PLAY-CANCEL-1:
+/// that cancel is refused by the render under the viewer's token; the write half's own pre-write check is proven
+/// on its own (review F2 of 2adb7501).
 #[cfg(test)]
 mod tests {
     use super::super::super::Viewer;
@@ -412,5 +419,27 @@ mod tests {
         let e = v.run_command("prototype.start_session", &params).unwrap_err();
         assert_eq!((e.code.as_str(), &e.detail), ("canceled", &json!({"message": "fig_import_refused"})), "{e:?}");
         assert!(v.prototype.is_none(), "no session opens");
+    }
+
+    /// Review F2 of 2adb7501: the write half's own pre-write check (the only guard when every frame comes from the
+    /// play's caches, which run no check, or when the cancel is raised during the encode): a frame rendered under a
+    /// live token, then written under a canceled one, is refused `canceled` (`before the write`) with nothing written
+    /// and no temp; the same half under a live token writes the PNG.
+    #[test]
+    fn the_write_half_refuses_a_canceled_token_before_the_write() {
+        let dir = scratch("write-half");
+        let mut play = PrototypePlay::open(&fig(), None).unwrap();
+        let screen = play.render_with(&CancellationToken::default()).unwrap();
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        let path = dir.join("frame.png");
+        let e = super::write_frame(&mut play, &screen, &path, false, &canceled).unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "before the write"), "{e:?}");
+        assert!(names(&dir).is_empty(), "nothing written, no temp");
+        let reply = super::write_frame(&mut play, &screen, &path, false, &CancellationToken::default()).unwrap();
+        assert_eq!(reply["screen"]["width"], json!(screen.width), "{reply}");
+        assert_eq!(names(&dir), vec!["frame.png".to_string()]);
+        assert!(std::fs::read(&path).unwrap().starts_with(b"\x89PNG"), "a PNG was written");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

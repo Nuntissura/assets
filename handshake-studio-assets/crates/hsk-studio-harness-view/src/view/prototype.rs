@@ -37,14 +37,15 @@
 //!
 //! Cancellation (lane SMB-PROTOTYPE-PLAY-CANCEL-1; STU-ARC-013, HBR-HOST-004): the play runs under its
 //! caller's [`CancellationToken`]. [`PrototypePlay::open_with`] and [`PrototypePlay::open_document_with`]
-//! import, decode and map under the caller's token and keep it as the play's own;
+//! import, decode and map under the caller's token and keep it as the play's own for the play's whole life
+//! (`Viewer::open_prototype`, and so `prototype.start_session` and the open dialog, pass the viewer's);
 //! [`PrototypePlay::render_with`] renders under the token passed for that call (the viewer's, for
 //! `prototype.capture_frame`). A set token refuses the render `canceled` before any frame is rendered or a
 //! cached one is served (detail `before the render`), and a cancel seen by a later step (the frame's PDF
-//! export, its render back by press, a smart frame's native mapping, the import) is typed `canceled` too,
-//! with that step's code as the detail, never a `*_refused` failure. The token-less forms ([`PrototypePlay::open`],
-//! [`PrototypePlay::render`], the `*_raster` methods) run under the play's own token (a fresh one when the
-//! play was opened without a caller's). Tests: this module's tests and `commands/prototype.rs`'s.
+//! export, its render back by press, a smart frame's native mapping and its Folio validations, the import) is
+//! typed `canceled` too, with that step's code as the detail, never a `*_refused` failure. The token-less forms
+//! ([`PrototypePlay::open`], [`PrototypePlay::render`], the `*_raster` methods) run under the play's own token (a
+//! fresh one when the play was opened without a caller's). Tests: this module's tests and `commands/prototype.rs`'s.
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
@@ -87,12 +88,15 @@ fn fail(code: &'static str, detail: impl Into<String>) -> PlayFail {
     PlayFail { code, detail: detail.into() }
 }
 
-/// A refusal of the interop-fig step `stage`: a cancel the step saw (its own `Canceled`, or press's `canceled`
-/// carried as an export refusal) is typed `canceled` with `stage` as the detail, so a job settles `canceled`, never
-/// `failed` (module docs); any other refusal keeps `stage` as the code and the step's code as the detail.
+/// A refusal of the interop-fig step `stage`: a cancel the step saw (its own `Canceled`, press's `canceled` carried
+/// as an export refusal, or Folio's `Code::Canceled` from `to_native`'s validations carried as a native rejection) is
+/// typed `canceled` with `stage` as the detail, so a job settles `canceled`, never `failed` (module docs); any other
+/// refusal keeps `stage` as the code and the step's code as the detail.
 fn refused(stage: &'static str, e: &FigError) -> PlayFail {
     match e {
-        FigError::Canceled | FigError::ExportRefused("canceled") => fail("canceled", stage),
+        FigError::Canceled | FigError::ExportRefused("canceled") | FigError::NativeRejected(hsk_studio_folio::Code::Canceled) => {
+            fail("canceled", stage)
+        }
         _ => fail(stage, e.code()),
     }
 }
@@ -550,7 +554,10 @@ impl PrototypePlay {
     }
 
     /// [`PrototypePlay::open`] under the caller's `cancel`: the import, decode and native mapping refuse `canceled`
-    /// once it is set (detail: the refusing step's code), and the play keeps it as its own token (module docs).
+    /// once it is set (detail: the refusing step's code), and the play keeps it as its own token (module docs). The
+    /// caller's token lives for the play's whole life: once it is canceled the token-less forms (`render`, `ui`, the
+    /// `*_raster` methods) refuse for good, so a job-scoped token opens with [`PrototypePlay::open`] and is passed to
+    /// [`PrototypePlay::render_with`] per call instead.
     pub fn open_with(bytes: &[u8], start_source: Option<SourceId>, cancel: &CancellationToken) -> Result<Self, PlayFail> {
         let outcome = import_fig(bytes, &Limits::default(), &VersionPolicy::observed(), None, cancel)
             .map_err(|e| refused("fig_import_refused", &e))?;
@@ -569,7 +576,7 @@ impl PrototypePlay {
     }
 
     /// [`PrototypePlay::open_document`] under the caller's `cancel`: the native mapping refuses `canceled` once it is
-    /// set, and the play keeps it as its own token (module docs).
+    /// set, and the play keeps it as its own token for the play's whole life (as [`PrototypePlay::open_with`]).
     pub fn open_document_with(doc: FigDocument, start_source: Option<SourceId>, cancel: &CancellationToken) -> Result<Self, PlayFail> {
         let cfg = NativeConfig { budget: Budget::default(), resolver: &Host };
         let proposal = to_native(&doc, &cfg, &mut SequentialIdMint::new(0xF16), cancel)

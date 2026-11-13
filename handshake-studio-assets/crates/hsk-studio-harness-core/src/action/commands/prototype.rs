@@ -16,7 +16,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("prototype.advance", "PrototypePlay::advance", "Advance prototype clock", false, &[i("ms")]),
     typed("prototype.restart", "PrototypePlay::restart", "Restart prototype", false, &[]),
     typed("prototype.read_runtime_variables", "PlayerSession::state", "Read prototype variables", false, &[]),
-    typed("prototype.capture_frame", "PrototypePlay::render", "Capture prototype frame", false, &[out("path").opt(), b("overwrite").opt()]),
+    typed("prototype.capture_frame", "PrototypePlay::render_with", "Capture prototype frame", false, &[out("path").opt(), b("overwrite").opt()]),
     typed("prototype.state", "PrototypePlay::state_json", "Prototype state", false, &[]),
     typed("prototype.end_session", "Viewer::prototype", "End prototype session", false, &[]),
 ];

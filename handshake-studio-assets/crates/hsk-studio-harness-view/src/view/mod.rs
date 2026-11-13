@@ -434,9 +434,9 @@ impl Viewer {
         }
     }
 
-    /// Opens the prototype play mode on a Figma `.fig` (its first flow starting point).
+    /// Opens the prototype play mode on a Figma `.fig` (its first flow starting point), under the viewer's token.
     pub fn open_prototype(&mut self, fig: &[u8]) -> Result<(), prototype::PlayFail> {
-        let play = prototype::PrototypePlay::open(fig, None)?;
+        let play = prototype::PrototypePlay::open_with(fig, None, self.cancel)?;
         self.prototype = Some((play, std::time::Instant::now()));
         Ok(())
     }
