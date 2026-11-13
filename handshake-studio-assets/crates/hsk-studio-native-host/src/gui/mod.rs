@@ -74,6 +74,29 @@ pub const ROW_PREFIX: &str = "studio.panel.layers.row.";
 pub const SCROLL_ID: &str = "studio.scroll.layers";
 pub const EMPTY_ID: &str = "studio.panel.layers.empty";
 pub const STATUS_ID: &str = "studio.status";
+/// SMB-GUI-GESTURE-GATE-1: the selected layer's opacity as a ScrubValue in the Properties body (STU-SHL-185, owner-based
+/// address STU-MDL-102), shown while a layer is selected.
+pub const OPACITY_ID: &str = "studio.panel.properties.opacity";
+/// The observability node of pointer arbitration (STU-SHL-108, STU-MDL-106).
+pub const GESTURE_ID: &str = "studio.gesture.active";
+
+/// The untimed path of a timed gesture (STU-SHL-109 #7): what an inspector drives instead of waiting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Untimed {
+    /// The accessibility request for the tooltip at `level` ([`GuiFrame::show_tip`]).
+    ShowTip { level: u8 },
+    /// An untimed close of an open value transaction: the pointer leaving the field, focus loss, or SetValue
+    /// ([`GuiFrame::set_value`]) for the value itself.
+    CloseTransaction,
+}
+
+/// One timed gesture the frame offers: an id, the time it waits, and its untimed path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimedGesture {
+    pub id: &'static str,
+    pub after_ms: u64,
+    pub untimed: Untimed,
+}
 /// Nodes the tree file keeps per panel (STU-MDL-108: truncation is explicit).
 pub const MAX_TREE_NODES: usize = 65_536;
 /// The document image in the frame's resource source.
@@ -1665,6 +1688,40 @@ impl GuiFrame {
         }
         out
     }
+}
+
+/// The frame's timed gestures, each with its untimed path (STU-SHL-109 #7a).
+pub fn timed_gestures() -> &'static [TimedGesture] {
+    &[]
+}
+
+impl GuiFrame {
+    // ---- pointer gesture arbitration (SMB-GUI-GESTURE-GATE-1): red-first stubs ----
+
+    /// Opens `path` as [`GuiFrame::open`] does, with the viewer attributed to `actor`, the caller of the host run.
+    pub fn open_as(path: &Path, width: u32, height: u32, scale_milli: Option<u32>, actor: &ActorContext) -> Result<Self, HostError> {
+        let _ = actor;
+        Self::open(path, width, height, scale_milli)
+    }
+    /// The accessibility SetValue action on the field `author_id`.
+    pub fn set_value(&mut self, author_id: &str, value: f64) -> Result<Option<Outcome>, &'static str> {
+        let _ = (author_id, value);
+        Err("unknown_author_id")
+    }
+    /// What the frame asks the host to do with the OS cursor.
+    pub fn cursor(&self) -> crate::event::CursorRequest {
+        crate::event::CursorRequest::Default
+    }
+    /// Agent mode (quiet windows, offscreen runs): no dwell tips (STU-SHL-235 rule 5).
+    pub fn set_agent_driven(&mut self, on: bool) {
+        let _ = on;
+    }
+    /// Milliseconds until the next timer of the frame fires, if one is pending.
+    pub fn next_timer_ms(&self) -> Option<u64> {
+        None
+    }
+    /// Closes every pending gesture timer as if its time had passed (the end of a script).
+    pub fn settle_timers(&mut self) {}
 }
 
 /// An availability record as node properties (STU-SHL-019).

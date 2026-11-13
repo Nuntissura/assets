@@ -50,6 +50,8 @@ pub fn emit_terminal(
 /// first run's terminal (`a_finished_host_run_refuses_the_next_run_before_any_work`).
 pub struct HostRun<'a> {
     observe: Observe,
+    /// Who runs it: the run's GUI frame opens its viewer as this actor (SMB-GUI-GESTURE-GATE-1, HOST INTEGRATION (4)).
+    actor: ActorContext,
     correlation_id: u64,
     cancel: &'a CancellationToken,
     sink: &'a mut dyn SinkPort,
@@ -64,8 +66,13 @@ impl<'a> HostRun<'a> {
         cancel: &'a CancellationToken,
         sink: &'a mut dyn SinkPort,
     ) -> Result<Self, Error> {
-        let observe = Observe::new(correlation_id, 0, resource, actor, Budget::new(0, 0)?);
-        Ok(Self { observe, correlation_id, cancel, sink, terminal: None })
+        let observe = Observe::new(correlation_id, 0, resource, actor.clone(), Budget::new(0, 0)?);
+        Ok(Self { observe, actor, correlation_id, cancel, sink, terminal: None })
+    }
+
+    /// The caller of this run (Observe keeps its own copy private).
+    pub fn actor(&self) -> &ActorContext {
+        &self.actor
     }
 
     /// What the delivery of this run's terminal frame returned; `None` while no frame was sent.

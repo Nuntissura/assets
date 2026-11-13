@@ -110,6 +110,22 @@ impl HostEvent {
     }
 }
 
+/// What the frame asks the host to do with the OS cursor (SMB-GUI-GESTURE-GATE-1, STU-SHL-104, STU-SHL-186). There is no
+/// request that moves the pointer during a gesture: cursor warping is forbidden (STU-SHL-104), so the only position a
+/// request carries is the press point the cursor shows at after the gesture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CursorRequest {
+    /// The ordinary arrow.
+    #[default]
+    Default,
+    /// Over a ScrubValue field: a column-resize cursor, distinct from a splitter's (STU-SHL-103, STU-SHL-186).
+    ColumnResize,
+    /// A scrub owns the pointer and has moved: the cursor is hidden while the value keeps changing (STU-SHL-104).
+    Hidden,
+    /// The scrub ended: the cursor shows again at the press point, physical client px (STU-SHL-104).
+    ShowAt { x: i32, y: i32 },
+}
+
 /// Events kept per run; later ones are counted. Pointer moves are coalesced and never logged.
 pub const MAX_EVENTS: usize = 1024;
 
