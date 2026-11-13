@@ -119,6 +119,9 @@ mod wrap;
 pub mod web;
 /// Place embedded or linked assets, raster Move and Free transform (lane SMB-PLACE-ASSET-1; egui-free).
 pub mod place;
+/// The Studio menu tree as egui-free descriptors: the designed tree, one availability predicate, leaves that run
+/// (lane SMB-GUI-MENU-1, build-order B6).
+pub mod menu_tree;
 
 use crate::harness::{Harness, References, Run, Selection};
 use hsk_studio_harness_core::RunContext;
