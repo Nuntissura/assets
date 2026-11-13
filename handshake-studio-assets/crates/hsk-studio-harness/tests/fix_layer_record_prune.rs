@@ -15,7 +15,11 @@ use common::{Scratch, solid_psd};
 use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_harness::view::vector::arrange::ReferencePoint;
-use hsk_studio_harness::view::vector::{PaintSpec, ShapeKind, TransformOp, VectorTool};
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_harness::view::text::TextEntry;
+use hsk_studio_harness::view::vector::{LiveTextKind, PaintSpec, ShapeKind, TransformOp, VectorTool};
+use hsk_studio_harness::{Harness, Selection, asset_local_test_context};
+use hsk_studio_interop_raster as raster;
 use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
 use hsk_studio_nib::pathfinder::PathfinderOp;
 use serde_json::{Value, json};
@@ -164,8 +168,10 @@ fn clip_records(v: &Viewer, layer: &str) -> usize {
     count("clips", "source_layer_id") + count("masks", "source_layer_id") + count("attachments", "layer_id")
 }
 
-/// Vector piece replacement (knife): the cut layer's live filter stack, live shape, clip source record and path records
-/// leave in the cut's own step; the target the clip was attached to loses the attachment with it.
+/// Vector piece replacement (knife): the cut layer's live filter stack, live shape, clip attachment and path records
+/// leave in the cut's own step; the clip's source keeps its record. (Lead ruling Q2 2026-11-13: a knife whose cut layer
+/// is a clip or mask source refuses typed, `a_replacement_of_a_clip_source_or_text_carrier_refuses_typed`, so this test
+/// cuts the clipped layer instead of the clip source.)
 #[test]
 fn a_knife_cut_takes_the_cut_layers_records_along_in_its_own_step() {
     let scratch = Scratch::new("prune-knife");
@@ -173,7 +179,7 @@ fn a_knife_cut_takes_the_cut_layers_records_along_in_its_own_step() {
     let target = v.draw_shape(ShapeKind::Rectangle, [60.0, 10.0], [80.0, 40.0], false).unwrap();
     let cut = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [50.0, 40.0], false).unwrap();
     live_filter(&mut v, &cut);
-    v.make_clip(&target, &cut, false).unwrap();
+    v.make_clip(&cut, &target, false).unwrap();
     v.select(None);
     let paths = path_ids(&v, &cut);
     let named = naming(&v, &cut);
@@ -182,7 +188,7 @@ fn a_knife_cut_takes_the_cut_layers_records_along_in_its_own_step() {
     let pieces = v.knife_cut(&[[30.0, 0.0], [30.0, 60.0]]).unwrap();
     assert_eq!((pieces.len(), undo_len(&v)), (2, steps + 1), "the cut is one step");
     assert_eq!(naming(&v, &cut), Vec::<String>::new(), "the cut layer's records leave in the cut's own step");
-    assert_eq!(clip_records(&v, &target), 0, "the attachment of the clip whose source left goes with it");
+    assert_eq!(clip_records(&v, &target), 1, "the clip's source keeps its own record");
     assert!(paths.iter().all(|p| !stored_paths(&v).contains(p)), "the cut layer's path records, named nowhere else, leave too");
     v.undo().unwrap();
     assert_eq!((layers(&v), naming(&v, &cut), clip_records(&v, &target)), (before, named, 1), "undo restores the layer and its records together");
@@ -200,7 +206,7 @@ fn a_knife_cut_takes_the_cut_layers_records_along_in_its_own_step() {
         let fresh = x.draw_shape(ShapeKind::Rectangle, [10.0, 50.0], [20.0, 60.0], false).unwrap();
         assert_eq!(fresh, cut, "the new layer takes the cut layer's id");
         assert_eq!(live_filters(x, &fresh), json!([]), "it inherits no live filter stack");
-        assert_eq!(clip_records(x, &fresh), 0, "nor the clip source record");
+        assert_eq!(clip_records(x, &fresh), 0, "nor the clip attachment");
     }
 }
 
@@ -375,4 +381,288 @@ fn a_deleted_component_layer_drops_its_component_records_in_the_step() {
     assert_eq!(state(&v), before, "undo restores the layers and the component record together");
     v.redo().unwrap();
     assert_eq!(components(&v), 0, "redo drops it again");
+}
+
+// ---- review of 95460d11 (FIX_FIRST, lead rulings 2026-11-13) --------------------------------------------------
+
+/// Rewrites the session document entry `token` of the package `src` into `out` through a raw harness run (another
+/// writer): `edit` gets the entry as JSON (`None` without one) and returns its new bytes.
+fn rewrite_entry(src: &Path, out: &Path, token: &str, edit: impl FnOnce(Option<Value>) -> Vec<u8>) {
+    let h = Harness::new(Selection { providers: vec!["chronicle.patch".to_string()], ..Selection::default() }).unwrap();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(asset_local_test_context(), &cancel);
+    assert!(run.open_path(src), "open {}", src.display());
+    let held = run.document_entry(token).map(|b| serde_json::from_slice(b).unwrap());
+    run.set_document_entry(token, Some(edit(held))).unwrap();
+    assert!(run.save_to(out), "save {}", out.display());
+}
+
+fn ids_of(v: &Value, list: &str, key: &str) -> Vec<String> {
+    v.pointer(list).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x[key].as_str().map(str::to_owned)).collect()).unwrap_or_default()
+}
+
+fn story_ids(v: &Viewer) -> Vec<String> {
+    ids_of(&entry(v, "text"), "/stories", "story_id")
+}
+
+fn type_style_ids(v: &Viewer) -> Vec<String> {
+    ids_of(&entry(v, "text"), "/styles/styles", "style_id")
+}
+
+/// Every record object (the object directly holding the string) of the pruned entries that names `id`, sorted.
+fn records_of(v: &Viewer, id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for at in naming(v, id) {
+        let at = at.trim_end_matches(" (key)");
+        let (token, rest) = at.split_once('/').unwrap_or((at, ""));
+        let parent = rest.rsplit_once('/').map_or("", |(p, _)| p);
+        out.push(entry(v, token).pointer(&format!("/{parent}")).map_or_else(|| "?".to_owned(), Value::to_string));
+    }
+    out.sort();
+    out
+}
+
+/// A solid opaque RGB PNG.
+fn png(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+    let samples = raster::Samples::U8((0..width * height).flat_map(|_| rgb).collect());
+    raster::encode_png(&raster::PngEncodeRequest { width, height, colour: raster::Colour::Rgb, samples: &samples, icc: None, compression: raster::PngCompression::Fast }).unwrap()
+}
+
+/// A two-page layout document whose second page carries an embedded picture frame: (viewer, picture layer).
+fn layout_with_picture(scratch: &Scratch) -> (Viewer, String) {
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.new_document(&NewDocument::new(DocumentProfile::Layout, Some((200.0, 200.0))), None).unwrap();
+    v.add_page(Some("page-1"), false, None, None).unwrap();
+    let hero = scratch.0.join("hero.png");
+    std::fs::write(&hero, png(32, 24, [220, 40, 40])).unwrap();
+    let placed = ok(&mut v, "asset.place", json!({"path": hero.to_str().unwrap(), "placement_kind": "embedded", "page": "page-2", "frame_x": 10.0, "frame_y": 10.0, "frame_width": 32.0, "frame_height": 24.0}));
+    (v, text(&placed, "layer_id"))
+}
+
+/// Lead ruling F1 + Q1 (type styles): a deleted text layer takes its record, its story and its own (unnamed) type
+/// styles along, never a named style: a named style its story used and the own style a kept style is based on stay,
+/// the own style that nothing else uses leaves with its `style_character` row, and the pruned entry decodes.
+#[test]
+fn a_deleted_text_layer_keeps_named_and_based_on_styles_and_drops_only_its_own() {
+    let scratch = Scratch::new("prune-type-styles");
+    let mut v = paper(&scratch);
+    let gone = v.place_text(10.0, 30.0, "Hello").unwrap();
+    let kept = v.place_text(10.0, 50.0, "Other").unwrap();
+    let src = scratch.0.join("text.handshake");
+    v.save(&src, false).unwrap();
+    let out = scratch.0.join("named.handshake");
+    let (mut own_paragraph, mut own_character, mut named, mut child, mut story) = (String::new(), String::new(), String::new(), String::new(), String::new());
+    rewrite_entry(&src, &out, "text", |held| {
+        let mut t = held.expect("a text entry");
+        let record = t["layers"].as_array_mut().unwrap().iter_mut().find(|r| r["layer_id"] == gone.as_str()).expect("the record");
+        own_paragraph = text(record, "paragraph_style");
+        own_character = text(record, "character_style");
+        story = text(record, "story_id");
+        // Named styles take ids no layer uuid gives (the counter digits of the own style replaced).
+        let stem = own_paragraph[..own_paragraph.len() - 12].to_owned();
+        named = format!("{stem}00000000beef");
+        child = format!("{stem}00000000bee2");
+        record["paragraph_style"] = json!(named);
+        let styles = t["styles"]["styles"].as_array_mut().unwrap();
+        let base = styles.iter().find(|s| s["style_id"] == own_paragraph.as_str()).unwrap().clone();
+        let mut heading = base.clone();
+        heading["style_id"] = json!(named);
+        heading["name"] = json!("Heading/H1");
+        let mut body = base;
+        body["style_id"] = json!(child);
+        body["name"] = json!("Body/Child");
+        body["based_on"] = json!(own_paragraph);
+        styles.push(heading);
+        styles.push(body);
+        for s in t["stories"].as_array_mut().unwrap().iter_mut().filter(|s| s["story_id"] == story.as_str()) {
+            for p in s["paragraphs"].as_array_mut().unwrap() {
+                p["style_ref"] = json!(named);
+            }
+        }
+        t["styles"]["style_character"] = json!([{"style_id": own_character, "attributes": {"tracking": 12.0}}]);
+        serde_json::to_vec(&t).unwrap()
+    });
+    let mut w = open(&out);
+    let (before, steps) = (state(&w), undo_len(&w));
+    w.delete_layer(&gone).unwrap();
+    assert_eq!(undo_len(&w), steps + 1, "the delete is one step");
+    let t = entry(&w, "text");
+    assert!(!ids_of(&t, "/layers", "layer_id").contains(&gone) && !story_ids(&w).contains(&story), "the record and the story leave (the text prune ran): {t}");
+    let styles = type_style_ids(&w);
+    assert!(styles.contains(&named), "a named style the story used stays: {styles:?}");
+    assert!(styles.contains(&child) && styles.contains(&own_paragraph), "a kept style and the own style it is based on stay: {styles:?}");
+    assert!(!styles.contains(&own_character), "the own style nothing else uses leaves: {styles:?}");
+    assert!(ids_of(&t, "/styles/style_character", "style_id").is_empty(), "and its style_character row with it: {t}");
+    assert!(ids_of(&t, "/layers", "layer_id").contains(&kept), "the other text layer keeps its record");
+    let doc = w.run().snapshot().unwrap().document().clone();
+    TextEntry::decode(w.run().document_entry("text").unwrap(), &doc, &CancellationToken::default()).unwrap_or_else(|e| panic!("the pruned entry decodes: {e}"));
+    w.undo().unwrap();
+    assert_eq!(state(&w), before, "undo restores the layer and the text entry together");
+}
+
+/// Lead ruling Q2: a knife, pathfinder or other replacement whose layer is a clip or mask source, or carries text,
+/// refuses typed `structure_would_drop_dependents` naming the dependents, and changes nothing.
+#[test]
+fn a_replacement_of_a_clip_source_or_text_carrier_refuses_typed() {
+    let scratch = Scratch::new("prune-dependents");
+    let mut v = paper(&scratch);
+    let target = v.draw_shape(ShapeKind::Rectangle, [60.0, 10.0], [80.0, 40.0], false).unwrap();
+    let source = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [50.0, 40.0], false).unwrap();
+    v.make_clip(&target, &source, false).unwrap();
+    v.select(None);
+    let before = state(&v);
+    let cut = v.knife_cut(&[[30.0, 0.0], [30.0, 60.0]]);
+    assert!(cut.as_ref().is_err_and(|e| e.contains("structure_would_drop_dependents") && e.contains(&target)), "a knife through a clip source refuses and names the clipped layer: {cut:?}");
+    assert_eq!(state(&v), before, "nothing changed");
+    let other = v.draw_shape(ShapeKind::Rectangle, [40.0, 30.0], [55.0, 45.0], false).unwrap();
+    let joined = v.pathfinder_layers(PathfinderOp::Union, &[source.clone(), other.clone()]);
+    assert!(joined.as_ref().is_err_and(|e| e.contains("structure_would_drop_dependents") && e.contains(&target)), "a pathfinder over a clip source refuses: {joined:?}");
+    // A text carrier: the area text's story would leave with its container.
+    let carrier = v.draw_shape(ShapeKind::Rectangle, [10.0, 45.0], [40.0, 60.0], false).unwrap();
+    v.bind_live_text(&carrier, "Hi", LiveTextKind::Area { inset_pt: 1.0 }).unwrap();
+    let story = format!("STXT-{}", &carrier[5..]);
+    let before = state(&v);
+    let joined = v.pathfinder_layers(PathfinderOp::Union, &[carrier.clone(), other.clone()]);
+    assert!(joined.as_ref().is_err_and(|e| e.contains("structure_would_drop_dependents") && e.contains(&story)), "a pathfinder over a text carrier refuses and names the story: {joined:?}");
+    assert_eq!(state(&v), before, "nothing changed");
+}
+
+/// Lead ruling Q4 / review F2: `page.delete` of a page alone on its spread takes the spread's layers' records (the
+/// picture's raster record and placed instance) along in the page step; undo restores them, redo removes them.
+#[test]
+fn a_page_delete_takes_its_layers_records_along_in_its_step() {
+    let scratch = Scratch::new("prune-page-delete");
+    let (mut v, picture) = layout_with_picture(&scratch);
+    assert!(!naming(&v, &picture).is_empty(), "set-up: the picture has a raster record");
+    let (before, steps) = (state(&v), undo_len(&v));
+    v.delete_page("page-2").unwrap();
+    assert_eq!(undo_len(&v), steps + 1, "the page delete is one step");
+    assert!(!has_layer(&v, &picture), "the picture goes with its page");
+    assert_eq!(naming(&v, &picture), Vec::<String>::new(), "its records leave in the page step");
+    v.undo().unwrap();
+    assert_eq!(state(&v), before, "undo restores the page's layers and their records together");
+    v.redo().unwrap();
+    assert_eq!(naming(&v, &picture), Vec::<String>::new(), "redo removes them again");
+}
+
+/// Lead ruling Q4 / review F2: the layout editor's page delete (`layout.page.delete_page`, through `layout_commit`)
+/// takes the page's layers' records along in its step.
+#[test]
+fn the_layout_editor_page_delete_takes_its_layers_records_along() {
+    let scratch = Scratch::new("prune-editor-page-delete");
+    let (mut v, picture) = layout_with_picture(&scratch);
+    let (before, steps) = (state(&v), undo_len(&v));
+    let r = ok(&mut v, "layout.page.delete_page", json!({"page": "page-2"}));
+    assert_eq!(undo_len(&v), steps + 1, "one step: {r}");
+    assert!(!has_layer(&v, &picture), "the picture goes with its page");
+    assert_eq!(naming(&v, &picture), Vec::<String>::new(), "its records leave in the editor's step");
+    v.undo().unwrap();
+    assert_eq!(state(&v), before, "undo restores them");
+}
+
+/// Lead ruling Q3 / review F5: when an entry naming a removed layer cannot be read, the step commits without that
+/// part and the driven row's result carries the typed warning `prune_skipped:<entry>`; a result without a warning
+/// carries no `warnings` member.
+#[test]
+fn a_step_whose_prune_cannot_run_commits_and_carries_the_typed_warning() {
+    let scratch = Scratch::new("prune-skipped");
+    let (mut v, picture) = layout_with_picture(&scratch);
+    let clean = ok(&mut v, "layout.page.delete_page", json!({"page": "page-2"}));
+    assert!(clean.get("warnings").is_none(), "a clean step's result has no warnings member: {clean}");
+    v.undo().unwrap();
+    let src = scratch.0.join("picture.handshake");
+    v.save(&src, false).unwrap();
+    let out = scratch.0.join("unreadable.handshake");
+    // A vector entry another writer left unreadable, naming the picture.
+    rewrite_entry(&src, &out, "vector", |_| serde_json::to_vec(&json!({"schema": "not-a-vector-entry", "note": picture})).unwrap());
+    let mut w = open(&out);
+    let steps = undo_len(&w);
+    let r = ok(&mut w, "layout.page.delete_page", json!({"page": "page-2"}));
+    assert_eq!(undo_len(&w), steps + 1, "the step commits: {r}");
+    assert_eq!(r["warnings"], json!(["prune_skipped:vector"]), "the result names the entry it could not prune: {r}");
+    assert_eq!(naming(&w, &picture).iter().filter(|p| p.starts_with("raster_records")).count(), 0, "the readable entries are pruned");
+}
+
+/// Review F7: Convert area to point removes the container's binding in its own write; the old area story leaves the
+/// text entry in the conversion's step all the same, and undo restores it.
+#[test]
+fn area_to_point_takes_the_old_area_story_along() {
+    let scratch = Scratch::new("prune-area-to-point");
+    let mut v = paper(&scratch);
+    let carrier = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [80.0, 40.0], false).unwrap();
+    v.bind_live_text(&carrier, "Hi", LiveTextKind::Area { inset_pt: 1.0 }).unwrap();
+    let story = format!("STXT-{}", &carrier[5..]);
+    assert!(story_ids(&v).contains(&story), "set-up: the area story");
+    let steps = undo_len(&v);
+    let point = v.convert_text_kind(&carrier).unwrap();
+    assert_eq!(undo_len(&v), steps + 1, "the conversion is one step");
+    assert!(has_layer(&v, &point) && !has_layer(&v, &carrier));
+    assert!(!story_ids(&v).contains(&story), "the old area story leaves in the conversion's step: {:?}", story_ids(&v));
+    v.undo().unwrap();
+    assert!(story_ids(&v).contains(&story) && has_layer(&v, &carrier), "undo restores it with its container");
+}
+
+/// Review F3 (bystanders): a pathfinder leaves every record of a layer it does not remove byte for byte (its live
+/// filter stack, design node, own style, clip attachment, the clip's source record) and their paths resolve.
+#[test]
+fn a_bystander_keeps_its_records_byte_for_byte() {
+    let scratch = Scratch::new("prune-bystander");
+    let mut v = paper(&scratch);
+    let clip = v.draw_shape(ShapeKind::Rectangle, [60.0, 40.0], [90.0, 60.0], false).unwrap();
+    let bystander = v.draw_shape(ShapeKind::Rectangle, [60.0, 10.0], [90.0, 30.0], false).unwrap();
+    live_filter(&mut v, &bystander);
+    v.set_fill(&bystander, Some(&PaintSpec::Solid([0, 0, 200]))).unwrap();
+    v.make_clip(&bystander, &clip, false).unwrap();
+    let a = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [30.0, 30.0], false).unwrap();
+    let b = v.draw_shape(ShapeKind::Rectangle, [20.0, 20.0], [40.0, 40.0], false).unwrap();
+    live_filter(&mut v, &b);
+    v.select(None);
+    let kept = [records_of(&v, &bystander), records_of(&v, &clip)];
+    let paths: Vec<String> = path_ids(&v, &bystander).into_iter().chain(path_ids(&v, &clip)).collect();
+    let style = own_style(&bystander);
+    v.pathfinder_layers(PathfinderOp::Union, &[a.clone(), b.clone()]).unwrap();
+    assert_eq!(naming(&v, &b), Vec::<String>::new(), "the operand's records leave");
+    assert_eq!([records_of(&v, &bystander), records_of(&v, &clip)], kept, "the bystanders' records stay byte for byte");
+    assert!(paths.iter().all(|p| stored_paths(&v).contains(p)) && styles(&v).contains(&style), "their paths and own style stay");
+}
+
+/// Review F3 (lead ruling Q1, the keep branch): a duplicate shares its source's path records; deleting the source
+/// keeps every path the duplicate names.
+#[test]
+fn a_duplicates_shared_paths_stay_when_the_source_is_deleted() {
+    let scratch = Scratch::new("prune-shared-paths");
+    let mut v = paper(&scratch);
+    let source = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [30.0, 30.0], false).unwrap();
+    let copy = v.duplicate_layer(&source).unwrap();
+    let paths = path_ids(&v, &copy);
+    assert_eq!(paths, path_ids(&v, &source), "set-up: the copy names the source's paths");
+    v.delete_layer(&source).unwrap();
+    assert!(paths.iter().all(|p| stored_paths(&v).contains(p)), "every path the copy names still resolves");
+    let doc = v.run().snapshot().unwrap().document().clone();
+    hsk_studio_harness::view::vector::VectorEntry::decode(v.run().document_entry("vector").unwrap(), &doc, &CancellationToken::default()).unwrap_or_else(|e| panic!("the vector entry decodes: {e}"));
+}
+
+/// Review F3: a point text layer's delete takes its record, its story and its own type styles along; an area text's
+/// container takes its binding, story and own styles; undo restores both.
+#[test]
+fn a_point_text_and_an_area_text_delete_take_their_records_along() {
+    let scratch = Scratch::new("prune-text-kinds");
+    let mut v = paper(&scratch);
+    let point = v.place_text(10.0, 30.0, "Hello").unwrap();
+    let carrier = v.draw_shape(ShapeKind::Rectangle, [10.0, 35.0], [80.0, 60.0], false).unwrap();
+    v.bind_live_text(&carrier, "Hi", LiveTextKind::Area { inset_pt: 1.0 }).unwrap();
+    let (before, steps) = (state(&v), undo_len(&v));
+    for layer in [&point, &carrier] {
+        let uuid = &layer[5..];
+        v.delete_layer(layer).unwrap();
+        assert_eq!(naming(&v, layer), Vec::<String>::new(), "{layer}: its record or binding leaves");
+        assert!(!story_ids(&v).contains(&format!("STXT-{uuid}")), "{layer}: its story leaves");
+        let flip = if &uuid[19..20] == "b" { "8" } else { "b" };
+        let own = [format!("STYS-{uuid}"), format!("STYS-{}", uuid.replacen("-9000-", "-a000-", 1)), format!("STYS-{}{flip}{}", &uuid[..19], &uuid[20..])];
+        assert!(!type_style_ids(&v).iter().any(|s| own.contains(s)), "{layer}: its own type styles leave: {:?}", type_style_ids(&v));
+    }
+    assert_eq!(undo_len(&v), steps + 2);
+    v.undo().unwrap();
+    v.undo().unwrap();
+    assert_eq!(state(&v), before, "undo restores both with their records");
 }
