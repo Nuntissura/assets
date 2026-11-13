@@ -292,3 +292,180 @@ fn a_refused_second_runner_ask_fails_the_native_target_before_its_folder_is_made
     assert_eq!(listing(&a), ["in.png"]);
     assert!(!b.exists(), "no folder is made for a target whose ask was refused");
 }
+
+// Review of 54bc63fd (research/review-smb-fix-export-admission-1-54bc63fd.json), lead rulings 2026-11-13: F1 to F3.
+
+/// Runs `job` with any exporter, the optional runner port and the batch's `cancel`.
+fn run_on(job: &BatchJob, exporter: &mut dyn TargetExporter, jobs: Option<Arc<dyn JobPort>>, cancel: &CancellationToken) -> BatchReport {
+    let mut ports = BatchPorts::new(asset_local_test_context());
+    ports.jobs = jobs;
+    ports.exporter = Some(exporter);
+    run_batch(&harness(), job, ports, cancel).unwrap()
+}
+
+/// An exporter over `RecipeTargets` that records, at each write, how many slots of `port` are held.
+struct HeldAtWrite {
+    inner: RecipeTargets,
+    port: Arc<OneSlot>,
+    held: Vec<u64>,
+}
+impl TargetExporter for HeldAtWrite {
+    fn extension(&self, target: &OutputTarget) -> Result<&'static str, &'static str> {
+        self.inner.extension(target)
+    }
+    fn write(&mut self, run: &mut hsk_studio_harness_core::Run<'_>, target: &OutputTarget, path: &Path, replace: bool) -> Result<(), String> {
+        self.held.push(self.port.held.load(Ordering::SeqCst));
+        self.inner.write(run, target, path, replace)
+    }
+}
+
+/// F1: with the host port bound only as `BatchPorts::jobs` and an exporter that asks another port (`RecipeTargets`
+/// without `with_job_port`), the runner keeps its slot through the write: the export runs under one slot of the host
+/// port, the host port is asked once and never holds two.
+#[test]
+fn f1_an_exporter_asking_another_port_writes_under_the_runners_slot() {
+    let s = Scratch::new("f1-held");
+    let input = s.input();
+    let out = s.0.join("out");
+    let port = Arc::new(OneSlot::default());
+    let mut exporter = HeldAtWrite { inner: RecipeTargets::new(asset_local_test_context()), port: port.clone(), held: Vec::new() };
+    let report = run_on(&job(&input, vec![target("png", &out)]), &mut exporter, Some(port.clone()), &CancellationToken::default());
+    let t = &report.receipts[0].targets[0];
+    assert_eq!((t.outcome, t.code.as_deref()), ("written", None), "{}", report.to_json());
+    assert_eq!(exporter.held, [1], "the write runs under the runner's slot of the host port");
+    assert_eq!(port.counts(), (1, 0, 1), "asks, refusals, releases on the host port");
+}
+
+/// Records every ask's action and cost, admits all.
+#[derive(Default)]
+struct Costed {
+    asks: Mutex<Vec<(hsk_studio_session::Action, Cost)>>,
+}
+impl JobPort for Costed {
+    fn admit(&self, scope: &JobScope<'_>, cost: Cost) -> Result<JobTicket, JobRefused> {
+        let mut asks = self.asks.lock().unwrap();
+        asks.push((scope.action, cost));
+        Ok(JobTicket(asks.len() as u64))
+    }
+    fn release(&self, _ticket: JobTicket) {}
+}
+
+/// F1: the target's export job is charged the input's bytes, as the runner's slot it takes over is.
+#[test]
+fn f1_the_target_job_is_charged_the_inputs_bytes() {
+    let s = Scratch::new("f1-bytes");
+    let input = s.input();
+    let bytes = std::fs::metadata(&input).unwrap().len();
+    let port = Arc::new(Costed::default());
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let report = run(&job(&input, vec![target("png", &s.0.join("out"))]), &mut targets, Some(port.clone()));
+    assert_eq!(report.receipts[0].targets[0].outcome, "written", "{}", report.to_json());
+    let cost = Cost { jobs: 1, bytes };
+    assert_eq!(*port.asks.lock().unwrap(), [(hsk_studio_session::Action::Edit, cost), (hsk_studio_session::Action::Export, cost)]);
+}
+
+/// One slot; when the ticket numbered `grab_after` is released, a competing job takes the slot and keeps it.
+struct Contended {
+    held: AtomicU64,
+    asks: AtomicU64,
+    grab_after: u64,
+}
+impl JobPort for Contended {
+    fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
+        let n = self.asks.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.held.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() { Ok(JobTicket(n)) } else { Err(JobRefused { retry_after_ms: 5 }) }
+    }
+    fn release(&self, ticket: JobTicket) {
+        if ticket.0 != self.grab_after {
+            self.held.store(0, Ordering::SeqCst);
+        }
+    }
+}
+
+/// F2: an input's native targets are written before its exporter targets, under the runner's slot, so a competing
+/// job that takes the slot once the PNG target releases it cannot fail the native target declared after it; the
+/// receipts keep the declared order.
+#[test]
+fn f2_contention_cannot_fail_a_native_target_declared_after_an_exporter_target() {
+    let s = Scratch::new("f2-contended");
+    let input = s.input();
+    let (a, b, c) = (s.0.join("a"), s.0.join("b"), s.0.join("c"));
+    let port = Arc::new(Contended { held: AtomicU64::new(0), asks: AtomicU64::new(0), grab_after: 2 });
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let report = run(&job(&input, vec![target("handshake", &a), target("png", &b), target("handshake", &c)]), &mut targets, Some(port.clone()));
+    let receipts: Vec<_> = report.receipts[0].targets.iter().map(|t| (t.format_id.clone(), t.outcome, t.path.clone())).collect();
+    let path = |dir: &Path, name: &str| Some(dir.join(name).to_string_lossy().into_owned());
+    assert_eq!(
+        receipts,
+        [("handshake".to_string(), "written", path(&a, "in.handshake")), ("png".to_string(), "written", path(&b, "in.png")), ("handshake".to_string(), "written", path(&c, "in.handshake"))],
+        "{}",
+        report.to_json()
+    );
+    assert_eq!(port.asks.load(Ordering::SeqCst), 2, "the runner's ask and the PNG target's");
+}
+
+/// Admits every ask; cancels `cancel` on the release of `cancel_on_release` or the ask numbered `cancel_on_ask`.
+struct Canceling {
+    cancel: CancellationToken,
+    cancel_on_release: bool,
+    cancel_on_ask: u64,
+    asks: AtomicU64,
+    released: AtomicU64,
+}
+impl Canceling {
+    fn new(cancel: &CancellationToken, cancel_on_release: bool, cancel_on_ask: u64) -> Arc<Self> {
+        Arc::new(Self { cancel: cancel.clone(), cancel_on_release, cancel_on_ask, asks: AtomicU64::new(0), released: AtomicU64::new(0) })
+    }
+    fn counts(&self) -> (u64, u64) {
+        (self.asks.load(Ordering::SeqCst), self.released.load(Ordering::SeqCst))
+    }
+}
+impl JobPort for Canceling {
+    fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
+        let n = self.asks.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == self.cancel_on_ask {
+            self.cancel.cancel();
+        }
+        Ok(JobTicket(n))
+    }
+    fn release(&self, _ticket: JobTicket) {
+        self.released.fetch_add(1, Ordering::SeqCst);
+        if self.cancel_on_release {
+            self.cancel.cancel();
+        }
+    }
+}
+
+/// F3: the batch is canceled while the runner lends its slot (one port as runner and exporter port, whose release
+/// cancels): the target's ask refuses `canceled` without asking, and the input is cancelled, not failed.
+#[test]
+fn f3_a_cancel_while_the_runner_lends_its_slot_cancels_the_input_without_a_second_ask() {
+    let s = Scratch::new("f3-lend");
+    let input = s.input();
+    let cancel = CancellationToken::default();
+    let port = Canceling::new(&cancel, true, 0);
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let report = run_on(&job(&input, vec![target("png", &s.0.join("out"))]), &mut targets, Some(port.clone()), &cancel);
+    let r = &report.receipts[0];
+    assert_eq!((r.targets[0].outcome, r.targets[0].code.as_deref()), ("failed", Some("canceled")), "{}", report.to_json());
+    assert_eq!((r.outcome, report.stopped), ("cancelled", Some("cancelled")), "{}", report.to_json());
+    assert_eq!(port.counts(), (1, 1), "the runner's ask only; its slot released once");
+}
+
+/// F3: the batch is canceled right after the target's ask is admitted: the target stops on the batch's token, settles
+/// `canceled` (not `batch_checkpoint_failed`, not written) and the input is cancelled.
+#[test]
+fn f3_a_cancel_after_the_targets_ask_settles_the_target_canceled() {
+    let s = Scratch::new("f3-after-ask");
+    let input = s.input();
+    let out = s.0.join("out");
+    let cancel = CancellationToken::default();
+    let port = Canceling::new(&cancel, false, 2);
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let report = run_on(&job(&input, vec![target("png", &out)]), &mut targets, Some(port.clone()), &cancel);
+    let r = &report.receipts[0];
+    assert_eq!((r.targets[0].outcome, r.targets[0].code.as_deref()), ("failed", Some("canceled")), "{}", report.to_json());
+    assert_eq!(r.outcome, "cancelled", "{}", report.to_json());
+    assert_eq!(port.counts(), (2, 2), "the runner's ask and the target's, each released once");
+    assert!(!out.exists(), "nothing is left: {:?}", listing(&s.0));
+}
