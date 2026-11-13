@@ -7,9 +7,10 @@ use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_chronicle::RevisionUpdate;
 use std::time::Instant;
 
-/// What a grant is checked for. `Read` (lane SMB-WEB-SITE-2) is a read-only verb such as a site report: it writes
-/// nothing. It is its own member with its own token, so a port is asked for exactly `read`, never for another
-/// member's token (`read_is_its_own_member`).
+/// What a grant is checked for. `Read` (lane SMB-WEB-SITE-2) is a read-only verb such as a site report or a sync
+/// review: it writes no document, site or target file and takes no site lock. It is its own member with its own token,
+/// so a port is asked for exactly `read` (`read_is_its_own_member`); whether another grant covers it is the host's rule
+/// (the kernel-bindings host: a standing `edit` grant does).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Edit,

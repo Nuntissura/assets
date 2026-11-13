@@ -766,6 +766,11 @@ fn synchronize_reviews_then_applies_per_file() {
         let get = cmd(run, "web.synchronize", json!({"direction": "get"}));
         assert_eq!(actions_of(&get), pairs(&[("img/a.png", "none"), ("index.html", "local_newer"), ("notes.txt", "get"), ("other.html", "get")]), "{get}");
 
+        // A review is a read and takes no lock; applying takes it (lead ruling F10).
+        dir.write("site/.studio-site.lock", b"{}");
+        cmd(run, "web.synchronize", json!({"direction": "put"}));
+        assert_eq!(refused(run, "web.synchronize", json!({"direction": "put", "apply": true, "plan_sha256": put["plan_sha256"]})), "site_locked");
+        std::fs::remove_file(dir.at("site/.studio-site.lock")).unwrap();
         // One page chosen: what it loads is listed (prompt), added (include) or left out (exclude); page links never.
         let chosen = cmd(run, "web.synchronize", json!({"direction": "put", "files": ["Index.html"]}));
         assert_eq!((chosen["dependents"].clone(), chosen["actions"].as_array().unwrap().len()), (json!(["img/a.png"]), 1), "a chosen name is matched case-folded: {chosen}");

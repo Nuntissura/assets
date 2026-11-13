@@ -52,10 +52,13 @@
 //! as above) or `site` (every document of the site's walk from its source, the files they and their style sheets
 //! reach, a `documents` list in the manifest); `web.site_report` reports broken links, orphaned files, external links,
 //! missing alternative text and untitled documents; `web.move_file` moves one file and rewrites every reference to it
-//! as one receipted transaction. `web.site_report`, the site export, `web.move_file` and `web.publish` hold the
-//! site-level lock `<local_root>/.studio-site.lock` (contention refuses `site_locked` naming the holder, never waits);
-//! `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted as jobs before the first file (R60
-//! probe j3): through the job port bound with [`Run::bind_web_jobs`] (the Viewer binds its own before every web
+//! as one receipted transaction. The site export, `web.move_file`, `web.publish` and the site writers of lane
+//! SMB-WEB-SITE-2 hold the site-level lock `<local_root>/.studio-site.lock` (contention refuses `site_locked` naming
+//! the holder, never waits); the reads (`web.site_report`, a `web.synchronize` review) take no lock. The site-wide
+//! commands (`web_site::ADMITTED`: `web.export`, `web.publish`, `web.site_report`, `web.move_file`, `web.change_link`,
+//! `web.template_update`, `web.library_item_update`, `web.synchronize`) are admitted as jobs before the first file (R60
+//! probe j3) with the action module `web_site` names for each: through the job port bound with
+//! [`Run::bind_web_jobs`] (the Viewer binds its own before every web
 //! command; a bare Run keeps the asset-local `AdmissionJobPort`), after their checks that need no file, never
 //! resource-less: the open export and publish on the run's open package document (as the viewer's other exports
 //! admit, `as_export_job`), else on the site's own derived id, and the site export, report and move always on the
@@ -148,8 +151,7 @@ fn web_no(e: &WebError) -> No {
     No(e.code(), e.span().map_or_else(String::new, |s| format!("{}..{}", s.start, s.end)), None)
 }
 
-/// A site record ([STU-WEB-113] subset: no testing target, server model, preprocessor, framework, linter, browser
-/// baseline or version-control binding).
+/// A site record ([STU-WEB-113]; the optional fields are in `depth`, module `web_site`, lane SMB-WEB-SITE-2).
 #[derive(Clone, Debug, PartialEq)]
 struct Site {
     site_id: String,
@@ -480,6 +482,7 @@ impl WebHost {
         if patch.is_noop() {
             return no("nothing_to_change", label);
         }
+        self.locked_guard(label, &patch)?;
         let doc = self.doc()?;
         let (next, forward, inverse) = patched(doc, &patch, cancel)?;
         let revision = next.revision();
@@ -1476,9 +1479,9 @@ pub(super) fn run(run: &mut Run<'_>, command_id: &str, params: &Value) -> bool {
 }
 
 impl Run<'_> {
-    /// Binds the job port and lifecycle the web host admits `web.export`, `web.publish`, `web.site_report` and
-    /// `web.move_file` through (module docs; the Viewer binds its own before every web command). Unbound, the run
-    /// keeps an asset-local `AdmissionJobPort`.
+    /// Binds the job port and lifecycle the web host admits its site-wide commands (`web_site::ADMITTED`) through
+    /// (module docs; the Viewer binds its own before every web command). Unbound, the run keeps an asset-local
+    /// `AdmissionJobPort`.
     pub fn bind_web_jobs(&mut self, port: Arc<dyn JobPort>, lifecycle: JobLifecycle) {
         self.web.jobs = web_site::Jobs::new(port, lifecycle);
     }

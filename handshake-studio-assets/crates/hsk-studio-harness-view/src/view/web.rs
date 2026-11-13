@@ -7,7 +7,7 @@ use serde_json::Value;
 impl Viewer {
     /// One web command: `Ok` is the record's detail, `Err` the refusal code (the record carries `target` and, for
     /// publish and verify, the detail of what happened before the refusal).
-    /// `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted through this viewer's job port and
+    /// The site-wide web commands (harness-core `web_site::ADMITTED`) are admitted through this viewer's job port and
     /// lifecycle (`set_job_port`; R60 probe j3), bound before every command.
     pub fn web_command(&mut self, command_id: &str, params: &Value) -> Result<Value, String> {
         let (port, lifecycle) = self.job_binding();

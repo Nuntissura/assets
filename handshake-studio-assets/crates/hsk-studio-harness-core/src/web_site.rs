@@ -64,7 +64,8 @@
 //!   failed write restores every file already written from the in-memory originals and the refusal `move_failed`
 //!   carries the receipt (`restored`, `failed`, `restore_failed`). Receipt: `from`, `to`, and per changed file every
 //!   change's `before` and `after` byte range, references and line. Not a `web.undo` step: an open document that
-//!   was moved or rewritten is reopened from disk with a fresh history; a reverse move restores the bytes.
+//!   was moved or rewritten is reopened from disk with a fresh history; a reverse move restores the bytes when every
+//!   reference was spelled exactly (lane SMB-WEB-SITE-2 manual, Spellings).
 //!   Refusals: `move_outside_site` (`..` past the root, or a path through a link in any letter case), `path_invalid`,
 //!   `move_target_exists` (case-folded), `move_case_only` (a rename by letter case only), `move_source_missing` (not
 //!   a file of the walk), `move_reserved_file` (site record, manifest, receipt), `move_site_record` (a document with
@@ -73,15 +74,19 @@
 //!   `nothing_to_change`, `move_case_only`, `move_kind_changes`, `move_reserved_file`. Cancellation is checked per
 //!   folder and file of the walk and before the first write; once writing starts the transaction completes or
 //!   restores.
-//! - **Site lock** ([STU-WEB-131]): `web.site_report`, `web.export` with `documents: site`, `web.move_file`,
-//!   `web.publish` and `web.save` of a file inside `local_root` (lead Q2) create `<local_root>/.studio-site.lock`
+//! - **Site lock** ([STU-WEB-131]): `web.export` with `documents: site`, `web.move_file`, `web.publish`, the
+//!   site writers of lane SMB-WEB-SITE-2 and `web.save` of a file inside `local_root` (lead Q2) create
+//!   `<local_root>/.studio-site.lock`
 //!   exclusively with the caller's actor, client session, command id and a nonce of this acquisition, and remove it
 //!   on every exit path only while it still holds that nonce (a lock taken after a stale one was deleted by hand is
 //!   left to its holder). Contention refuses `site_locked` at once, never waits; `target` names the holder and
 //!   `detail.holder` is `{account_id, client_session, command_id}` from the file, never the whole file. There is no
 //!   automatic stale-lock breaking: when the holder's process is gone (check the session it names), delete the file
 //!   by hand.
-//! - **Jobs** (R60 probe j3): `web.export`, `web.publish`, `web.site_report` and `web.move_file` are admitted after
+//!   The reads (`web.site_report`, a `web.synchronize` review) take no lock (lead ruling F10): each file is read once
+//!   and writers replace files whole (temporary sibling and rename), so a read during another process's site-wide
+//!   write may see some files before and some after it (`the_site_lock_names_its_holder_and_never_blocks`).
+//! - **Jobs** (R60 probe j3): the commands of `ADMITTED` are admitted after
 //!   their checks that need no file (typed parameter and state refusals, never `overloaded`) and before any work (no
 //!   lock, no read, no file) through the bound job port (`Run::bind_web_jobs`; the Viewer binds its own). A job is
 //!   never resource-less (lead ruling 2026-11-08). Resource rule (lead Q1, what the job reads or writes): the open
@@ -90,9 +95,10 @@
 //!   `web.move_file` always admit on the site's id at the web source revision. The site's id is `SDOC-` in the
 //!   UUIDv7 shape from the SHA-256 of the site's folder (`local_root`, else the open document's folder) made
 //!   absolute and case-folded without touching the file system (`job_resource_invalid` if it ever failed to parse).
-//!   Actions: `export` for the exports and publish, `read` for `web.site_report` (lane SMB-WEB-SITE-2 added the
-//!   session's read class), `edit` for `web.move_file`, `web.change_link`, `web.template_update` and
-//!   `web.library_item_update`, which are admitted the same way (on the site's id). Refusals: `overloaded` (`target` `retry_after_ms=N`,
+//!   Actions: `export` for the exports, publish and an applied sync put, `read` for `web.site_report` and a sync
+//!   review (lane SMB-WEB-SITE-2 added the session's read class; at the kernel-bindings host a standing `edit` grant
+//!   covers `read`), `edit` for `web.move_file`, `web.change_link`, `web.template_update`,
+//!   `web.library_item_update` and an applied sync get; the lane's commands admit on the site's id. Refusals: `overloaded` (`target` `retry_after_ms=N`,
 //!   `detail.retry_after_ms`), `canceled` (a token canceled before the command is the lifecycle's
 //!   `refused_canceled`; the port is not asked), `stale_revision`. Each admitted job settles `completed`, `canceled`
 //!   or `failed` with its code, and an accepted command's result carries `job` (`outcome`, `ticket`,
@@ -105,113 +111,167 @@
 //!
 //! # Lane SMB-WEB-SITE-2 (manual)
 //!
-//! Proven by `hsk-studio-harness/tests/web_site_depth.rs` (each claim below by the test named after it there; the
-//! marker rules by `template_markers_are_tokenized_never_substring_matched`, drift by
-//! `a_template_update_propagates_and_reports_drift`) and this module's unit tests.
+//! Each claim below is proven by the test of `hsk-studio-harness/tests/web_site_depth.rs` named after it (in
+//! parentheses), by this module's unit tests, or it is declared not done.
 //!
-//! - **Spellings.** A reference's path is percent-decoded before it resolves (a decoded separator, `%`, control
-//!   character or bad escape never resolves: it stays denied; the engine itself denies `%2E`, `%2F` and `%5C` as
-//!   `ambiguous_path` before the site sees them). A move rewrites every reference that reaches the moved
-//!   file in any spelling: exact, another letter case (`case_mismatch`) or percent-encoded. A template or library item
-//!   cannot be moved yet (`move_template_or_library_item`: instances name them by root path in comments).
-//! - **`web.change_link`** `{from, to}` (change-link-site-wide, [STU-WEB-118]): every reference reaching `from` in any
-//!   spelling (`from` may be a missing page; a missing reference that folds to it counts) is rewritten to `to`, a file
-//!   of the site, in the site's link base, query and fragment kept; parsed and graph-checked before the first write
-//!   (`move_rewrite_unverified`), one transaction with a receipt `hsk.studio.web.change_link_receipt@1` (per changed
-//!   file every change's byte ranges, line and references), restored on failure (`change_link_failed`). Like a move:
-//!   site lock, job (`edit`), `document_unsaved`, `document_changed_on_disk`, `document_unreadable`; not a `web.undo`
-//!   step (an open document it rewrote is reopened from disk; the reverse change restores the bytes). Refusals before
+//! - **Spellings** (`a_move_rewrites_case_mismatched_and_percent_encoded_spellings`). A reference's path is
+//!   percent-decoded before it resolves (a decoded separator, `%`, control character or bad escape never resolves:
+//!   unit test `an_encoded_separator_never_resolves`). A move rewrites every reference that resolves to the moved file
+//!   in any spelling: exact, another letter case or percent-encoded. A spelling the engine denies before the site sees
+//!   it (`%2E`, `%2F`, `%5C`: `ambiguous_path`) whose own bytes name the moved file is never rewritten: it is listed in
+//!   the receipt as `left_denied` (`document`, `line`, `reference`, `reason`) and the receipt says `complete=false`
+//!   (lead ruling F7). A template or library item cannot be moved (`move_template_or_library_item`: instances name them
+//!   by root path in comments). Reversibility: the move receipt names every changed range with the reference before
+//!   and after; a reverse move writes the canonical spelling, so it restores the bytes only when every reference was
+//!   spelled exactly (`a_site_reports_exports_and_moves_as_one_link_graph`).
+//! - **`web.change_link`** `{from, to}` (change-link-site-wide, [STU-WEB-118];
+//!   `change_link_rewrites_every_spelling_site_wide`, `change_link_repairs_a_case_mismatch_and_honours_site_root`):
+//!   every reference resolving to `from` in any spelling (`from` may be a missing page: a missing reference that folds
+//!   to it counts; a case_mismatch reference spelled `from` counts, so `{from: About.html, to: about.html}` repairs the
+//!   report's case_mismatch rows) is rewritten to `to`, a file of the site, in the site's link base, query and fragment
+//!   kept; parsed and graph-checked before the first write (`move_rewrite_unverified`), one transaction with a receipt
+//!   `hsk.studio.web.change_link_receipt@1` (per changed file every change's byte ranges, line and references; engine
+//!   denied spellings as `left_denied` with `complete=false`); a failed write restores every file already written
+//!   (`change_link_failed` with the receipt; `failed_site_writes_restore_or_stop_with_a_receipt`). Site lock, job
+//!   (`edit`), `document_unsaved`, `document_changed_on_disk`, `document_unreadable`; not a `web.undo` step: an open
+//!   document it rewrote is reopened from disk. The receipt (every changed range and the reference it held) is the way
+//!   back; there is no revert command. Refusals before
 //!   admission: `no_site`, `parameter_missing`, `path_invalid`, `move_outside_site`, `nothing_to_change`,
-//!   `link_target_reserved`; after: `link_target_missing`, `nothing_to_change` (no reference reaches `from`).
-//! - **Templates** ([STU-WEB-090] to [STU-WEB-093]). A template is a `.dwt` file of the site; its markers are HTML
-//!   comments the parser found (never text in a script, attribute or style sheet; keywords exact, case-sensitive;
-//!   attributes `name="v"` or `name='v'`, no escapes). Spellings follow Dreamweaver's (UNVERIFIED against the
+//!   `link_target_reserved`; after: `link_target_missing`, `nothing_to_change` (nothing reaches `from`).
+//! - **CSS** (`css_urls_are_quoted_when_a_name_needs_it`): a rewritten reference in an unquoted CSS `url(...)` whose
+//!   new text holds `(`, `)`, a quote, a backslash or whitespace is written as a CSS string (double quotes in a style
+//!   sheet or `style` element, the quote the `style` attribute does not use).
+//! - **Templates** ([STU-WEB-090] to [STU-WEB-093]; `a_template_instance_carries_all_five_region_kinds`). A template is
+//!   a `.dwt` file of the site; its markers are HTML comments the parser found, never text in a script, attribute or
+//!   style sheet; keywords exact and case-sensitive; attributes `name="v"` or `name='v'`, no escapes
+//!   (`template_markers_are_tokenized_never_substring_matched`). Spellings follow Dreamweaver's (UNVERIFIED against the
 //!   application, lane notes): `TemplateBeginEditable name` / `TemplateEndEditable` (`editable`), `TemplateBeginIf
 //!   cond` / `TemplateEndIf` (`optional`; `editable_optional` when it holds an editable region), `TemplateBeginRepeat
 //!   name` / `TemplateEndRepeat` (`repeating`; `repeating_table` when the marker's parent is a `table`, `tbody`,
 //!   `thead` or `tfoot`), `TemplateParam name type value` (type `text`, `boolean`, `color`, `URL`, `number`), and the
 //!   two expression forms of [STU-WEB-092]: `TemplateExpr expr` (evaluated when an instance is generated: the code
 //!   must name a parameter, whose value is written as escaped text; any other code refuses
-//!   `template_expression_unsupported` and is never evaluated) and `TemplatePassthroughExpr expr` (the code written
+//!   `template_expression_unsupported` and is not evaluated) and `TemplatePassthroughExpr expr` (the code written
 //!   verbatim for later server-side evaluation). An instance is a page holding `InstanceBegin template="/<template>"
 //!   locked_sha256="<hex>"` after its `html` start tag, `InstanceEnd` before its end tag, `InstanceBeginEditable` /
 //!   `InstanceEndEditable` around each editable content, `InstanceParam` per parameter and `InstanceBeginRepeat` /
 //!   `InstanceBeginRepeatEntry` / `InstanceEndRepeatEntry` / `InstanceEndRepeat` per repeat; a hidden optional region
 //!   is absent. `locked_sha256` is the SHA-256 of the locked text (all but the `InstanceBegin` comment and the
 //!   editable contents) as Studio last wrote it. The template's links are re-based from its folder to the instance's.
-//!   Limits: 4096 markers per document, 8 KiB per marker, 1024 entries per repeat, 1024 bytes of expression code,
-//!   the engine's 8 MiB per generated instance. Not done (declared): nested templates (`template_nested_unsupported`),
-//!   repeats inside repeats, the server-language `dwt.*` types, expressions inside attribute values, the
-//!   locked-region edit refusal of [STU-WEB-094] and template-safe behaviours ([STU-WEB-095]).
+//!   Limits: 4096 markers per document, 8 KiB per marker, regions nested at most 64 deep (`template_nesting_too_deep`
+//!   naming `document:line`; `region_nesting_is_bounded`), 1024 entries per repeat, 1024 bytes of expression code,
+//!   the engine's 8 MiB per generated instance. A template or instance named in another letter case or encoding is the
+//!   same file, reported as `case_mismatch` (`case_variant_markers_are_processed_and_reported`). Not done (declared):
+//!   nested templates (`template_nested_unsupported`), repeats inside repeats, the server-language `dwt.*` types,
+//!   expressions inside attribute values, template-safe behaviours ([STU-WEB-095]).
+//! - **Locked regions** ([STU-WEB-094], [STU-WEB-159]; `edits_in_locked_regions_are_refused`): every source edit of
+//!   an open instance (each web edit row, `web.snippet_insert`, `web.library_item_insert`) must lie inside one editable
+//!   content, else it refuses `template_edit_in_locked_region` (`detail`: `template`, the locked `region` between the
+//!   editable regions around it, severity `error`, remedy `detach`). `web.instance_param` and `web.instance_repeat`
+//!   regenerate the locked text from the template by design; undo and redo replay recorded steps.
 //! - **`web.template_regions`** `{path?}` (a read; default the open document): a template's `regions` (`name` or
 //!   `cond`, `kind`, `line`, `span`), `params`, `expressions` (`form` `evaluated` | `pass_through`, `code`, `line`)
 //!   and `region_kinds`; for an instance also `instance` (template, digests, params, editable names, repeat entry
-//!   counts) and `standing`: `up_to_date`, `template_changed`, or `drifted` (`template_instance_drift`, reason
-//!   `locked_changed` | `no_baseline`, remedy `reapply` | `detach`).
+//!   counts) and `standing`: `up_to_date`, `template_changed`, or `drifted` (`template_instance_drift`,
+//!   reason `locked_changed` | `no_baseline`, remedy `reapply` | `detach`).
 //! - **`web.template_instance`** `{template, path, params?}`: a new instance at `path` (a page of the site that does
 //!   not exist; its folder must exist for `web.save`) becomes the open document, unsaved, with a fresh history (like
 //!   `web.open`); `params` sets parameter values (typed). Refusals: `no_site`, `parameter_invalid`,
 //!   `document_unsaved`, `instance_path_exists`, `path_outside_site`, `template_not_found`, `template_param_missing`
 //!   and the template's own refusals.
-//! - **`web.instance_param`** `{name, value}` and **`web.instance_repeat`** `{region, op: add|remove|move, index?,
-//!   to?}`: the open instance regenerated from its template (read from disk) with the parameter set or the repeat's
-//!   entries changed, editable contents kept, as one named history step (`Set Instance Parameter`, `Edit Repeating
-//!   Region`) carrying the caller's context; refused `template_instance_drift` when its locked text was changed
-//!   outside Studio, `not_a_template_instance`, `template_region_missing`, `repeat_entries_over_limit`.
-//! - **`web.template_update`** `{template, resolve?: {<instance>: reapply|detach}}` ([STU-WEB-093]): every instance
-//!   of the template is regenerated, one transaction (one atomic write) per instance: `updated` (the template changed
-//!   and the instance's locked text is what Studio wrote), `up_to_date`, `baseline_refreshed` (its locked text is
-//!   current but its digest was not), `drifted` (reported with `template_instance_drift`, never written), `reapplied`
-//!   (`resolve` reapply: the template wins over the drift, editable contents kept), `detached` (`resolve` detach:
-//!   every instance marker removed, every other byte kept). Receipt `hsk.studio.web.template_receipt@1`: per instance
-//!   its outcome and each changed byte range (`before`, `after`, `line`), `updated`, `drifted`, `written`. A write
-//!   failure refuses `template_update_failed` with the receipt (the instances already written are complete). Site
-//!   lock, job (`edit`), `document_unsaved`, `document_changed_on_disk`, `document_unreadable`; an open instance it
-//!   rewrote is reopened from disk; not a `web.undo` step. Refusals: `parameter_invalid`, `template_not_found`,
-//!   `not_a_template_instance` (a `resolve` key), `template_markup_invalid` naming `document:line`.
-//! - **Library items** ([STU-WEB-096]): a `.lbi` file of the site is a fragment; a document holds it between
-//!   `#BeginLibraryItem "/<item>"` and `#EndLibraryItem` comments. A library item is not a template (no regions,
-//!   never generated) and holds no library markers itself (`library_item_nested`). **`web.library_item_insert`**
-//!   `{item, parent, index?}`: the item's content, its links re-based to the open document's folder, between its
-//!   markers, inserted as one named history step (`Insert Library Item`). **`web.library_item_update`** `{item}`:
-//!   every reference in every page and template holds the item's current content, re-based per document, in one
-//!   transaction with a receipt `hsk.studio.web.library_receipt@1` (restored on failure, `library_update_failed`);
-//!   an unbalanced marker anywhere refuses `library_markup_invalid` naming `document:line` before any write. Site
-//!   lock, job (`edit`); not a `web.undo` step. The site report counts a template an instance names and an item a
-//!   document holds as referenced (never orphaned).
-//! - **Snippets** ([STU-WEB-097] to [STU-WEB-099]) are records of the site (saved with it): `{snippet_name,
-//!   description, folder_path, top_level_group (the first folder), snippet_kind: block|wrap, preview_mode:
-//!   code|design, inserts_before_selection, inserts_after_selection, trigger?}`; insert texts verbatim, at most 16
-//!   KiB each; at most 4096 snippets; the record must stay under 1 MiB (`site_record_too_large`). **`web.snippet`**
-//!   adds, replaces (`folder_path` + `snippet_name`) or `remove`s one, one named history step; a trigger claimed twice
-//!   refuses `snippet_trigger_duplicate` (`detail`: `trigger`, both `snippets`, severity `error`, [STU-WEB-161]).
-//!   **`web.snippets`** lists them by `top_level_group` and folder, the trigger map, and load `diagnostics`
-//!   (`snippet_unnamed`: an unnamed snippet read back is kept and reported). **`web.snippet_insert`** `{folder_path
-//!   + snippet_name | trigger, offset, end?}` (byte offsets of the open source): a `block` snippet inserts both texts
-//!   at `offset`, a `wrap` snippet wraps `offset..end`, a `trigger` replaces the trigger word just before `offset`
-//!   (`snippet_trigger_not_at_offset` otherwise), one named history step. The shipped 647-snippet baseline is not
-//!   loaded (NOT_PROVEN: no corpus).
-//! - **`web.synchronize`** `{target_id?, direction: put|get|both, files?, dependents?: prompt|include|exclude,
-//!   apply?}` ([STU-WEB-119]; a `local_or_network` target only, else `transport_unsupported`): compares the site and
-//!   the target folder file by file (size and modification time; times within 2 s are the same) and lists one action
-//!   per file for review (`hsk.studio.web.sync_plan@1`: `put`, `get`, `same`, `conflict` (same time, other size),
-//!   `local_newer`, `remote_newer`, `none`, `denied_link` (a path through a link on either side), with both sides'
-//!   size and time, counts per action). `files` limits it to those site files; the files they load (images, style
-//!   sheets, scripts; not page links) are `dependents`, listed only (`prompt`, the default), added (`include`) or left
-//!   out (`exclude`). With `apply` every `put`/`get` is copied as its own atomic write with the source's time kept,
-//!   with a per-file receipt (`hsk.studio.web.sync_receipt@1`: path, action, outcome, bytes, SHA-256, transfer mode);
-//!   a failed file refuses `sync_failed` with the receipt after the others, a cancel refuses `canceled` with the
-//!   receipt so far. No deletion either way (declared). Site lock; a job admitted as `read` for a review, `export` to
-//!   apply a put, `edit` to apply a get or both; refused `target_inside_site`, `target_root_missing` (get, both),
-//!   `document_unsaved` (a get onto the open document's unsaved edits); an open document a get wrote is reopened.
-//! - **Site record** ([STU-WEB-113]): `web.site` also takes `testing_target` (a remote-target record, the target
-//!   rules), `server_model_id` (the eight of [STU-WEB-124], `server_model_unknown`), `preprocessor_config`
-//!   `{source_root, output_root, output_style, source_maps}`, `framework_pin` `{framework_version: 3.4.1|4.4.1|5.3.8
-//!   (framework_version_unsupported), helper_library_version, positioning_helper_version?}`, `linter_overrides`
-//!   `{rule: off|info|warning|error}`, `browser_baseline` (ordered, unique profile ids) and `version_control_binding`
-//!   `{repository, branch?, credentials_ref?}`; `null` clears one; a key named like a secret anywhere inside refuses
-//!   `credential_in_site_record` naming its path; unknown keys refuse `parameter_unknown`. Saved and read back with
-//!   the site record; not yet used by publish, lint or preprocessors (recorded only).
+//! - **`web.instance_param`** `{name, value, orphans?}` and **`web.instance_repeat`** `{region, op: add|remove|move,
+//!   index?, to?, orphans?}`: the open instance regenerated from its template (read from disk) with the parameter set
+//!   or the repeat's entries changed, editable contents kept, as one named history step (`Set Instance Parameter`,
+//!   `Edit Repeating Region`) carrying the caller's context; refused `template_instance_drift` when its locked text was
+//!   changed outside Studio, `not_a_template_instance`, `template_region_missing`, `repeat_entries_over_limit`.
+//! - **Orphaned content** (review F2, lead ruling Q5; `orphaned_instance_content_is_refused_until_the_caller_chooses`):
+//!   instance content the regenerated instance would have no slot for (an editable region, repeat or parameter the
+//!   template renamed or removed, a region a parameter now hides) refuses `template_update_orphans_content` listing
+//!   every orphan (`{region}`, `{repeat, entries}`, `{repeat, entry, region}`, `{param}`; unit test
+//!   `orphans_are_listed_by_kind`), nothing written, unless the
+//!   caller passes `orphans: discard` (dropped) or `orphans: move_to:<region>` (every orphaned editable content into
+//!   that top-level editable region of the template: in place of its default when the instance had none of its own
+//!   there, else after it; an orphaned parameter still refuses; a region the template does not write refuses
+//!   `parameter_invalid`).
+//! - **`web.template_update`** `{template, resolve?: {<instance>: reapply|detach}, orphans?}` ([STU-WEB-093];
+//!   `a_template_update_propagates_and_reports_drift`): every instance of the template is regenerated, one transaction
+//!   (one atomic write) per instance: `updated` (the template changed and the instance's locked text is what Studio
+//!   wrote), `up_to_date`, `baseline_refreshed` (its locked text is current but its digest was not;
+//!   `case_variant_markers_are_processed_and_reported`), `drifted` (reported with `template_instance_drift`, never
+//!   written), `reapplied` (`resolve` reapply: the template wins over the drift, editable contents kept), `detached`
+//!   (`resolve` detach: every instance marker removed, every other byte kept). Receipt
+//!   `hsk.studio.web.template_receipt@1`: per instance its outcome, each changed byte range (`before`, `after`,
+//!   `line`) and `case_mismatch` when it names the template in another spelling; `updated`, `drifted`, `written`. A
+//!   write failure refuses `template_update_failed` with the receipt (the instances already written are complete;
+//!   `failed_site_writes_restore_or_stop_with_a_receipt`). Site lock, job (`edit`), `document_unsaved`,
+//!   `document_changed_on_disk`, `document_unreadable`; an open instance it rewrote is reopened from disk; not a
+//!   `web.undo` step. Declared limit (lead ruling F12; `malformed_pages_are_all_named`): the update is atomic over the
+//!   site, so a malformed marker in any page refuses `template_markup_invalid` with `detail.documents` naming every
+//!   malformed page (`document:line`) before anything is written. Refusals: `parameter_invalid`,
+//!   `template_not_found`, `not_a_template_instance` (a `resolve` key), `template_update_orphans_content`.
+//! - **Library items** ([STU-WEB-096]; `library_items_insert_and_update_every_reference`): a `.lbi` file of the site
+//!   is a fragment; a document holds it between `#BeginLibraryItem "/<item>"` and `#EndLibraryItem` comments. A
+//!   library item is not a template (no regions, never generated) and holds no library markers itself
+//!   (`library_item_nested`). **`web.library_item_insert`** `{item, parent, index?}`: the item's content, its links
+//!   re-based to the open document's folder, between its markers, inserted as one named history step (`Insert
+//!   Library Item`). **`web.library_item_update`** `{item}`: every reference in every page and template holds the
+//!   item's current content, re-based per document, in one transaction with a receipt
+//!   `hsk.studio.web.library_receipt@1` (a reference in another spelling is updated and listed as `case_mismatch`); a
+//!   failed write restores every file already written (`library_update_failed`); a malformed or unbalanced marker in
+//!   any page refuses `library_markup_invalid` naming every such page before any write. Site lock, job (`edit`); not
+//!   a `web.undo` step. The site report counts a template an instance names and an item a document holds, in any
+//!   spelling, as referenced.
+//! - **Snippets** ([STU-WEB-097] to [STU-WEB-099]; review F4, lead ruling option A; `snippets_are_one_site_level_resource`,
+//!   `a_foreign_or_corrupt_snippet_library_is_never_overwritten`) are one site-level resource, `<local_root>/
+//!   studio-snippets.json` (schema `hsk.studio.web.snippets@1`; reserved: never orphaned, moved, linked to or
+//!   synchronised): `{snippet_name, description, folder_path, top_level_group (the first folder), snippet_kind:
+//!   block|wrap, preview_mode: code|design, inserts_before_selection, inserts_after_selection, trigger?}`; insert texts
+//!   verbatim, at most 16 KiB each; at most 4096 snippets, 4 MiB. **`web.snippet`** adds, replaces (`folder_path` +
+//!   `snippet_name`) or `remove`s one: one atomic write under the site lock with a receipt
+//!   `hsk.studio.web.snippet_receipt@1` (the snippet before and after, both digests). It is not a `web.undo` step
+//!   (snippets sit outside document undo): the reverse `web.snippet` is the way back. Triggers are unique across the
+//!   site: a trigger claimed twice refuses `snippet_trigger_duplicate` (`detail`: `trigger`, both `snippets`, severity
+//!   `error`, [STU-WEB-161]). A file at that name that is not the library refuses `snippet_library_foreign`, a library
+//!   that does not read `snippet_library_invalid`, an unreadable one `snippet_library_unreadable`; none is overwritten.
+//!   A per-document site record that still carries snippets refuses on `web.open` (`site_record_invalid`, target
+//!   `snippets_moved_to_site_library ...`). **`web.snippets`** (a read) lists them by `top_level_group` and folder,
+//!   the trigger map, and `diagnostics` (`snippet_unnamed`: an unnamed snippet is kept and reported).
+//!   **`web.snippet_insert`** `{folder_path + snippet_name | trigger, offset, end?}` (byte offsets of the open
+//!   source): a `block` snippet inserts both texts at `offset`, a `wrap` snippet wraps `offset..end`, a `trigger`
+//!   replaces the trigger word just before `offset` (`snippet_trigger_not_at_offset` otherwise), one named history
+//!   step. Declared: the shipped 647-snippet baseline is not loaded (NOT_PROVEN: no corpus); through the drive's text
+//!   parameters an insert text that is exactly `null` or JSON object text is read as JSON (the drive's rule, not
+//!   this module's), so such a text is set through a JSON command.
+//! - **`web.synchronize`** `{target_id?, direction: put|get, files?, dependents?: prompt|include|exclude, apply?,
+//!   plan_sha256?}` ([STU-WEB-119]; a `local_or_network` target only, else `transport_unsupported`;
+//!   `synchronize_reviews_then_applies_per_file`): compares the site and the target folder file by file, names
+//!   case-folded (`sync_case_conflict` listing every pair spelled differently; `a_case_only_pair_refuses_and_changes_nothing`),
+//!   by size and modification time (times within 2 s are the same; then the bytes: other bytes are `conflict`;
+//!   `sync_conflicts_unsaved_documents_links_and_failures_are_typed`), and lists one action per file for review
+//!   (`hsk.studio.web.sync_plan@1`: `put`, `get`, `same`, `conflict`, `local_newer`, `remote_newer`, `none`,
+//!   `denied_link` (a path through a link on either side), both sides' size and time, counts per action and
+//!   `plan_sha256`). `files` limits it to those site files (case-folded); the files they load (images, style sheets,
+//!   scripts; not page links) are `dependents`, listed only (`prompt`, the default), added (`include`) or left out
+//!   (`exclude`). `apply` needs the review's `plan_sha256` (`parameter_missing`) and refuses `sync_plan_changed` when
+//!   the plan recomputed under the site lock differs (lead ruling Q6); then every `put`/`get` is copied as its own
+//!   atomic write with the source's time kept (a newer copy is never a destination), with a per-file receipt
+//!   (`hsk.studio.web.sync_receipt@1`: path, action, outcome, bytes, SHA-256, transfer mode); a failed file refuses
+//!   `sync_failed` with the receipt after the others. A review is a read (job `read`, no lock); applying takes the site
+//!   lock (job `export` for a put, `edit` for a get). Refused `target_inside_site`, `target_root_missing` (get),
+//!   `document_unsaved` (a put of the open document with unsaved edits, `detail.remedy` `web.save`). Declared:
+//!   two-way synchronisation refuses `sync_two_way_unsupported` (it needs a per-file sync baseline, lead ruling Q4:
+//!   next-lane candidate); no deletion either way.
+//! - **Site record** ([STU-WEB-113]; `the_site_record_carries_every_optional_field`): `web.site` also takes
+//!   `testing_target` (a remote-target record, the target rules), `server_model_id` (the eight of [STU-WEB-124],
+//!   `server_model_unknown`), `preprocessor_config` `{source_root, output_root, output_style, source_maps}`,
+//!   `framework_pin` `{framework_version: 3.4.1|4.4.1|5.3.8 (framework_version_unsupported), helper_library_version,
+//!   positioning_helper_version?}`, `linter_overrides` `{rule: off|info|warning|error}`, `browser_baseline` (ordered,
+//!   unique profile ids) and `version_control_binding` `{repository, branch?, credentials_ref?}`; `null` clears one; a
+//!   key named like a secret anywhere inside refuses `credential_in_site_record` naming its path; unknown keys refuse
+//!   `parameter_unknown`. Saved and read back with the per-document site record (a site-level record is a next-lane
+//!   candidate); recorded only: publish, lint and preprocessors do not read these fields yet.
+//! - **Jobs** (`site_work_is_admitted_with_its_action`): every command of `ADMITTED` asks the bound port once before
+//!   any work and refuses `overloaded` with nothing written when it is saturated.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
     MANIFEST_FILE, MAX_EXPORT_BYTES, MAX_EXPORT_FILES, MAX_RECORD_BYTES, MAX_ROWS, MAX_SEGMENTS, No, P, R, RECEIPT_FILE, Recipe, SIDECAR_SUFFIX, WebHost, actor_json, bounded, checked_path,
@@ -307,10 +367,10 @@ impl Role {
     }
 }
 
-/// A name the host writes beside the site's own files: never an orphan, never moved.
+/// A name the host writes beside the site's own files: never an orphan, never moved, linked to or synchronised.
 fn reserved(id: &str) -> bool {
     let name = id.rsplit('/').next().unwrap_or(id);
-    name.ends_with(SIDECAR_SUFFIX) || name == MANIFEST_FILE || name == RECEIPT_FILE || name == LOCK_FILE
+    name.ends_with(SIDECAR_SUFFIX) || name == MANIFEST_FILE || name == RECEIPT_FILE || name == LOCK_FILE || id == SNIPPET_LIBRARY
 }
 
 /// The walked files, folders and skipped links of a site.
@@ -527,7 +587,8 @@ impl AssetPort for SitePort<'_> {
 fn reaches(reach: &Reach, from: &str) -> bool {
     match reach {
         Reach::File(id) => id == from,
-        Reach::Case { actual, .. } => actual == from,
+        // Review F9 (a): a case_mismatch spelled exactly `from` reaches it too, so change link repairs the row.
+        Reach::Case { id, actual } => actual == from || id == from,
         Reach::Missing(id) => id.eq_ignore_ascii_case(from),
         _ => false,
     }
@@ -1196,9 +1257,10 @@ impl WebHost {
     }
 
     /// `web.site_report` (module docs).
-    pub(super) fn site_report(&self, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
+    pub(super) fn site_report(&self, _ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
+        // A read: no lock (lead ruling F10). It reads each file once; writers replace files whole (temporary sibling
+        // and rename), so a report taken during another process's move may see some files before and some after it.
         let (site, root) = self.site_root()?;
-        let _lock = site_lock(&site.local_root, ctx)?;
         let set = SiteSet::load(&root, self.open_view(), cancel)?;
         let mut referenced = BTreeSet::new();
         let (mut broken, mut external, mut denied, mut alt, mut untitled) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -1206,7 +1268,7 @@ impl WebHost {
             // Lane SMB-WEB-SITE-2: the template an instance names and the library items a document holds are
             // referenced (their markers are comments, not references of the engine's carrier table).
             if src.role.markup() {
-                referenced.extend(marker_targets(src));
+                referenced.extend(marker_targets(src, &set.files));
             }
             for e in &src.edges {
                 if let Reach::File(id) = &e.reach {
@@ -1433,6 +1495,7 @@ impl WebHost {
         // Plan every change, parse every result and compare the graphs before the first write.
         let moved_files = set.files.moved(&from, &to);
         let planned = rewrites(&set, &moved_files, &from, &to, site.link_base, true, cancel)?;
+        let left = left_denied(&set, &from);
         cancel.check().map_err(|_| No("canceled", String::new(), None))?;
         // The receipt: per changed file, every change with its byte ranges before and after.
         let (changed, mut writes) = receipt_rows(&set, &planned)?;
@@ -1442,7 +1505,8 @@ impl WebHost {
         let receipt = |complete: bool, restored: &[String], failed: Option<&str>, restore_failed: &[String]| {
             json!({
                 "schema": "hsk.studio.web.move_receipt@1", "site_id": site.site_id, "from": from, "to": to, "site_relative_link_base": site.link_base,
-                "changed": changed, "complete": complete, "restored": restored, "failed": failed, "restore_failed": restore_failed, "recipe_file": recipe_file,
+                "changed": changed, "complete": complete && left.is_empty(), "restored": restored, "failed": failed, "restore_failed": restore_failed, "recipe_file": recipe_file,
+                "left_denied": left,
             })
         };
         // Writes: referring files, the moved file's new bytes, then the rename; a failure restores what was written.
@@ -1521,7 +1585,12 @@ fn plan(src: &Source, from: &str, to: &str, link_base: &str, moving: bool) -> R<
         let raw = text.get(e.span.clone()).unwrap_or("");
         let at = |r: Range<usize>| r.start.saturating_add(head)..r.end.saturating_add(head);
         let edit = if raw == e.reference {
-            TextEdit { span: at(e.span.start..e.span.start.saturating_add(path_len)), replacement: new_path }
+            match css_quoted(src, e, &new_ref) {
+                // Review F9 (b): the whole reference as a CSS string, so a name holding `(` or `)` stays one url.
+                CssQuote::Quoted(text) => TextEdit { span: at(e.span.clone()), replacement: text },
+                CssQuote::Impossible => return Err(not()),
+                CssQuote::Plain => TextEdit { span: at(e.span.start..e.span.start.saturating_add(path_len)), replacement: new_path },
+            }
         } else {
             // Decoding moved offsets: the whole attribute value, when it carries only this reference.
             let AssetSource::Attribute(name) = &e.source else { return Err(not()) };
@@ -1546,6 +1615,53 @@ fn plan(src: &Source, from: &str, to: &str, link_base: &str, moving: bool) -> R<
     }
     out.sort_by_key(|c| c.edit.span.start);
     Ok(out)
+}
+
+/// How a rewritten reference is written into CSS.
+enum CssQuote {
+    /// Not CSS, already quoted, or nothing in the new text needs quoting: the path bytes are replaced.
+    Plain,
+    /// The whole reference as a CSS string (quotes included).
+    Quoted(String),
+    /// An unquoted inline style attribute: no quote character is safe.
+    Impossible,
+}
+
+/// Review F9 (b): in an unquoted CSS `url(...)` a `(`, `)`, quote, backslash or whitespace in the new reference ends or
+/// breaks the token (CSS Syntax 3 4.3.6), so the reference is written as a CSS string: double quotes in a style sheet
+/// or `style` element, the quote the `style` attribute does not use in an attribute.
+fn css_quoted(src: &Source, e: &Edge, new_ref: &str) -> CssQuote {
+    let needs = new_ref.chars().any(|c| matches!(c, '(' | ')' | '\'' | '"' | '\\') || c.is_ascii_whitespace());
+    if !matches!(e.source, AssetSource::StyleBody | AssetSource::InlineStyle) || !needs {
+        return CssQuote::Plain;
+    }
+    let before = e.span.start.checked_sub(1).and_then(|at| src.text().as_bytes().get(at)).copied();
+    if matches!(before, Some(b'"' | b'\'')) {
+        return CssQuote::Plain;
+    }
+    let quote = match &e.source {
+        AssetSource::InlineStyle => match src.doc.attribute(e.node, "style").map(|a| a.quote) {
+            Some(Quote::Double) => '\'',
+            Some(Quote::Single) => '"',
+            _ => return CssQuote::Impossible,
+        },
+        _ => '"',
+    };
+    let mut out = String::with_capacity(new_ref.len().saturating_add(2));
+    out.push(quote);
+    for c in new_ref.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\a "),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    CssQuote::Quoted(out)
 }
 
 /// One file a site-wide rewrite changes: its id before and after, the planned changes and the parsed result.
@@ -1625,6 +1741,31 @@ fn receipt_rows(set: &SiteSet, planned: &[Planned]) -> R<RowsAndWrites> {
     Ok((changed.into_iter().map(|c| c.1).collect(), writes))
 }
 
+/// References the engine denies whose own bytes name `from` (percent-decoded leniently, resolved from the referring
+/// file's folder, ASCII case folded): never rewritten (review F7, lead ruling), listed as `left_denied` so the receipt
+/// says complete=false. At most 2000 rows.
+fn left_denied(set: &SiteSet, from: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    for src in &set.sources {
+        let dir = dir_of(&src.id);
+        for e in &src.edges {
+            let Reach::Denied(reason) = &e.reach else { continue };
+            let path = e.reference.split(['?', '#']).next().unwrap_or("");
+            let decoded = percent_decoded(path).unwrap_or_else(|| path.to_string());
+            if has_scheme(&decoded) || decoded.starts_with("//") {
+                continue;
+            }
+            if let Some((0, at, false)) = lexical(&dir, &decoded)
+                && at.join("/").eq_ignore_ascii_case(from)
+                && out.len() < MAX_ROWS
+            {
+                out.push(json!({"document": src.id, "line": e.line, "reference": super::row_text(&e.reference), "reason": reason}));
+            }
+        }
+    }
+    out
+}
+
 /// Writes each file through the atomic writer in order and stops at the first failure: the ids written and the one
 /// that failed.
 fn write_each(root: &Path, writes: &[(String, String)]) -> (Vec<String>, Option<String>) {
@@ -1700,7 +1841,8 @@ impl WebHost {
             "web.template_instance" => self.template_instance(p, cancel),
             "web.instance_param" => {
                 let (name, value) = (p.text("name")?.to_string(), p.text("value")?.to_string());
-                self.instance_edit(label, ctx, cancel, |t, st| {
+                let policy = orphans_param(p)?;
+                self.instance_edit(label, &policy, ctx, cancel, |t, st| {
                     let value = param_value(t, &name, &value)?;
                     st.params.insert(name.clone(), value);
                     Ok(())
@@ -1711,11 +1853,12 @@ impl WebHost {
                 let op = p.text("op")?.to_string();
                 let index = opt_index(p, "index")?;
                 let to = opt_index(p, "to")?;
-                self.instance_edit(label, ctx, cancel, |t, st| repeat_op(t, st, &region, &op, index, to))
+                let policy = orphans_param(p)?;
+                self.instance_edit(label, &policy, ctx, cancel, |t, st| repeat_op(t, st, &region, &op, index, to))
             }
             "web.template_update" => {
-                let (template, resolve) = self.template_update_checks(p)?;
-                self.admitted(Action::Edit, JobOn::Site, ctx, cancel, |host| host.template_update(&template, &resolve, ctx, cancel))
+                let (template, resolve, policy) = self.template_update_checks(p)?;
+                self.admitted(Action::Edit, JobOn::Site, ctx, cancel, |host| host.template_update(&template, &resolve, &policy, ctx, cancel))
             }
             "web.library_item_insert" => self.library_item_insert(label, p, ctx, cancel),
             "web.library_item_update" => {
@@ -1723,7 +1866,7 @@ impl WebHost {
                 let item = library_id(p)?;
                 self.admitted(Action::Edit, JobOn::Site, ctx, cancel, |host| host.library_item_update(&item, ctx, cancel))
             }
-            "web.snippet" => self.snippet(label, p, ctx),
+            "web.snippet" => self.snippet(p, ctx),
             "web.snippets" => self.snippets(),
             "web.snippet_insert" => self.snippet_insert(label, p, ctx, cancel),
             "web.synchronize" => {
@@ -1765,15 +1908,17 @@ impl WebHost {
             return no("link_target_missing", to);
         }
         let planned = rewrites(&set, &set.files, from, to, site.link_base, false, cancel)?;
+        let left = left_denied(&set, from);
         if planned.is_empty() {
-            return no("nothing_to_change", from);
+            return Err(No("nothing_to_change", bounded(from), Some(json!({"left_denied": left}))));
         }
         cancel.check().map_err(|_| No("canceled", String::new(), None))?;
         let (changed, writes) = receipt_rows(&set, &planned)?;
         let receipt = |complete: bool, restored: &[String], failed: Option<&str>, restore_failed: &[String]| {
             json!({
                 "schema": "hsk.studio.web.change_link_receipt@1", "site_id": site.site_id, "from": from, "to": to, "site_relative_link_base": site.link_base,
-                "changed": changed, "complete": complete, "restored": restored, "failed": failed, "restore_failed": restore_failed,
+                "changed": changed, "complete": complete && left.is_empty(), "restored": restored, "failed": failed, "restore_failed": restore_failed,
+                "left_denied": left,
             })
         };
         let (written, failure) = write_each(&root, &writes);
@@ -1894,6 +2039,8 @@ impl Mk {
 const MAX_MARKERS: usize = 4096;
 const MAX_MARKER_TEXT: usize = 8192;
 const MAX_REPEAT_ENTRIES: usize = 1024;
+/// Regions nest at most this deep (review F5): every walk of a template's parts is bounded by it.
+const MAX_REGION_DEPTH: usize = 64;
 /// [STU-WEB-092]: one embedded code string, bounded.
 const MAX_CODE: usize = 1024;
 /// Template parameter types (Dreamweaver's five, UNVERIFIED).
@@ -2102,6 +2249,9 @@ fn template_of(doc: &WebDoc, id: &str) -> R<Template> {
                 if m.kind == Mk::TBeginRepeat && stack.iter().any(|f| f.kind == Mk::TBeginRepeat) {
                     return no("template_nested_unsupported", &at_line(m.line));
                 }
+                if stack.len() > MAX_REGION_DEPTH {
+                    return no("template_nesting_too_deep", &at_line(m.line));
+                }
                 if m.kind != Mk::TBeginIf && !names.insert(name.clone()) {
                     return no("template_region_duplicate", &format!("{} {name}", at_line(m.line)));
                 }
@@ -2207,6 +2357,8 @@ struct State {
 /// A parsed instance (module docs).
 struct Instance {
     template: String,
+    /// The `template` attribute as written (review F6: a case or encoding variant is reported).
+    spelled: String,
     baseline: Option<String>,
     begin: Range<usize>,
     state: State,
@@ -2214,6 +2366,9 @@ struct Instance {
     locked: String,
     /// Every instance marker comment (detach removes them).
     markers: Vec<Range<usize>>,
+    /// Each editable content range with its name (`repeat[entry].name` inside a repeat): the only text an edit may
+    /// change ([STU-WEB-094]).
+    editables: Vec<(String, Range<usize>)>,
 }
 
 impl Instance {
@@ -2255,11 +2410,13 @@ fn instance_of(doc: &WebDoc, id: &str) -> R<Option<Instance>> {
     if let Some(m) = ms.iter().find(|m| m.kind.template()) {
         return no("template_nested_unsupported", &format!("{id}:{}", m.line));
     }
-    let template = begin.attrs.get("template").and_then(|t| t.strip_prefix('/')).and_then(|t| site_path(t).ok()).filter(|t| role(t) == Role::Template).ok_or_else(|| invalid(begin.line))?;
+    let spelled = begin.attrs.get("template").cloned().unwrap_or_default();
+    let template = spelled.strip_prefix('/').and_then(decoded_path).and_then(|t| site_path(&t).ok()).filter(|t| role(t) == Role::Template).ok_or_else(|| invalid(begin.line))?;
     let baseline = begin.attrs.get("locked_sha256").filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).cloned();
     let mut st = State::default();
     let mut excluded = vec![begin.span.clone()];
     let mut instance_markers = Vec::new();
+    let mut editables = Vec::new();
     let mut stack: Vec<IFrame> = Vec::new();
     let mut ended = false;
     for m in ms.iter().filter(|m| m.kind.instance()) {
@@ -2275,6 +2432,11 @@ fn instance_of(doc: &WebDoc, id: &str) -> R<Option<Instance>> {
                 let Some(IFrame::Editable(n, start)) = stack.pop() else { return Err(invalid(m.line)) };
                 let content = text.get(start..m.span.start).unwrap_or("").to_string();
                 excluded.push(start..m.span.start);
+                let label = match stack.as_slice() {
+                    [IFrame::Repeat(r, entries), IFrame::Entry(_)] => format!("{r}[{}].{n}", entries.len()),
+                    _ => n.clone(),
+                };
+                editables.push((label, start..m.span.start));
                 let scope = match stack.last_mut() {
                     None => &mut st.editable,
                     Some(IFrame::Entry(map)) => map,
@@ -2311,7 +2473,23 @@ fn instance_of(doc: &WebDoc, id: &str) -> R<Option<Instance>> {
     }
     excluded.sort_by_key(|r| r.start);
     let locked = locked_digest(text, &excluded);
-    Ok(Some(Instance { template, baseline, begin: begin.span.clone(), state: st, locked, markers: instance_markers }))
+    Ok(Some(Instance { template, spelled, baseline, begin: begin.span.clone(), state: st, locked, markers: instance_markers, editables }))
+}
+
+/// What a generation consumed of an instance's own state (review F2): every editable content, repeat and entry content
+/// it wrote.
+#[derive(Default)]
+struct Used {
+    top: BTreeSet<String>,
+    repeats: BTreeSet<String>,
+    entries: BTreeSet<(String, usize, String)>,
+}
+
+/// Where an editable content is looked up while generating: the instance's top level, or one repeat entry.
+#[derive(Clone, Copy)]
+enum Scope<'a> {
+    Top(&'a BTreeMap<String, String>),
+    Entry(&'a str, usize, &'a BTreeMap<String, String>),
 }
 
 /// Writes one instance's text from its template (module docs).
@@ -2325,7 +2503,7 @@ struct Gen<'a> {
 }
 
 impl Gen<'_> {
-    fn emit(&self, parts: &[Part], scope: &BTreeMap<String, String>, out: &mut String) -> R<()> {
+    fn emit(&self, parts: &[Part], scope: Scope<'_>, out: &mut String, used: &mut Used) -> R<()> {
         for part in parts {
             match part {
                 Part::Text(r) => out.push_str(self.text.get(r.clone()).unwrap_or("")),
@@ -2342,24 +2520,33 @@ impl Gen<'_> {
                 Part::Expr { code, pass: false } => out.push_str(&escape_text(self.params.get(code.as_str()).copied().unwrap_or(""))),
                 Part::Editable { name, body } => {
                     out.push_str(&format!("<!-- InstanceBeginEditable name=\"{name}\" -->"));
-                    match scope.get(name) {
+                    let content = match scope {
+                        Scope::Top(map) => map.get(name).inspect(|_| {
+                            used.top.insert(name.clone());
+                        }),
+                        Scope::Entry(repeat, i, map) => map.get(name).inspect(|_| {
+                            used.entries.insert((repeat.to_string(), i, name.clone()));
+                        }),
+                    };
+                    match content {
                         Some(content) => out.push_str(content),
-                        None => self.emit(body, scope, out)?,
+                        None => self.emit(body, scope, out, used)?,
                     }
                     out.push_str("<!-- InstanceEndEditable -->");
                 }
                 Part::If { cond, body } => {
                     if self.params.get(cond.as_str()) == Some(&"true") {
-                        self.emit(body, scope, out)?;
+                        self.emit(body, scope, out, used)?;
                     }
                 }
                 Part::Repeat { name, body } => {
                     out.push_str(&format!("<!-- InstanceBeginRepeat name=\"{name}\" -->"));
+                    used.repeats.insert(name.clone());
                     let default = [BTreeMap::new()];
                     let entries = self.st.repeats.get(name).map_or(&default[..], Vec::as_slice);
-                    for entry in entries {
+                    for (i, entry) in entries.iter().enumerate() {
                         out.push_str("<!-- InstanceBeginRepeatEntry -->");
-                        self.emit(body, entry, out)?;
+                        self.emit(body, Scope::Entry(name, i, entry), out, used)?;
                         out.push_str("<!-- InstanceEndRepeatEntry -->");
                     }
                     out.push_str("<!-- InstanceEndRepeat -->");
@@ -2373,27 +2560,118 @@ impl Gen<'_> {
     }
 }
 
-/// A generated instance: its text, parsed, and its locked digest (written into its `InstanceBegin`).
+/// A generated instance: its text, parsed, its locked digest (written into its `InstanceBegin`) and the instance
+/// content the template has no slot for (review F2).
 struct Generated {
     text: String,
     doc: WebDoc,
     instance: Instance,
+    orphans: Vec<Value>,
+    /// The top-level editable regions written (a `move_to` target must be one of them).
+    regions: BTreeSet<String>,
 }
 
-/// The instance `at` of template `template_id` with state `st` (module docs): generated, parsed, its digest filled in.
+/// The instance `at` of template `template_id` with state `st` (module docs): generated, parsed, its digest filled in,
+/// its orphans listed.
 fn generated(t: &Template, text: &str, template_id: &str, st: &State, at: &str, cancel: &CancellationToken) -> R<Generated> {
     let params = t.params.iter().map(|p| (p.name.as_str(), st.params.get(&p.name).map_or(p.value.as_str(), String::as_str))).collect();
     let limits = Limits::default();
     let g = Gen { t, text, template_id, params, st, limit: limits.max_bytes };
     let mut out = String::new();
-    g.emit(&t.parts, &st.editable, &mut out)?;
+    let mut used = Used::default();
+    g.emit(&t.parts, Scope::Top(&st.editable), &mut out, &mut used)?;
     let first = parse(&out, 1, &limits, cancel).map_err(|e| web_no(&e))?;
     let inst = instance_of(&first, at)?.ok_or(No("template_markup_invalid", bounded(at), None))?;
     let hole = out.get(inst.begin.clone()).and_then(|b| b.find(DIGEST_HOLE)).map(|h| inst.begin.start.saturating_add(h)).ok_or(No("template_markup_invalid", bounded(at), None))?;
     out.replace_range(hole..hole.saturating_add(DIGEST_HOLE.len()), &inst.locked);
     let doc = parse(&out, 1, &limits, cancel).map_err(|e| web_no(&e))?;
     let instance = instance_of(&doc, at)?.ok_or(No("template_markup_invalid", bounded(at), None))?;
-    Ok(Generated { text: out, doc, instance })
+    let mut orphans: Vec<Value> = st.editable.keys().filter(|k| !used.top.contains(*k)).map(|k| json!({"region": k})).collect();
+    for (repeat, entries) in &st.repeats {
+        if !used.repeats.contains(repeat) {
+            if entries.iter().any(|e| !e.is_empty()) {
+                orphans.push(json!({"repeat": repeat, "entries": entries.len()}));
+            }
+            continue;
+        }
+        for (i, entry) in entries.iter().enumerate() {
+            for name in entry.keys().filter(|n| !used.entries.contains(&(repeat.clone(), i, (*n).clone()))) {
+                orphans.push(json!({"repeat": repeat, "entry": i, "region": name}));
+            }
+        }
+    }
+    orphans.extend(st.params.keys().filter(|k| t.param(k).is_none()).map(|k| json!({"param": k})));
+    let regions = instance.state.editable.keys().cloned().collect();
+    Ok(Generated { text: out, doc, instance, orphans, regions })
+}
+
+/// What happens to instance content the template has no slot for (review F2, lead ruling Q5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Orphans {
+    /// Refuse `template_update_orphans_content`, listing every orphan (the default).
+    Refuse,
+    /// Drop it.
+    Discard,
+    /// Put every orphaned editable content into this top-level editable region (in place of its template default
+    /// when the instance had no content of its own there, else after it); an orphaned parameter still refuses.
+    MoveTo(String),
+}
+
+/// The `orphans` parameter: `discard` or `move_to:<region>`.
+fn orphans_param(p: &P<'_>) -> R<Orphans> {
+    match p.opt_text("orphans")? {
+        None => Ok(Orphans::Refuse),
+        Some("discard") => Ok(Orphans::Discard),
+        Some(o) => match o.strip_prefix("move_to:").and_then(|r| marker_name(Some(&r.to_string()))) {
+            Some(region) => Ok(Orphans::MoveTo(region)),
+            None => no("parameter_invalid", "orphans"),
+        },
+    }
+}
+
+/// The rows that regenerate an instance's locked text from its template (exempt from the locked-region guard; their
+/// display names are the history labels, pinned by `the_regenerating_rows_are_the_exempt_labels`).
+const REGENERATING: [&str; 2] = ["Set Instance Parameter", "Edit Repeating Region"];
+
+/// The remedies a refusal names.
+const ORPHAN_REMEDY: [&str; 2] = ["orphans: move_to:<region>", "orphans: discard"];
+
+/// [`generated`] under the caller's orphan policy: `Err(orphans)` (the list) unless the policy settles them.
+fn settled(t: &Template, text: &str, template_id: &str, st: &State, at: &str, policy: &Orphans, cancel: &CancellationToken) -> R<Result<Generated, Vec<Value>>> {
+    let g = generated(t, text, template_id, st, at, cancel)?;
+    if g.orphans.is_empty() || *policy == Orphans::Discard {
+        return Ok(Ok(g));
+    }
+    let Orphans::MoveTo(region) = policy else { return Ok(Err(g.orphans)) };
+    if !g.regions.contains(region) {
+        return no("parameter_invalid", &format!("orphans: move_to:{region}"));
+    }
+    let params: Vec<Value> = g.orphans.iter().filter(|o| o.get("param").is_some()).cloned().collect();
+    if !params.is_empty() {
+        return Ok(Err(params));
+    }
+    // The orphaned contents, in the order they are listed, into `region`.
+    let mut moved = String::new();
+    let mut next = st.clone();
+    for o in &g.orphans {
+        match (o["region"].as_str(), o["repeat"].as_str(), o["entry"].as_u64()) {
+            (Some(name), None, _) => moved.push_str(&next.editable.remove(name).unwrap_or_default()),
+            (None, Some(repeat), _) => {
+                for entry in next.repeats.remove(repeat).unwrap_or_default() {
+                    moved.extend(entry.into_values());
+                }
+            }
+            (Some(name), Some(repeat), Some(i)) => {
+                let entry = next.repeats.get_mut(repeat).and_then(|e| e.get_mut(usize::try_from(i).unwrap_or(usize::MAX)));
+                moved.push_str(&entry.and_then(|e| e.remove(name)).unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+    let base = st.editable.get(region).cloned().unwrap_or_default();
+    next.editable.insert(region.clone(), format!("{base}{moved}"));
+    let g = generated(t, text, template_id, &next, at, cancel)?;
+    Ok(if g.orphans.is_empty() { Ok(g) } else { Err(g.orphans) })
 }
 
 /// An instance's new text, its instance markers and (when generated) the parsed document.
@@ -2445,8 +2723,19 @@ fn placed_text(src: &Source, at: &str, link_base: &str) -> R<String> {
 
 /// The template `template` as the instance at `at` sees it: parsed after re-basing.
 fn template_for(root: &Path, template: &str, at: &str, link_base: &str, cancel: &CancellationToken) -> R<(Template, String)> {
-    let src = lone_source(root, template, cancel).map_err(|No(code, target, detail)| if code == "file_missing" { No("template_not_found", bounded(template), None) } else { No(code, target, detail) })?;
+    let src = lone_found(root, template, "template_not_found", cancel)?;
     template_from(&src, at, link_base, cancel)
+}
+
+/// [`lone_source`] of `id`, or of its spelling on disk in another letter case (review F6); `missing` when neither.
+fn lone_found(root: &Path, id: &str, missing: &'static str, cancel: &CancellationToken) -> R<Source> {
+    match lone_source(root, id, cancel) {
+        Err(No("file_missing", ..)) => match on_disk(root, id) {
+            Some(actual) if actual != id && role(&actual) == role(id) => lone_source(root, &actual, cancel),
+            _ => no(missing, id),
+        },
+        other => other,
+    }
 }
 
 fn template_from(src: &Source, at: &str, link_base: &str, cancel: &CancellationToken) -> R<(Template, String)> {
@@ -2570,22 +2859,48 @@ fn with_edits(text: &str, edits: &[TextEdit]) -> Option<String> {
     Some(out)
 }
 
-/// The site ids a document's markers name: the template of an instance and every library item it holds.
-fn marker_targets(src: &Source) -> Vec<String> {
+/// The site files a document's markers name: the template of an instance and every library item it holds, each
+/// resolved like an engine reference (percent-decoded, then ASCII case folded against the walk; review F6).
+fn marker_targets(src: &Source, files: &Files) -> Vec<String> {
     let Ok(ms) = markers(&src.doc, &src.id) else { return Vec::new() };
     let dir = dir_of(&src.id);
     ms.iter()
         .filter_map(|m| match m.kind {
-            Mk::IBegin => m.attrs.get("template").and_then(|t| t.strip_prefix('/')).map(str::to_string),
+            Mk::IBegin => m.attrs.get("template").and_then(|t| library_target(&[], t)),
             Mk::LBegin => m.path.as_deref().and_then(|p| library_target(&dir, p)),
             _ => None,
         })
+        .filter_map(|id| folded_target(files, &id))
         .collect()
 }
 
-/// The site id a library marker's path names (`/...` from the root, else from the document's folder).
+/// The site id a marker's path names (`/...` from the root, else from the document's folder), percent-decoded.
 fn library_target(dir: &[String], path: &str) -> Option<String> {
-    segments_of(dir, path).filter(|(s, folder)| !folder && !s.is_empty()).map(|(s, _)| s.join("/"))
+    segments_of(dir, &decoded_path(path)?).filter(|(s, folder)| !folder && !s.is_empty()).map(|(s, _)| s.join("/"))
+}
+
+/// The walked file `id` names: itself, else the file of another letter case (review F6).
+fn folded_target(files: &Files, id: &str) -> Option<String> {
+    if files.files.contains(id) {
+        return Some(id.to_string());
+    }
+    files.folded.get(&id.to_ascii_lowercase()).cloned()
+}
+
+/// `id` as spelled on disk under `root` (each folder read once, exact name first, else the first of another letter
+/// case), when no file has the exact spelling: a single-file read on a case-sensitive file system finds what a
+/// case-folding one would (review F6).
+fn on_disk(root: &Path, id: &str) -> Option<String> {
+    let mut at = root.to_path_buf();
+    let mut out = Vec::new();
+    for segment in id.split('/') {
+        let mut names: Vec<String> = std::fs::read_dir(&at).ok()?.take(MAX_WALK_ENTRIES).filter_map(|e| e.ok()?.file_name().to_str().map(str::to_string)).collect();
+        names.sort();
+        let name = names.iter().find(|n| n.as_str() == segment).or_else(|| names.iter().find(|n| n.eq_ignore_ascii_case(segment)))?.clone();
+        at = at.join(&name);
+        out.push(name);
+    }
+    Some(out.join("/"))
 }
 
 /// `item`: a root-relative `.lbi` path.
@@ -2630,6 +2945,7 @@ impl WebHost {
         out["kind"] = json!("instance");
         out["document"] = json!(id);
         out["instance"] = inst.json();
+        out["instance"]["orphans"] = json!(g.orphans);
         out["standing"] = standing;
         Ok(out)
     }
@@ -2677,10 +2993,38 @@ impl WebHost {
         Ok(json!({"instance": {"document": path, "template": template, "locked_sha256": g.instance.locked}, "web": self.state_json()}))
     }
 
+    /// [STU-WEB-094], [STU-WEB-159] (review F3, lead ruling): called by `WebHost::edit` before every source edit. When
+    /// the open document is a template instance, every edit must lie inside one editable content (its ends included),
+    /// else `template_edit_in_locked_region` naming the template and the locked region (the editable regions around
+    /// it), remedy detach. The two regenerating rows (`REGENERATING`) rewrite locked text by design; undo and redo
+    /// replay recorded steps without passing here. A document whose instance markup does not read is not guarded.
+    pub(super) fn locked_guard(&self, label: &str, patch: &SourcePatch) -> R<()> {
+        if REGENERATING.contains(&label) {
+            return Ok(());
+        }
+        let Some(doc) = self.doc.as_ref() else { return Ok(()) };
+        let Ok(Some(inst)) = instance_of(doc, "document") else { return Ok(()) };
+        for e in &patch.edits {
+            if inst.editables.iter().any(|(_, r)| r.start <= e.span.start && e.span.end <= r.end) {
+                continue;
+            }
+            let after = inst.editables.iter().filter(|(_, r)| r.end <= e.span.start).max_by_key(|(_, r)| r.end).map(|(n, _)| n.clone());
+            let before = inst.editables.iter().filter(|(_, r)| r.start >= e.span.end).min_by_key(|(_, r)| r.start).map(|(n, _)| n.clone());
+            let line = line_of(doc.source(), e.span.start);
+            return Err(No(
+                "template_edit_in_locked_region",
+                bounded(&format!("{}: line {line}", inst.template)),
+                Some(json!({"template": inst.template, "region": {"locked": true, "after_editable": after, "before_editable": before, "line": line}, "severity": "error", "remedy": ["detach"]})),
+            ));
+        }
+        Ok(())
+    }
+
     /// `web.instance_param` and `web.instance_repeat` (module docs): the open instance regenerated from its template
     /// with `change` applied to its state, as one named history step; refused `template_instance_drift` when its
-    /// locked text was changed outside Studio.
-    fn instance_edit(&mut self, label: &'static str, ctx: &CommandContext, cancel: &CancellationToken, change: impl FnOnce(&Template, &mut State) -> R<()>) -> R<Value> {
+    /// locked text was changed outside Studio, and `template_update_orphans_content` when content of the instance would
+    /// lose its slot, unless `orphans` settles it.
+    fn instance_edit(&mut self, label: &'static str, policy: &Orphans, ctx: &CommandContext, cancel: &CancellationToken, change: impl FnOnce(&Template, &mut State) -> R<()>) -> R<Value> {
         let (site, root) = self.site_root()?;
         let doc = self.doc()?.clone();
         let id = self.open_id_in(&root)?;
@@ -2692,13 +3036,17 @@ impl WebHost {
         }
         let mut st = inst.state.clone();
         change(&t, &mut st)?;
-        let next = generated(&t, &text, &inst.template, &st, &id, cancel)?;
+        let next = match settled(&t, &text, &inst.template, &st, &id, policy, cancel)? {
+            Ok(next) => next,
+            Err(orphans) => return Err(No("template_update_orphans_content", bounded(&id), Some(json!({"document": id, "orphans": orphans, "remedy": ORPHAN_REMEDY})))),
+        };
         let Some(edit) = diff_edit(doc.source(), &next.text) else { return no("nothing_to_change", label) };
         self.edit(label, SourcePatch::new(&doc, vec![edit]), ctx, cancel)
     }
 
-    /// `web.template_update`'s checks before admission (no I/O): the template's id and the resolutions.
-    fn template_update_checks(&self, p: &P<'_>) -> R<(String, BTreeMap<String, &'static str>)> {
+    /// `web.template_update`'s checks before admission (no I/O): the template's id, the resolutions and the orphan
+    /// policy.
+    fn template_update_checks(&self, p: &P<'_>) -> R<(String, BTreeMap<String, &'static str>, Orphans)> {
         self.site_root()?;
         let template = site_path(p.text("template")?)?;
         if role(&template) != Role::Template {
@@ -2719,34 +3067,45 @@ impl WebHost {
             }
             Some(_) => return no("parameter_invalid", "resolve"),
         }
-        Ok((template, resolve))
+        Ok((template, resolve, orphans_param(p)?))
     }
 
     /// `web.template_update` ([STU-WEB-093], module docs).
-    fn template_update(&mut self, template: &str, resolve: &BTreeMap<String, &'static str>, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
+    fn template_update(&mut self, template: &str, resolve: &BTreeMap<String, &'static str>, policy: &Orphans, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
         let (site, root) = self.site_root()?;
         let _lock = site_lock(&site.local_root, ctx)?;
         let set = SiteSet::load(&root, None, cancel)?;
         let open_id = self.open_on_disk(&root, &set)?;
         unreadable(&set)?;
         let source = set.sources.iter().find(|s| s.id == template && s.role == Role::Template).ok_or(No("template_not_found", bounded(template), None))?;
+        // Every page is read as an instance; a malformed one refuses the whole update, naming every malformed page
+        // (review F12, lead ruling: the update stays atomic). A template named in another case is this one (F6).
         let mut instances = Vec::new();
+        let mut malformed: Vec<String> = Vec::new();
         for src in set.sources.iter().filter(|s| s.role == Role::Page) {
-            if let Some(inst) = instance_of(&src.doc, &src.id)?.filter(|i| i.template == template) {
-                instances.push((src, inst));
+            match instance_of(&src.doc, &src.id) {
+                Ok(Some(inst)) if folded_target(&set.files, &inst.template).as_deref() == Some(template) => instances.push((src, inst)),
+                Ok(_) => {}
+                Err(No(_, at, _)) => malformed.push(at),
             }
+        }
+        if let Some(first) = malformed.first() {
+            return Err(No("template_markup_invalid", bounded(first), Some(json!({"documents": malformed.iter().take(MAX_ROWS).collect::<Vec<_>>()}))));
         }
         if let Some(id) = resolve.keys().find(|id| !instances.iter().any(|(s, _)| &s.id == *id)) {
             return no("not_a_template_instance", id);
         }
         // Plan every instance before the first write.
         let mut rows = Vec::new();
-        let mut writes: Vec<(String, String, Vec<TextEdit>, Option<WebDoc>)> = Vec::new();
+        let mut writes: Vec<(String, String, Option<WebDoc>)> = Vec::new();
+        let mut orphaned = Vec::new();
         let (mut updated, mut drifted) = (0usize, 0usize);
+        let canonical = format!("/{template}");
         for (src, inst) in &instances {
             cancel.check().map_err(|_| No("canceled", String::new(), None))?;
             let old = src.doc.source();
             let how = resolve.get(&src.id).copied();
+            let mismatch = (inst.spelled != canonical).then(|| inst.spelled.clone());
             let (outcome, next): (&str, Option<Regenerated>) = if how == Some("detach") {
                 let mut text = String::with_capacity(old.len());
                 let mut at = 0usize;
@@ -2758,33 +3117,61 @@ impl WebHost {
                 ("detached", Some((text, Vec::new(), None)))
             } else {
                 let (t, text) = template_from(source, &src.id, site.link_base, cancel)?;
-                let g = generated(&t, &text, template, &inst.state, &src.id, cancel)?;
-                let next = Some((g.text.clone(), g.instance.markers.clone(), Some(g.doc)));
-                match (standing(inst, &g.instance.locked), how) {
-                    (Standing::UpToDate, _) if inst.baseline.as_deref() == Some(inst.locked.as_str()) => ("up_to_date", None),
-                    (Standing::UpToDate, _) => ("baseline_refreshed", next),
-                    (Standing::TemplateChanged, _) => ("updated", next),
-                    (Standing::Drifted(_), Some(_)) => ("reapplied", next),
-                    (Standing::Drifted(reason), None) => {
-                        drifted = drifted.saturating_add(1);
-                        rows.push(json!({"document": src.id, "outcome": "drifted", "code": "template_instance_drift", "severity": "warning", "reason": reason, "remedy": ["reapply", "detach"], "changes": []}));
-                        continue;
+                let current = generated(&t, &text, template, &inst.state, &src.id, cancel)?;
+                let standing = standing(inst, &current.instance.locked);
+                if matches!(standing, Standing::Drifted(_)) && how.is_none() {
+                    drifted = drifted.saturating_add(1);
+                    let reason = if let Standing::Drifted(r) = standing { r } else { "" };
+                    let mut row = json!({"document": src.id, "outcome": "drifted", "code": "template_instance_drift", "severity": "warning", "reason": reason, "remedy": ["reapply", "detach"], "changes": []});
+                    if let Some(m) = &mismatch {
+                        row["case_mismatch"] = json!(m);
                     }
+                    rows.push(row);
+                    continue;
+                }
+                if standing == Standing::UpToDate && inst.baseline.as_deref() == Some(inst.locked.as_str()) {
+                    ("up_to_date", None)
+                } else {
+                    let g = match settled(&t, &text, template, &inst.state, &src.id, policy, cancel)? {
+                        Ok(g) => g,
+                        Err(orphans) => {
+                            orphaned.push(json!({"document": src.id, "orphans": orphans}));
+                            continue;
+                        }
+                    };
+                    let outcome = match standing {
+                        Standing::UpToDate => "baseline_refreshed",
+                        Standing::TemplateChanged => "updated",
+                        Standing::Drifted(_) => "reapplied",
+                    };
+                    (outcome, Some((g.text, g.instance.markers, Some(g.doc))))
                 }
             };
-            let Some((text, new_markers, doc)) = next else {
-                rows.push(json!({"document": src.id, "outcome": outcome, "changes": []}));
-                continue;
+            let mut row = match &next {
+                None => json!({"document": src.id, "outcome": outcome, "changes": []}),
+                Some((text, new_markers, _)) => {
+                    let edits: Vec<TextEdit> = if outcome == "detached" {
+                        inst.markers.iter().map(|m| TextEdit { span: m.clone(), replacement: String::new() }).collect()
+                    } else {
+                        let edits = segment_edits(old, &inst.markers, text, new_markers);
+                        if with_edits(old, &edits).as_deref() == Some(text.as_str()) { edits } else { diff_edit(old, text).into_iter().collect() }
+                    };
+                    updated = updated.saturating_add(1);
+                    json!({"document": src.id, "outcome": outcome, "changes": edit_rows(old, &edits)})
+                }
             };
-            let edits = if outcome == "detached" {
-                inst.markers.iter().map(|m| TextEdit { span: m.clone(), replacement: String::new() }).collect()
-            } else {
-                let edits = segment_edits(old, &inst.markers, &text, &new_markers);
-                if with_edits(old, &edits).as_deref() == Some(text.as_str()) { edits } else { diff_edit(old, &text).into_iter().collect() }
-            };
-            updated = updated.saturating_add(1);
-            rows.push(json!({"document": src.id, "outcome": outcome, "changes": edit_rows(old, &edits)}));
-            writes.push((src.id.clone(), text, edits, doc));
+            if let Some(m) = &mismatch {
+                row["case_mismatch"] = json!(m);
+            }
+            rows.push(row);
+            if let Some((text, _, doc)) = next {
+                writes.push((src.id.clone(), text, doc));
+            }
+        }
+        // Review F2 (lead ruling Q5): content that would lose its slot holds the whole update until the caller chooses.
+        if let Some(first) = orphaned.first() {
+            let at = first["document"].as_str().unwrap_or("").to_string();
+            return Err(No("template_update_orphans_content", bounded(&at), Some(json!({"documents": orphaned, "remedy": ORPHAN_REMEDY}))));
         }
         // One transaction per instance: each is one atomic write; a failure stops before the next (`written` names
         // the instances whose transaction completed).
@@ -2795,14 +3182,14 @@ impl WebHost {
             })
         };
         let mut written: Vec<&str> = Vec::new();
-        for (id, text, _, _) in &writes {
+        for (id, text, _) in &writes {
             if write_atomic(&join(&root, id), text.as_bytes()).is_err() {
                 return Err(No("template_update_failed", bounded(id), Some(json!({"receipt": receipt(false, &written, Some(id))}))));
             }
             written.push(id);
         }
         if let Some(id) = &open_id
-            && let Some((_, text, _, doc)) = writes.iter().find(|w| &w.0 == id)
+            && let Some((_, text, doc)) = writes.iter().find(|w| &w.0 == id)
         {
             let doc = match doc {
                 Some(doc) => doc.clone(),
@@ -2820,7 +3207,7 @@ impl WebHost {
         let item = library_id(p)?;
         let doc = self.doc()?.clone();
         let at = self.open_id_in(&root)?;
-        let src = lone_source(&root, &item, cancel).map_err(|No(code, target, detail)| if code == "file_missing" { No("library_item_not_found", bounded(&item), None) } else { No(code, target, detail) })?;
+        let src = lone_found(&root, &item, "library_item_not_found", cancel)?;
         if markers(&src.doc, &item)?.iter().any(|m| matches!(m.kind, Mk::LBegin | Mk::LEnd)) {
             return no("library_item_nested", &item);
         }
@@ -2846,17 +3233,35 @@ impl WebHost {
         let mut changed = Vec::new();
         let mut writes: Vec<(String, String)> = Vec::new();
         let mut docs: Vec<(String, WebDoc)> = Vec::new();
+        // Every page is read; a malformed or unbalanced marker refuses the whole update naming every such page (review
+        // F12, lead ruling: the update stays atomic). An item named in another spelling is this one (F6).
+        let mut malformed: Vec<String> = Vec::new();
+        let canonical = format!("/{item}");
         for src in set.sources.iter().filter(|s| matches!(s.role, Role::Page | Role::Template)) {
             cancel.check().map_err(|_| No("canceled", String::new(), None))?;
-            let ms = markers(&src.doc, &src.id)?;
+            let ms = match markers(&src.doc, &src.id) {
+                Ok(ms) => ms,
+                Err(No(_, at, _)) => {
+                    malformed.push(at);
+                    continue;
+                }
+            };
             let dir = dir_of(&src.id);
             let mut open: Option<(&Marker, bool)> = None;
             let mut edits = Vec::new();
+            let mut spelled = Vec::new();
             let mut content: Option<String> = None;
+            let mut broken = None;
             for m in ms.iter().filter(|m| matches!(m.kind, Mk::LBegin | Mk::LEnd)) {
-                let invalid = || No("library_markup_invalid", bounded(&format!("{}:{}", src.id, m.line)), None);
                 match (m.kind, open.take()) {
-                    (Mk::LBegin, None) => open = Some((m, m.path.as_deref().and_then(|p| library_target(&dir, p)).as_deref() == Some(item))),
+                    (Mk::LBegin, None) => {
+                        let path = m.path.as_deref().unwrap_or("");
+                        let ours = library_target(&dir, path).and_then(|id| folded_target(&set.files, &id)).as_deref() == Some(item);
+                        if ours && path != canonical {
+                            spelled.push(path.to_string());
+                        }
+                        open = Some((m, ours));
+                    }
                     (Mk::LEnd, Some((begin, ours))) => {
                         if ours {
                             if content.is_none() {
@@ -2868,20 +3273,31 @@ impl WebHost {
                             }
                         }
                     }
-                    _ => return Err(invalid()),
+                    _ => {
+                        broken = Some(m.line);
+                        break;
+                    }
                 }
             }
-            if let Some((begin, _)) = open {
-                return no("library_markup_invalid", &format!("{}:{}", src.id, begin.line));
+            if let Some(line) = broken.or(open.map(|(begin, _)| begin.line)) {
+                malformed.push(format!("{}:{line}", src.id));
+                continue;
             }
             if edits.is_empty() {
                 continue;
             }
             let applied = apply(&src.doc, &SourcePatch::new(&src.doc, edits.clone())).map_err(|e| web_no(&e))?;
             let next = parse(&applied.source, 1, src.doc.limits(), cancel).map_err(|e| web_no(&e))?;
-            changed.push(json!({"document": src.id, "changes": edit_rows(src.doc.source(), &edits)}));
+            let mut row = json!({"document": src.id, "changes": edit_rows(src.doc.source(), &edits)});
+            if !spelled.is_empty() {
+                row["case_mismatch"] = json!(spelled);
+            }
+            changed.push(row);
             writes.push((src.id.clone(), applied.source));
             docs.push((src.id.clone(), next));
+        }
+        if let Some(first) = malformed.first() {
+            return Err(No("library_markup_invalid", bounded(first), Some(json!({"documents": malformed.iter().take(MAX_ROWS).collect::<Vec<_>>()}))));
         }
         cancel.check().map_err(|_| No("canceled", String::new(), None))?;
         let receipt = |complete: bool, restored: &[String], failed: Option<&str>, restore_failed: &[String]| {
@@ -2990,7 +3406,6 @@ pub(super) struct DepthFields {
     linter_overrides: Option<BTreeMap<String, &'static str>>,
     browser_baseline: Option<Vec<String>>,
     version_control_binding: Option<VcBinding>,
-    snippets: Vec<Snippet>,
 }
 
 impl std::ops::Deref for SiteDepth {
@@ -3194,8 +3609,10 @@ pub(super) fn depth_into(depth: &mut SiteDepth, p: &P<'_>) -> R<()> {
             }
         };
     }
-    if let Some(v) = p.0.get("snippets") {
-        depth.snippets = loaded_snippets(v)?;
+    // Review F4 (lead ruling option A): snippets live in the site's library file, never in this record; a record
+    // from before that still carries some is refused, never migrated silently.
+    if p.0.get("snippets").is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()) && !v.is_null()) {
+        return no("snippets_moved_to_site_library", "snippets");
     }
     Ok(())
 }
@@ -3216,7 +3633,6 @@ pub(super) fn with_depth(depth: &SiteDepth, mut site: Value) -> Value {
         ("linter_overrides", json!(depth.linter_overrides)),
         ("browser_baseline", json!(depth.browser_baseline)),
         ("version_control_binding", json!(depth.version_control_binding.as_ref().map(|b| json!({"repository": b.repository, "branch": b.branch, "credentials_ref": b.credentials_ref})))),
-        ("snippets", Value::Array(depth.snippets.iter().map(Snippet::json).collect())),
     ];
     if let Value::Object(map) = &mut site {
         for (key, value) in fields {
@@ -3313,45 +3729,81 @@ fn loaded_snippets(value: &Value) -> R<Vec<Snippet>> {
     Ok(out)
 }
 
+/// The site's snippet library ([STU-WEB-099]: a document-independent site resource; review F4, lead ruling option A):
+/// one file at the site root, reserved.
+pub(super) const SNIPPET_LIBRARY: &str = "studio-snippets.json";
+const SNIPPET_SCHEMA: &str = "hsk.studio.web.snippets@1";
+const MAX_SNIPPET_LIBRARY_BYTES: u64 = 4 << 20;
+
+/// The library's snippets and its SHA-256 (`None`: no file yet). A file at that name that is not the library refuses
+/// `snippet_library_foreign`, a library that does not read `snippet_library_invalid`, a folder or unreadable file
+/// `snippet_library_unreadable`; none is ever overwritten.
+fn read_library(root: &Path) -> R<(Vec<Snippet>, Option<String>)> {
+    let path = join(root, SNIPPET_LIBRARY);
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), None)),
+        Ok(meta) if meta.is_file() => {}
+        _ => return no("snippet_library_unreadable", SNIPPET_LIBRARY),
+    }
+    let bytes = read_bounded(&path, MAX_SNIPPET_LIBRARY_BYTES).map_err(|No(code, ..)| No("snippet_library_unreadable", bounded(&format!("{SNIPPET_LIBRARY}: {code}")), None))?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| No("snippet_library_foreign", SNIPPET_LIBRARY.into(), None))?;
+    if value.get("schema").and_then(Value::as_str) != Some(SNIPPET_SCHEMA) {
+        return no("snippet_library_foreign", SNIPPET_LIBRARY);
+    }
+    let snippets = loaded_snippets(&value["snippets"]).map_err(|No(code, at, _)| No("snippet_library_invalid", bounded(&format!("{code} {at}")), None))?;
+    Ok((snippets, Some(sha256_hex(&bytes))))
+}
+
 impl WebHost {
-    /// `web.snippet` ([STU-WEB-097], [STU-WEB-099]; module docs): adds, replaces or removes one snippet of the site
-    /// record, one named history step.
-    fn snippet(&mut self, label: &'static str, p: &P<'_>, ctx: &CommandContext) -> R<Value> {
-        let current = self.site.clone().ok_or(No("no_site", "web.site first".into(), None))?;
-        let mut site = current.clone();
-        let folder_path = p.text("folder_path")?;
-        let name = p.text("snippet_name")?;
-        let at = site.depth.snippets.iter().position(|s| s.folder_path == folder_path && s.snippet_name == name);
-        if p.flag("remove")? {
-            let at = at.ok_or(No("no_such_snippet", bounded(&format!("{folder_path}/{name}")), None))?;
-            site.depth.snippets.remove(at);
+    /// `web.snippet` ([STU-WEB-097], [STU-WEB-099]; module docs): adds, replaces or removes one snippet of the site's
+    /// library, written through (one atomic write under the site lock) with a receipt of the snippet before and after.
+    /// Not a `web.undo` step: the reverse `web.snippet` is the way back.
+    fn snippet(&mut self, p: &P<'_>, ctx: &CommandContext) -> R<Value> {
+        let (site, root) = self.site_root()?;
+        let folder_path = p.text("folder_path")?.to_string();
+        let name = p.text("snippet_name")?.to_string();
+        let remove = p.flag("remove")?;
+        let _lock = site_lock(&site.local_root, ctx)?;
+        let (mut library, sha_before) = read_library(&root)?;
+        let at = library.iter().position(|s| s.folder_path == folder_path && s.snippet_name == name);
+        let before = at.and_then(|i| library.get(i)).map(Snippet::json);
+        let after = if remove {
+            let i = at.ok_or(No("no_such_snippet", bounded(&format!("{folder_path}/{name}")), None))?;
+            library.remove(i);
+            None
         } else {
-            let s = snippet_from(p.0, at.and_then(|i| site.depth.snippets.get(i)), true)?;
-            match at {
-                Some(i) => {
-                    if let Some(slot) = site.depth.snippets.get_mut(i) {
-                        *slot = s;
-                    }
-                }
-                None if site.depth.snippets.len() >= MAX_SNIPPETS => return no("snippets_over_limit", &MAX_SNIPPETS.to_string()),
-                None => site.depth.snippets.push(s),
+            let s = snippet_from(p.0, at.and_then(|i| library.get(i)), true)?;
+            let shown = s.json();
+            match at.and_then(|i| library.get_mut(i)) {
+                Some(slot) => *slot = s,
+                None if library.len() >= MAX_SNIPPETS => return no("snippets_over_limit", &MAX_SNIPPETS.to_string()),
+                None => library.push(s),
             }
-            unique_triggers(&site.depth.snippets)?;
+            unique_triggers(&library)?;
+            Some(shown)
+        };
+        if before == after {
+            return no("nothing_to_change", &format!("{folder_path}/{name}"));
         }
-        // The record must read back (`web.open` reads at most 1 MiB).
-        let record = serde_json::to_vec_pretty(&super::sidecar_json(Some(&site), self.recipe.as_ref())).map_err(|_| No("save_failed", String::new(), None))?;
-        if u64::try_from(record.len()).unwrap_or(u64::MAX) > MAX_RECORD_BYTES {
-            return no("site_record_too_large", &record.len().to_string());
+        let bytes = serde_json::to_vec_pretty(&json!({"schema": SNIPPET_SCHEMA, "snippets": library.iter().map(Snippet::json).collect::<Vec<_>>()})).map_err(|_| No("save_failed", String::new(), None))?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SNIPPET_LIBRARY_BYTES {
+            return no("snippet_library_too_large", &bytes.len().to_string());
         }
-        self.record(label, super::Change::Site { before: Some(current), after: Some(site) }, ctx)
+        write_atomic(&join(&root, SNIPPET_LIBRARY), &bytes)?;
+        let receipt = json!({
+            "schema": "hsk.studio.web.snippet_receipt@1", "site_id": site.site_id, "library": SNIPPET_LIBRARY, "snippet": format!("{folder_path}/{name}"),
+            "before": before, "after": after, "sha256_before": sha_before, "sha256_after": sha256_hex(&bytes),
+        });
+        Ok(json!({"receipt": receipt, "web": self.state_json()}))
     }
 
-    /// `web.snippets` ([STU-WEB-098]): the library by top-level group and folder, the trigger map and load diagnostics.
+    /// `web.snippets` ([STU-WEB-098]): the site's library by top-level group and folder, the trigger map and load
+    /// diagnostics (a read: no lock).
     fn snippets(&self) -> R<Value> {
-        let site = self.site.as_ref().ok_or(No("no_site", "web.site first".into(), None))?;
-        let all = &site.depth.snippets;
+        let (_, root) = self.site_root()?;
+        let (all, sha) = read_library(&root)?;
         let mut groups: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::new();
-        for s in all {
+        for s in &all {
             let g = groups.entry(s.group()).or_insert((0, 0, 0));
             g.0 = g.0.saturating_add(1);
             if s.snippet_kind == "block" {
@@ -3363,7 +3815,7 @@ impl WebHost {
         let mut listed: Vec<&Snippet> = all.iter().collect();
         listed.sort_by(|a, b| (&a.folder_path, &a.snippet_name).cmp(&(&b.folder_path, &b.snippet_name)));
         Ok(json!({
-            "snippets_total": all.len(),
+            "library": SNIPPET_LIBRARY, "sha256": sha, "snippets_total": all.len(),
             "groups": groups.iter().map(|(g, (n, block, wrap))| json!({"top_level_group": g, "count": n, "block": block, "wrap": wrap})).collect::<Vec<_>>(),
             "snippets": listed.iter().take(MAX_ROWS).map(|s| json!({"id": s.id(), "folder_path": s.folder_path, "snippet_name": s.snippet_name, "top_level_group": s.group(), "snippet_kind": s.snippet_kind, "preview_mode": s.preview_mode, "trigger": s.trigger, "description": super::row_text(&s.description)})).collect::<Vec<_>>(),
             "truncated": all.len().saturating_sub(MAX_ROWS),
@@ -3374,9 +3826,9 @@ impl WebHost {
 
     /// `web.snippet_insert` ([STU-WEB-097], [STU-WEB-099]; module docs): a snippet's texts verbatim at byte `offset`
     /// (a `wrap` snippet around `offset..end`), or its trigger word just before `offset` expanded, as one named
-    /// history step.
+    /// history step of the document.
     fn snippet_insert(&mut self, label: &'static str, p: &P<'_>, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
-        let site = self.site.as_ref().ok_or(No("no_site", "web.site first".into(), None))?;
+        let (_, root) = self.site_root()?;
         let doc = self.doc()?.clone();
         let src = doc.source();
         let at = |key: &str| -> R<Option<usize>> {
@@ -3388,9 +3840,10 @@ impl WebHost {
         };
         let offset = at("offset")?.ok_or(No("parameter_missing", "offset".into(), None))?;
         let end = at("end")?;
+        let (library, _) = read_library(&root)?;
         let (snippet, word) = match (p.opt_text("trigger")?, p.opt_text("folder_path")?, p.opt_text("snippet_name")?) {
             (Some(trigger), None, None) => {
-                let s = site.depth.snippets.iter().find(|s| s.trigger.as_deref() == Some(trigger)).ok_or(No("no_such_snippet", bounded(trigger), None))?;
+                let s = library.iter().find(|s| s.trigger.as_deref() == Some(trigger)).ok_or(No("no_such_snippet", bounded(trigger), None))?;
                 // The word just before the cursor, alone (not the tail of a longer word).
                 let start = offset.checked_sub(trigger.len()).filter(|s| src.get(*s..offset) == Some(trigger)).ok_or(No("snippet_trigger_not_at_offset", bounded(trigger), None))?;
                 if src.get(..start).and_then(|b| b.chars().next_back()).is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-') {
@@ -3398,7 +3851,7 @@ impl WebHost {
                 }
                 (s, Some(start))
             }
-            (None, Some(folder_path), Some(name)) => (site.depth.snippets.iter().find(|s| s.folder_path == folder_path && s.snippet_name == name).ok_or(No("no_such_snippet", bounded(&format!("{folder_path}/{name}")), None))?, None),
+            (None, Some(folder_path), Some(name)) => (library.iter().find(|s| s.folder_path == folder_path && s.snippet_name == name).ok_or(No("no_such_snippet", bounded(&format!("{folder_path}/{name}")), None))?, None),
             _ => return no("parameter_invalid", "trigger or folder_path and snippet_name"),
         };
         let edits = match (snippet.snippet_kind, word, end) {
@@ -3424,6 +3877,8 @@ pub(super) struct SyncPlan {
     dependents: &'static str,
     files: Option<Vec<String>>,
     apply: bool,
+    /// The reviewed plan's digest, required to apply (lead ruling Q6).
+    plan_sha256: Option<String>,
 }
 
 /// A file's size and modification time (milliseconds since the epoch).
@@ -3432,16 +3887,25 @@ type Stat = (u64, u64);
 type SyncRow = (String, &'static str, Option<Stat>, Option<Stat>);
 
 /// A regular file's size and modification time (milliseconds since the epoch).
-fn file_stat(path: &Path) -> Option<(u64, u64)> {
+fn file_stat(path: &Path) -> Option<Stat> {
     let meta = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file)?;
     let ms = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))?;
     Some((meta.len(), ms))
 }
 
-/// The action for one file ([STU-WEB-119]), from size and modification time: `put`, `get`, `same`, `conflict` (the
-/// same time, another size), `local_newer` (a get leaves it), `remote_newer` (a put leaves it) or `none`.
-fn sync_action(direction: &str, local: Option<(u64, u64)>, remote: Option<(u64, u64)>) -> &'static str {
-    let newer = |a: (u64, u64), b: (u64, u64)| a.1 > b.1.saturating_add(SYNC_MTIME_TOLERANCE_MS);
+/// Whether two copies hold the same bytes (read whole, each at most the asset bound).
+fn same_bytes(a: &Path, b: &Path) -> bool {
+    match (read_bounded(a, super::MAX_ASSET_BYTES), read_bounded(b, super::MAX_ASSET_BYTES)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// The action for one file ([STU-WEB-119]), from size, modification time and, for copies of one size within the
+/// tolerance, content: `put`, `get`, `same`, `conflict` (the same time, other bytes), `local_newer` (a get leaves it),
+/// `remote_newer` (a put leaves it) or `none`. A newer copy is never the destination of an action.
+fn sync_action(direction: &str, local: Option<Stat>, remote: Option<Stat>, same: impl FnOnce() -> bool) -> &'static str {
+    let newer = |a: Stat, b: Stat| a.1 > b.1.saturating_add(SYNC_MTIME_TOLERANCE_MS);
     match (local, remote) {
         (None, None) => "none",
         (Some(_), None) => {
@@ -3472,12 +3936,12 @@ fn sync_action(direction: &str, local: Option<(u64, u64)>, remote: Option<(u64, 
                 "get"
             }
         }
-        (Some(l), Some(r)) if l.0 == r.0 => "same",
+        (Some(l), Some(r)) if l.0 == r.0 && same() => "same",
         _ => "conflict",
     }
 }
 
-fn stat_json(stat: Option<(u64, u64)>) -> Value {
+fn stat_json(stat: Option<Stat>) -> Value {
     stat.map_or(Value::Null, |(bytes, ms)| json!({"bytes": bytes, "modified_ms": ms}))
 }
 
@@ -3502,7 +3966,8 @@ impl WebHost {
         let direction = match p.text("direction")? {
             "put" => "put",
             "get" => "get",
-            "both" => "both",
+            // Lead ruling Q4: two-way synchronisation needs a sync baseline this lane does not keep.
+            "both" => return no("sync_two_way_unsupported", "both"),
             _ => return no("parameter_invalid", "direction"),
         };
         let dependents = match p.opt_text("dependents")? {
@@ -3516,11 +3981,13 @@ impl WebHost {
             Some(Value::Array(items)) if !items.is_empty() && items.len() <= MAX_EXPORT_FILES => Some(items.iter().map(|v| site_path(v.as_str().unwrap_or(""))).collect::<R<Vec<_>>>()?),
             Some(_) => return no("parameter_invalid", "files"),
         };
-        Ok(SyncPlan { target_id: target.target_id.clone(), root_path: target.root_path.clone(), direction, dependents, files, apply: p.flag("apply")? })
+        let apply = p.flag("apply")?;
+        let plan_sha256 = if apply { Some(p.text("plan_sha256")?.to_string()) } else { None };
+        Ok(SyncPlan { target_id: target.target_id.clone(), root_path: target.root_path.clone(), direction, dependents, files, apply, plan_sha256 })
     }
 
-    /// `web.synchronize` ([STU-WEB-119], module docs): the action list for review, or (`apply`) each action applied
-    /// as its own transaction with a per-file receipt.
+    /// `web.synchronize` ([STU-WEB-119], module docs): the action list for review with its digest, or (`apply` with
+    /// that digest) each action applied as its own transaction with a per-file receipt.
     fn synchronize(&mut self, plan: &SyncPlan, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
         let (site, root) = self.site_root()?;
         let remote = PathBuf::from(checked_path(&plan.root_path)?);
@@ -3528,7 +3995,8 @@ impl WebHost {
         if remote_at.starts_with(&root_at) || root_at.starts_with(&remote_at) {
             return no("target_inside_site", &plan.root_path);
         }
-        let _lock = site_lock(&site.local_root, ctx)?;
+        // A review is a read and takes no lock (lead ruling F10); applying takes the site lock before it reads.
+        let _lock = if plan.apply { Some(site_lock(&site.local_root, ctx)?) } else { None };
         let local = walk(&root, cancel)?.files;
         let far = if remote.is_dir() {
             walk(&remote, cancel)?.files
@@ -3537,18 +4005,25 @@ impl WebHost {
         } else {
             return no("target_root_missing", &plan.root_path);
         };
-        // The files to compare: the whole site and target, or the chosen files and (dependents) what they load.
+        // Review F1 (lead ruling): files are compared case-folded, as the target's file system folds names.
+        let mut sides: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
+        for id in local.files.iter().filter(|id| !reserved(id)) {
+            sides.entry(id.to_ascii_lowercase()).or_default().0.insert(id.clone());
+        }
+        for id in far.files.iter().filter(|id| !reserved(id)) {
+            sides.entry(id.to_ascii_lowercase()).or_default().1.insert(id.clone());
+        }
         let mut dependents: Vec<String> = Vec::new();
         let selected: BTreeSet<String> = match &plan.files {
-            None => local.files.iter().chain(&far.files).cloned().collect(),
+            None => sides.keys().cloned().collect(),
             Some(files) => {
+                let chosen: BTreeSet<String> = files.iter().map(|f| f.to_ascii_lowercase()).collect();
                 let set = SiteSet::load(&root, None, cancel)?;
-                let chosen: BTreeSet<String> = files.iter().cloned().collect();
                 let mut deps = BTreeSet::new();
-                for src in set.sources.iter().filter(|s| chosen.contains(&s.id)) {
+                for src in set.sources.iter().filter(|s| chosen.contains(&s.id.to_ascii_lowercase())) {
                     for e in &src.edges {
                         if let Reach::File(id) = &e.reach
-                            && !chosen.contains(id)
+                            && !chosen.contains(&id.to_ascii_lowercase())
                             && e.loads != Some(Loads::of(Load::Document))
                         {
                             deps.insert(id.clone());
@@ -3558,42 +4033,61 @@ impl WebHost {
                 dependents = deps.iter().cloned().collect();
                 let mut out = chosen;
                 if plan.dependents == "include" {
-                    out.extend(deps);
+                    out.extend(deps.iter().map(|d| d.to_ascii_lowercase()));
                 }
                 out
             }
         };
-        let mut rows: Vec<SyncRow> = Vec::new();
-        for id in selected.iter().filter(|id| !reserved(id)) {
-            cancel.check().map_err(|_| No("canceled", String::new(), None))?;
-            let segments = split_path(id);
-            let l = local.files.contains(id).then(|| file_stat(&join(&root, id))).flatten();
-            let r = far.files.contains(id).then(|| file_stat(&join(&remote, id))).flatten();
-            // Never through a link or junction on either side.
-            let action = if local.through_link(&segments) || far.through_link(&segments) { "denied_link" } else { sync_action(plan.direction, l, r) };
-            rows.push((id.clone(), action, l, r));
+        let conflicts: Vec<Value> = selected
+            .iter()
+            .filter_map(|k| sides.get(k))
+            .filter(|(l, r)| l.union(r).count() > 1)
+            .map(|(l, r)| json!({"local": l, "remote": r}))
+            .collect();
+        if !conflicts.is_empty() {
+            let first = conflicts.first().map(|c| c.to_string()).unwrap_or_default();
+            return Err(No("sync_case_conflict", bounded(&first), Some(json!({"pairs": conflicts.iter().take(MAX_ROWS).collect::<Vec<_>>()}))));
         }
+        let mut rows: Vec<SyncRow> = Vec::new();
+        for key in &selected {
+            cancel.check().map_err(|_| No("canceled", String::new(), None))?;
+            let (l_ids, r_ids) = sides.get(key).cloned().unwrap_or_default();
+            let Some(id) = l_ids.iter().chain(&r_ids).next().cloned().or_else(|| plan.files.as_ref().and_then(|f| f.iter().find(|f| f.to_ascii_lowercase() == *key).cloned())) else { continue };
+            let segments = split_path(&id);
+            let (lp, rp) = (join(&root, &id), join(&remote, &id));
+            let l = if l_ids.is_empty() { None } else { file_stat(&lp) };
+            let r = if r_ids.is_empty() { None } else { file_stat(&rp) };
+            // Never through a link or junction on either side.
+            let action = if local.through_link(&segments) || far.through_link(&segments) { "denied_link" } else { sync_action(plan.direction, l, r, || same_bytes(&lp, &rp)) };
+            rows.push((id, action, l, r));
+        }
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for (_, action, ..) in &rows {
             let n = counts.entry(*action).or_insert(0);
             *n = n.saturating_add(1);
         }
-        let listed: Vec<Value> = rows.iter().take(MAX_ROWS).map(|(id, action, l, r)| json!({"path": id, "action": action, "local": stat_json(*l), "remote": stat_json(*r)})).collect();
+        let all: Vec<Value> = rows.iter().map(|(id, action, l, r)| json!({"path": id, "action": action, "local": stat_json(*l), "remote": stat_json(*r)})).collect();
+        let digest = sha256_hex(&serde_json::to_vec(&json!({"target_id": plan.target_id, "direction": plan.direction, "dependents": plan.dependents, "files": plan.files, "rows": all})).unwrap_or_default());
         if !plan.apply {
             return Ok(json!({
                 "schema": "hsk.studio.web.sync_plan@1", "site_id": site.site_id, "target_id": plan.target_id, "direction": plan.direction, "applied": false,
-                "actions": listed, "truncated": rows.len().saturating_sub(MAX_ROWS), "counts": counts,
+                "plan_sha256": digest, "actions": all.iter().take(MAX_ROWS).collect::<Vec<_>>(), "truncated": all.len().saturating_sub(MAX_ROWS), "counts": counts,
                 "dependents": dependents, "dependents_option": plan.dependents,
             }));
         }
-        // A get never overwrites the open document's unsaved edits.
+        // Lead ruling Q6: only the reviewed plan is applied.
+        if plan.plan_sha256.as_deref() != Some(digest.as_str()) {
+            return Err(No("sync_plan_changed", String::new(), Some(json!({"expected": plan.plan_sha256, "actual": digest}))));
+        }
+        // Neither a put nor a get passes over the open document's unsaved edits (review F13).
         let open_id = self.open_view().and_then(|o| std::fs::canonicalize(&root).ok().and_then(|c| id_in(&c, o.path)));
         let dirty = self.doc.as_ref().is_some_and(|d| self.saved_sha256.as_deref() != Some(d.sha256_hex()));
         if let Some(id) = &open_id
             && dirty
-            && rows.iter().any(|(p, action, ..)| p == id && *action == "get")
+            && rows.iter().any(|(p, action, ..)| p == id && matches!(*action, "put" | "get"))
         {
-            return no("document_unsaved", "web.save first");
+            return Err(No("document_unsaved", bounded(id), Some(json!({"document": id, "remedy": "web.save"}))));
         }
         let mut files = Vec::new();
         let (mut transferred, mut failed, mut total) = (0usize, 0usize, 0u64);
@@ -3616,7 +4110,8 @@ impl WebHost {
             });
             match result {
                 Ok(bytes) => {
-                    // The source's time on the copy, so the next comparison reads them as the same.
+                    // The source's time on the copy (never older than what it replaced: a newer copy is never a
+                    // destination), so the next comparison reads them as the same.
                     let kept = modified.is_some_and(|t| std::fs::File::options().write(true).open(&dst).and_then(|f| f.set_modified(t)).is_ok());
                     transferred = transferred.saturating_add(1);
                     if *action == "get" && open_id.as_deref() == Some(id.as_str()) {
@@ -3637,7 +4132,7 @@ impl WebHost {
             self.reopen_written(&doc);
         }
         let receipt = json!({
-            "schema": "hsk.studio.web.sync_receipt@1", "site_id": site.site_id, "target_id": plan.target_id, "direction": plan.direction,
+            "schema": "hsk.studio.web.sync_receipt@1", "site_id": site.site_id, "target_id": plan.target_id, "direction": plan.direction, "plan_sha256": digest,
             "files": files, "transferred": transferred, "failed": failed, "complete": failed == 0, "counts": counts, "dependents": dependents,
         });
         if let Some(path) = first_failure {
@@ -3769,6 +4264,35 @@ mod tests {
         assert!(matches!(repeat_op(&t, &mut st, "r", "add", None, None), Err(No("repeat_entries_over_limit", ..))));
         assert!(repeat_op(&t, &mut st, "r", "remove", Some(0), None).is_ok());
         assert!(repeat_op(&t, &mut st, "r", "add", Some(0), None).is_ok());
+    }
+
+    /// Review F2: content with no slot is listed by kind; `move_to` puts orphaned editable content after the target's own
+    /// content (in place of its default when it had none); an orphaned parameter still refuses under `move_to`.
+    #[test]
+    fn orphans_are_listed_by_kind() {
+        let source = "<!DOCTYPE html><html><body><!-- TemplateBeginEditable name=\"a\" -->d<!-- TemplateEndEditable --></body></html>";
+        let doc = parse(source, 1, &Limits::default(), &CancellationToken::default()).unwrap();
+        let t = template_of(&doc, "t.dwt").ok().unwrap();
+        let mut st = State::default();
+        st.editable.insert("a".into(), "A".into());
+        st.editable.insert("b".into(), "B".into());
+        st.repeats.insert("r".into(), vec![BTreeMap::from([("x".to_string(), "X".to_string())])]);
+        let cancel = CancellationToken::default();
+        let g = generated(&t, source, "t.dwt", &st, "p.html", &cancel).ok().unwrap();
+        assert_eq!(g.orphans, [json!({"region": "b"}), json!({"repeat": "r", "entries": 1})]);
+        let moved = settled(&t, source, "t.dwt", &st, "p.html", &Orphans::MoveTo("a".into()), &cancel).ok().unwrap().ok().unwrap();
+        assert!(moved.text.contains("name=\"a\" -->ABX<!--"), "{}", moved.text);
+        st.params.insert("p".into(), "v".into());
+        let refused = settled(&t, source, "t.dwt", &st, "p.html", &Orphans::MoveTo("a".into()), &cancel).ok().unwrap();
+        assert_eq!(refused.err(), Some(vec![json!({"param": "p"})]));
+        assert!(settled(&t, source, "t.dwt", &st, "p.html", &Orphans::Discard, &cancel).ok().unwrap().is_ok());
+    }
+
+    /// The labels the locked-region guard exempts are the regenerating rows' display names.
+    #[test]
+    fn the_regenerating_rows_are_the_exempt_labels() {
+        let names: Vec<&str> = ["web.instance_param", "web.instance_repeat"].iter().map(|id| row(id).unwrap().display_name).collect();
+        assert_eq!(names, REGENERATING);
     }
 
     /// The one edit between two texts never splits a character.

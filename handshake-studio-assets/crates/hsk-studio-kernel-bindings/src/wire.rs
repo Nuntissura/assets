@@ -17,8 +17,10 @@ use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_session::Action;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-/// Wire generation. Any other value is refused before the rest of the message is interpreted.
-pub const BRIDGE_VERSION: u32 = 1;
+/// Wire generation. Any other value is refused before the rest of the message is interpreted. Generation 2 (lane
+/// SMB-WEB-SITE-2, lead ruling F10) adds the `read` action: a peer of generation 1 refuses a whole generation-2
+/// message as `wrong_version`, never misreads an action.
+pub const BRIDGE_VERSION: u32 = 2;
 pub const MAX_KEY_BYTES: usize = 128;
 pub const MAX_REVISION_UPDATES: usize = 4096;
 const MAX_CODE_BYTES: usize = 64;

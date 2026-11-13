@@ -20,7 +20,8 @@
 //! [STU-WEB-118]): `web.change_link` (change-link-site-wide), `web.template_regions`, `web.template_instance`,
 //! `web.instance_param`, `web.instance_repeat`, `web.template_update`, `web.library_item_insert`,
 //! `web.library_item_update`, `web.snippet`, `web.snippets`, `web.snippet_insert`, `web.synchronize`
-//! ([STU-WEB-119]) and the optional site-record fields of `web.site`. No spec command id is verified for these rows either; they follow the `web.*` naming. Their
+//! ([STU-WEB-119]) and the optional site-record fields of `web.site`. `web.snippet` keeps its single display name for
+//! add, replace and remove (its receipt says which: `before`, `after`); it is not a history step. No spec command id is verified for these rows either; they follow the `web.*` naming. Their
 //! parameters, outcomes and refusals: the module manual of `web_commands::web_site`.
 
 use super::super::ValueType;
@@ -38,6 +39,7 @@ const LINK_BASE: ParamSpec = p("site_relative_link_base", ValueType::Enumerated)
 const TEMPLATE: ParamSpec = p("template", ValueType::String);
 const ITEM: ParamSpec = p("item", ValueType::String);
 const TRIGGER: ParamSpec = p("trigger", ValueType::String).opt();
+const ORPHANS: ParamSpec = p("orphans", ValueType::String).opt();
 
 pub(super) const ROWS: &[CommandEntry] = &[
     entry("web.open", "web_command", "Open Web Document", false, false, &[PATH, p("source", ValueType::String).opt(), p("doctype", ValueType::Enumerated).opt()]),
@@ -101,9 +103,9 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("web.change_link", "web_command", "Change Link Sitewide", false, false, &[p("from", ValueType::String), p("to", ValueType::String)]),
     entry("web.template_regions", "web_command", "Template Regions", false, false, &[PATH]),
     entry("web.template_instance", "web_command", "New From Template", false, false, &[TEMPLATE, p("path", ValueType::String), p("params", ValueType::Class).opt()]),
-    entry("web.instance_param", "web_command", "Set Instance Parameter", false, true, &[NAME, p("value", ValueType::String)]),
-    entry("web.instance_repeat", "web_command", "Edit Repeating Region", false, true, &[p("region", ValueType::String), p("op", ValueType::Enumerated), INDEX, p("to", ValueType::Number).opt()]),
-    entry("web.template_update", "web_command", "Update Template Instances", false, false, &[TEMPLATE, p("resolve", ValueType::Class).opt()]),
+    entry("web.instance_param", "web_command", "Set Instance Parameter", false, true, &[NAME, p("value", ValueType::String), ORPHANS]),
+    entry("web.instance_repeat", "web_command", "Edit Repeating Region", false, true, &[p("region", ValueType::String), p("op", ValueType::Enumerated), INDEX, p("to", ValueType::Number).opt(), ORPHANS]),
+    entry("web.template_update", "web_command", "Update Template Instances", false, false, &[TEMPLATE, p("resolve", ValueType::Class).opt(), ORPHANS]),
     entry("web.library_item_insert", "web_command", "Insert Library Item", false, true, &[ITEM, PARENT, INDEX]),
     entry("web.library_item_update", "web_command", "Update Library Item", false, false, &[ITEM]),
     entry(
@@ -139,6 +141,13 @@ pub(super) const ROWS: &[CommandEntry] = &[
         "Synchronize",
         false,
         false,
-        &[TARGET_ID.opt(), p("direction", ValueType::Enumerated), p("files", ValueType::List).opt(), p("dependents", ValueType::Enumerated).opt(), p("apply", ValueType::Boolean).opt()],
+        &[
+            TARGET_ID.opt(),
+            p("direction", ValueType::Enumerated),
+            p("files", ValueType::List).opt(),
+            p("dependents", ValueType::Enumerated).opt(),
+            p("apply", ValueType::Boolean).opt(),
+            p("plan_sha256", ValueType::String).opt(),
+        ],
     ),
 ];

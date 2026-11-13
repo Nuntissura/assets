@@ -77,6 +77,21 @@ pub struct DiagnosticRecord {
 
 type GrantKey = (String, String, String, ActionWire);
 
+/// Whether a standing grant covers `key` (lane SMB-WEB-SITE-2, lead ruling F10): its own action, or, for `read`, a
+/// standing `edit` grant (edit implies read; read implies nothing; export does not imply read). `Err(true)` when the
+/// grant that would cover it was revoked (test `edit_implies_read_at_the_host`).
+fn held(state: &State, key: &GrantKey) -> Result<(), bool> {
+    if state.grants.contains(key) {
+        return Ok(());
+    }
+    let edit = (key.0.clone(), key.1.clone(), key.2.clone(), ActionWire::Edit);
+    let implied = key.3 == ActionWire::Read;
+    if implied && state.grants.contains(&edit) {
+        return Ok(());
+    }
+    Err(state.revoked.contains(key) || (implied && state.revoked.contains(&edit)))
+}
+
 struct ResourceState {
     revision: u64,
     epoch: u64,
@@ -265,8 +280,8 @@ impl TransientHost {
             envelope.resource_id.clone(),
             action,
         );
-        if !state.grants.contains(&key) {
-            let reason = if state.revoked.contains(&key) {
+        if let Err(revoked) = held(state, &key) {
+            let reason = if revoked {
                 DenyReason::Revoked
             } else {
                 DenyReason::Missing
@@ -318,8 +333,8 @@ impl TransientHost {
             envelope.resource_id.clone(),
             action,
         );
-        if !state.grants.contains(&key) {
-            let code = if state.revoked.contains(&key) {
+        if let Err(revoked) = held(state, &key) {
+            let code = if revoked {
                 JobDenyCode::GrantRevoked
             } else {
                 JobDenyCode::GrantMissing
