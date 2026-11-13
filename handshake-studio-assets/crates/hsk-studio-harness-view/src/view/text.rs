@@ -716,7 +716,7 @@ impl super::Viewer {
         let (parent, place) = self.insertion_point()?;
         let snap = self.run.snapshot().ok_or("nothing open")?;
         let doc = snap.document();
-        let id = super::layers::mint_or_refuse(doc, u64::try_from(doc.layers.len()).unwrap_or(0))?;
+        let id = super::layers::mint_layer_id(doc, u64::try_from(doc.layers.len()).unwrap_or(0));
         let uuid = id.get(5..).ok_or("text_layer_id")?;
         let story_id = format!("STXT-{uuid}");
         let paragraph_style = format!("STYS-{uuid}");

@@ -122,6 +122,14 @@ fn mint_revision(doc: &StudioDocument) -> u64 {
     }
 }
 
+/// [`try_mint_layer_id`] for the callers that take an id unconditionally (text, vector, design). When the space
+/// is exhausted it returns `layer_id_space_exhausted-<salt>`, which is not an `SLYR` id, so the commit that would
+/// create the layer refuses (Folio `InvalidId` naming it): never a wrapped or truncated id, and distinct per
+/// `salt`, so a caller looping past ids it already took ends. This module's own creators refuse typed first.
+pub(super) fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
+    try_mint_layer_id(doc, salt).unwrap_or_else(|code| format!("{code}-{salt}"))
+}
+
 /// [`try_mint_layer_id`] as the refusal text every layer creator returns before it writes anything
 /// (`layer_id_space_exhausted: ...`; review F3, lead 2026-11-13: layers, text, vector and design creators alike,
 /// no sentinel id).
