@@ -888,3 +888,19 @@ impl ApplicationHandler for App {
 fn millis(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review fc7f4215 F5: a Watch dropped without `finish` (an unwind out of the run, a `run_app` error) stops and
+    /// joins its foreground-watcher thread instead of leaving it sampling for the rest of the process.
+    #[test]
+    fn a_dropped_watch_stops_and_joins_its_thread() {
+        let watch = Watch::spawn().expect("watcher thread");
+        let stop = Arc::clone(&watch.stop);
+        drop(watch);
+        assert!(stop.load(Ordering::Acquire), "the drop stops the watcher");
+        assert_eq!(Arc::strong_count(&stop), 1, "the watcher thread ended and released its flag");
+    }
+}

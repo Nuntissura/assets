@@ -188,10 +188,23 @@ fn observe_line_of_a_short_or_foreign_frame_names_no_header() {
     }
 }
 
-// studio-vk as a child process: every command line below is refused before any device or window opens.
+// studio-vk as a child process: every command line below is refused before any device or window opens, except
+// `studio_vk_with_a_closed_stderr_still_prints_the_receipt_of_a_good_run` (offscreen: a device, no window).
+
+/// studio-vk with no console window of its own (CREATE_NO_WINDOW, as the workspace's other process tests spawn).
+fn studio_vk_command() -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new(env!("CARGO_BIN_EXE_studio-vk"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
 
 fn studio_vk(args: &[&str]) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_studio-vk")).args(args).output().expect("studio-vk runs");
+    let out = studio_vk_command().args(args).output().expect("studio-vk runs");
     (out.status.code().expect("exit code"), String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
@@ -320,4 +333,116 @@ fn the_default_caller_is_the_viewers_asset_local_context() {
     use hsk_studio_harness_view::view::render::Prefer;
     let viewer = Viewer::new(Prefer::Cpu);
     assert_eq!(&Caller::asset_local().actor, viewer.run().actor());
+}
+
+// Review fc7f4215 (lead rulings 2026-11-13): F1 non-Unicode arguments, F2 a closed stderr, F3 a reused HostRun, a
+// fresh correlation per run, and an --observe file that does not open.
+
+#[test]
+fn a_finished_host_run_refuses_the_next_run_before_any_work() {
+    let (actor, resource) = test_caller();
+    let cancel = CancellationToken::default();
+    let mut sink = Collect::default();
+    let mut host = HostRun::new(actor, resource, CORRELATION, &cancel, &mut sink).unwrap();
+    let first = window::run(&quiet_window(Scene::Clear(DEFAULT_CLEAR), 0), &mut host);
+    assert_eq!(first.err(), Some(HostError::Usage("quiet_needs_frames")));
+    let first_terminal = host.terminal();
+    // Run work would refuse the zero extent as a Vulkan refusal; the typed reuse refusal comes before it.
+    assert_eq!(offscreen::run(&clear_args(0, 48), &mut host).err(), Some(HostError::Usage("host_run_reused")));
+    assert_eq!(window::run(&quiet_window(Scene::Clear(DEFAULT_CLEAR), 0), &mut host).err(), Some(HostError::Usage("host_run_reused")));
+    assert_eq!(host.terminal(), first_terminal);
+    drop(host);
+    assert_eq!(sink.0.len(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn studio_vk_non_unicode_argument_is_usage_and_still_sends_one_frame() {
+    use std::os::windows::ffi::OsStringExt;
+    let dir = scratch("encoding");
+    let observe = dir.join("observe.jsonl");
+    // A lone UTF-16 surrogate: a legal NTFS name, not Unicode.
+    let lone = std::ffi::OsString::from_wide(&[0xD800]);
+    let out = studio_vk_command()
+        .args(["offscreen", "--actor", ACTOR, "--session", SESSION, "--resource", RESOURCE, "--document"])
+        .arg(&lone)
+        .arg("--observe")
+        .arg(&observe)
+        .output()
+        .expect("studio-vk runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("error usage/argument_encoding"), "{stderr}");
+    let lines = observe_lines(&observe);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    // On the default context: an argument list that is not Unicode names no caller it can be trusted for.
+    assert_refusal_line(&lines[0], true, &[ASSET_LOCAL_RESOURCE]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// stderr is a pipe whose reader is already gone: every write to it fails.
+fn closed_stderr(command: &mut Command) {
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    drop(reader);
+    command.stderr(writer);
+}
+
+#[test]
+fn studio_vk_with_a_closed_stderr_keeps_the_refusal_exit_code() {
+    let mut command = studio_vk_command();
+    command.args(["window", "--quiet"]);
+    closed_stderr(&mut command);
+    let out = command.output().expect("studio-vk runs");
+    assert_eq!(out.status.code(), Some(2), "a closed stderr changes no exit code");
+}
+
+#[test]
+fn studio_vk_with_a_closed_stderr_still_prints_the_receipt_of_a_good_run() {
+    // Offscreen clear in the child: the Vulkan owner, no window, under this test binary's GPU test lock. Without
+    // --observe the frame goes to the closed stderr and is not delivered; the run and its receipt stand.
+    let mut command = studio_vk_command();
+    command.args(["offscreen", "--size", "8x8"]);
+    closed_stderr(&mut command);
+    let out = command.output().expect("studio-vk runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    let receipt = stdout.lines().find(|l| l.contains("\"schema\":\"hsk.studio.native_host.receipt@1\"")).unwrap_or_else(|| panic!("receipt: {stdout}"));
+    assert!(receipt.contains("\"exact\":true"), "{receipt}");
+    if receipt.contains("\"validation\":\"on\"") {
+        assert!(receipt.contains("\"errors\":0,\"warnings\":0"), "validation counts of the child: {receipt}");
+    } else {
+        println!("NOT_PROVEN: validation layer in the studio-vk child (state not on)");
+    }
+}
+
+#[test]
+fn studio_vk_mints_a_fresh_correlation_per_run() {
+    let dir = scratch("correlation");
+    let mut seen = Vec::new();
+    for i in 0..2 {
+        let observe = dir.join(format!("observe-{i}.jsonl"));
+        let (code, stderr) = studio_vk(&["window", "--quiet", "--observe", observe.to_str().unwrap()]);
+        assert_eq!(code, 2, "{stderr}");
+        let lines = observe_lines(&observe);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        seen.push(field(&lines[0], "correlation").to_owned());
+    }
+    assert_ne!(seen[0], seen[1], "two runs, two correlations: {seen:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn studio_vk_observe_file_that_does_not_open_goes_to_stderr_with_a_note() {
+    // A directory does not open as a file.
+    let dir = scratch("unopenable");
+    let (code, stderr) = studio_vk(&["window", "--quiet", "--observe", dir.to_str().unwrap()]);
+    assert_eq!(code, 2, "the exit code stays the run's: {stderr}");
+    let lines: Vec<&str> = stderr.lines().filter(|l| l.contains(OBSERVE_LINE_SCHEMA)).collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert_refusal_line(lines[0], true, &[ASSET_LOCAL_RESOURCE]);
+    let notes: Vec<&str> = stderr.lines().filter_map(|l| l.strip_prefix("observe_unavailable ")).collect();
+    assert_eq!(notes.len(), 1, "{stderr}");
+    assert!(!notes[0].is_empty() && notes[0].bytes().all(|b| b.is_ascii_lowercase() || b == b'_'), "a code: {stderr}");
+    assert!(!stderr.contains("observe_undelivered"), "the frame was delivered to stderr: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
