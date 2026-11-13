@@ -609,9 +609,9 @@ impl LayoutEditor {
             }
         }
         if pairs && self.facing() {
-            let doomed: BTreeSet<&str> = pages.iter().map(String::as_str).collect();
-            let whole = |p: &str| self.doc.document.locate_page(p).is_some_and(|l| l.spread.pages.iter().all(|q| doomed.contains(q.page_id.as_str())));
-            pages = pages.iter().filter(|p| whole(p.as_str())).cloned().collect();
+            let doomed: BTreeSet<String> = pages.iter().cloned().collect();
+            let document = &self.doc.document;
+            pages.retain(|p| document.locate_page(p).is_some_and(|l| l.spread.pages.iter().all(|q| doomed.contains(&q.page_id))));
         }
         for page in pages {
             checked(cancel)?;
