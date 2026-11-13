@@ -16,6 +16,7 @@ mod decode;
 mod design;
 mod export;
 mod layout;
+mod layout_flow;
 mod mixer;
 mod monitor;
 mod panel;
@@ -159,6 +160,8 @@ impl Viewer {
             // Lane SMB-DS-COMPONENTS-AUTHOR-1: component, variant set, property and instance authoring.
             "component" | "component_set" | "instance" => return component::run(self, id, f, before),
             "layout" => return layout::run(self, id, f),
+            // Lane SMB-LAYOUT-DELETE-CASCADE-1: autoflow and smart text reflow.
+            "layout_flow" => return layout_flow::run(self, id, f),
             "panel" => return panel::run(self, id, f),
             "vector" => vector::run_vector(self, id, f)?,
             "proof" => vector::run_proof(self, id, f)?,

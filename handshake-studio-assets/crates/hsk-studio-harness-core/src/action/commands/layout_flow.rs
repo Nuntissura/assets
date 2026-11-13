@@ -3,8 +3,12 @@
 //! `view/commands/layout_flow.rs`), and the `Run` commit of a layer delete that layout records follow
 //! (`Run::delete_layout_layers`, driven as `layer.delete_layer`).
 
-use super::{CommandEntry, entry};
+use super::{CommandEntry, entry, flag as b, one_of as o, text as t, typed};
+
+const FLOW_MODES: &str = "flow.manual|flow.semi_auto|flow.auto|flow.fixed_page_auto";
 
 pub(super) const ROWS: &[CommandEntry] = &[
+    typed("layout_flow.autoflow", "Viewer::layout_autoflow", "Autoflow text", true, &[t("frame"), o("mode", FLOW_MODES), t("page").opt()]),
+    typed("layout_flow.smart_reflow", "Viewer::layout_smart_reflow", "Smart text reflow", true, &[t("frame"), b("delete_empty_pages"), b("preserve_facing_page_spreads")]),
     entry("layer.delete_layout_layers", "delete_layout_layers", "Delete layout layers", false, true, &[]),
 ];
