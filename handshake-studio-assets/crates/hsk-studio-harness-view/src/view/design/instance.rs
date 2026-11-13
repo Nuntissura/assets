@@ -22,9 +22,7 @@
 //! by layer name and hierarchy, dropped ones reported), component property values (STU-DS-009:
 //! boolean and text), override set (`characters`, `visible`, `opacity`; the fields the redraw
 //! applies), per-override reset and reset-all (STU-DS-017). The redraw replaces the instance
-//! layer's children (a native redraw of the same member keeps the ids of the copies of the same
-//! definition nodes and updates them in place, lead ruling 2026-11-13 stable identity, [`Redraw::instance`])
-//! with a copy of the resolved member's definition layers, translated by the
+//! layer's children with a copy of the resolved member's definition layers, translated by the
 //! instance origin minus the definition origin (both from the receipt; a rotated or scaled
 //! instance or definition is refused), with the overrides applied: new path records (vector entry,
 //! same paint style), new stories (text entry, `characters` replaced). Clips, masks and effects of
@@ -418,8 +416,6 @@ pub(super) struct Redraw<'d> {
     minted: BTreeSet<String>,
     salt: u64,
     counter: u64,
-    /// Kept copies whose node entry the redraw rewrites ([`Self::finish`] drops their old entry).
-    replaced_nodes: BTreeSet<String>,
 }
 
 impl<'d> Redraw<'d> {
@@ -448,7 +444,6 @@ impl<'d> Redraw<'d> {
             minted: BTreeSet::new(),
             salt: u64::try_from(doc.layers.len()).unwrap_or(0),
             counter,
-            replaced_nodes: BTreeSet::new(),
         })
     }
 
@@ -481,34 +476,20 @@ impl<'d> Redraw<'d> {
         }
     }
 
-    /// Redraws the children of `group` as a copy of the definition under `root` translated by `d`, with
-    /// `drawn` applied.
-    ///
-    /// Stable identity (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, lead ruling 2026-11-13, option A): with `keep` (a
-    /// native redraw that draws the same member as before, such as a sync) a current copy that is the same
-    /// definition node keeps its layer id and is updated in place ([`Self::matched_copies`]: same parent node,
-    /// kind and name, its layer fields as the redraw would draw them, its path or story records present); its
-    /// paths and story are rewritten under their own ids, so the layer record itself does not change and no
-    /// write names it unless the stack order must change (a move). A definition node new in this redraw gets a
-    /// fresh id (`layers::mint_or_refuse`); a copy whose node is gone, or that cannot be updated in place, is
-    /// deleted and its id retired (never minted again). Records keyed to a kept copy (its node entry's explicit
-    /// variable modes, a live filter stack the definition does not author, raster-records rows) survive the
-    /// redraw; a definition's live filter stack replaces the copy's (F8). Without `keep` (a swap to another
-    /// member, a design file instance) every copy is new, as before.
+    /// Replaces the children of `group` with a copy of the definition under `root` translated by
+    /// `d`, with `drawn` applied.
     #[allow(clippy::too_many_lines)]
-    pub(super) fn instance(&mut self, group: &str, root: &str, drawn: &Drawn, d: [f64; 2], keep: bool) -> Result<(), String> {
+    pub(super) fn instance(&mut self, group: &str, root: &str, drawn: &Drawn, d: [f64; 2]) -> Result<(), String> {
         let doc = self.doc;
         let defs = definition_layers(doc, root)?;
+        let over = |node: &str, field: &str| drawn.get(&(node.to_owned(), field.to_owned()));
         if defs.iter().any(|(l, _)| self.attachments.contains(&l.layer_id)) {
             self.notes.push("definition_clips_and_masks_not_copied".into());
         }
         if defs.iter().any(|(l, _)| self.effects.contains(&l.layer_id)) {
             self.notes.push("definition_effects_not_copied".into());
         }
-        let old = definition_layers(doc, group).unwrap_or_default();
-        let kept = if keep { self.matched_copies(&defs, root, group, &old, drawn) } else { BTreeMap::new() };
-        let kept_ids: BTreeSet<String> = kept.values().cloned().collect();
-        // Deletes: the group's current stacked children the redraw does not keep, deepest first.
+        // Deletes: the group's current stacked children, deepest first.
         fn post_order(doc: &StudioDocument, id: &str, out: &mut Vec<String>) {
             if doc.layers.iter().any(|l| l.layer_id == id && matches!(l.payload, Payload::Group)) {
                 for c in stack(doc, Some(id)).iter().rev() {
@@ -520,20 +501,18 @@ impl<'d> Redraw<'d> {
         for c in stack(doc, Some(group)).iter().rev() {
             let mut order = Vec::new();
             post_order(doc, c, &mut order);
-            self.writes.extend(order.into_iter().filter(|id| !kept_ids.contains(id)).map(|id| PlacementWrite { layer_id: id, to: None, create: None }));
+            self.writes.extend(order.into_iter().map(|id| PlacementWrite { layer_id: id, to: None, create: None }));
         }
         // Review F6 (lane SMB-DS-VARIABLES-AUTHOR-1): explicit variable modes set on a copy this redraw
         // deletes move to the copy of the same definition layer that replaces it (matched by position when
         // the copy and the definition have the same layers, else by kind and name); one that matches
-        // nothing is a named loss. A kept copy keeps its own modes.
+        // nothing is a named loss.
+        let old = definition_layers(doc, group).unwrap_or_default();
         let mut carried: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut matched: BTreeSet<usize> = BTreeSet::new();
         for (i, (o, _)) in old.iter().enumerate() {
-            if kept_ids.contains(&o.layer_id) {
-                continue;
-            }
             let Some(modes) = self.design.node_design(&o.layer_id).map(|n| n.explicit_variable_modes.clone()).filter(|m| !m.is_empty()) else { continue };
-            let same = |j: usize| defs.get(j).is_some_and(|(dl, _)| dl.kind == o.kind && dl.name == o.name && !kept.contains_key(&dl.layer_id)) && !matched.contains(&j);
+            let same = |j: usize| defs.get(j).is_some_and(|(dl, _)| dl.kind == o.kind && dl.name == o.name) && !matched.contains(&j);
             let at = if old.len() == defs.len() && same(i) { Some(i) } else { (0..defs.len()).find(|j| same(*j)) };
             match at.and_then(|j| defs.get(j).map(|(dl, _)| (j, dl.layer_id.clone()))) {
                 Some((j, def)) => {
@@ -543,33 +522,58 @@ impl<'d> Redraw<'d> {
                 None => self.notes.push("explicit_modes_not_carried".into()),
             }
         }
-        // Creates and in-place updates in definition order (bottom first, each to the top of its parent).
+        // Creates: each definition layer copied (bottom first, each to the top of its new parent).
         let mut new_id: BTreeMap<String, String> = BTreeMap::new();
-        let mut placed: Vec<(String, String, Option<(StudioLayer, folio::Operation)>)> = Vec::new();
         for (l, parent) in &defs {
-            let target = if parent == root { group.to_owned() } else { new_id.get(parent).cloned().ok_or("design: definition parent order")? };
-            if let Some(cid) = kept.get(&l.layer_id) {
-                new_id.insert(l.layer_id.clone(), cid.clone());
-                self.update_copy(l, cid, drawn, d)?;
-                placed.push((cid.clone(), target, None));
-                continue;
-            }
             let id = self.mint()?;
             new_id.insert(l.layer_id.clone(), id.clone());
-            let mut copy = drawn_copy(l, drawn);
+            let target = if parent == root { group.to_owned() } else { new_id.get(parent).cloned().ok_or("design: definition parent order")? };
+            let mut copy = (*l).clone();
             copy.layer_id.clone_from(&id);
             copy.parent = Parent::Node(NodeRef { node_kind: NodeKind::Layer, node_id: target.clone() });
+            if let Some(StudioValue::Boolean { value }) = over(&l.layer_id, "visible") {
+                copy.visible = *value;
+            }
+            if let Some(StudioValue::Float { value }) = over(&l.layer_id, "opacity") {
+                let group_kind = matches!(copy.payload, Payload::Group);
+                let mut a = copy.appearance.clone().unwrap_or_else(|| folio::LayerAppearance::identity(group_kind));
+                a.opacity = (value * 100.0).clamp(0.0, 100.0);
+                copy.appearance = Some(a);
+            }
             match &l.payload {
                 Payload::Group => {
                     if let Some(modes) = carried.remove(&l.layer_id) {
-                        self.new_nodes.push(modes_node(&id, modes));
+                        self.new_nodes.push(StudioNodeDesign {
+                            node: NodeRef { node_kind: NodeKind::Layer, node_id: id.clone() },
+                            auto_layout: None,
+                            child_layout: None,
+                            size_clamps: None,
+                            constraints: None,
+                            reactions: Vec::new(),
+                            component_property_references: BTreeMap::new(),
+                            explicit_variable_modes: modes,
+                            style_refs: BTreeMap::new(),
+                        });
                     }
                 }
                 Payload::Vector { path_ids } => {
                     let mut ids = Vec::with_capacity(path_ids.len());
                     for pid in path_ids {
-                        let Some(rec) = self.ventry.path(pid).cloned() else { continue };
-                        let mut moved = self.moved_path(l, rec, d)?;
+                        let Some(rec) = self.ventry.path(pid) else { continue };
+                        let mut moved = rec.clone();
+                        for c in &mut moved.path.contours {
+                            for a in &mut c.anchors {
+                                a.position = PathPoint::new(a.position.x + d[0], a.position.y + d[1]);
+                            }
+                        }
+                        if moved.path.validate().is_err() {
+                            return Err(format!("design: instance_coordinate_out_of_range (the copy of {} passes the path coordinate limit)", l.layer_id));
+                        }
+                        if moved.network.is_some() || moved.width.is_some() {
+                            self.notes.push("network_or_width_profile_not_copied".into());
+                            moved.network = None;
+                            moved.width = None;
+                        }
                         let taken: BTreeSet<String> = self.used_paths.iter().cloned().chain(self.new_paths.iter().map(|p: &PathRecord| p.path_id.clone())).collect();
                         moved.path_id = self.fresh("SVPT", &taken);
                         ids.push(moved.path_id.clone());
@@ -578,219 +582,55 @@ impl<'d> Redraw<'d> {
                     copy.payload = Payload::Vector { path_ids: ids };
                     // F8: the copy carries the definition layer's live filter stack, its free distort
                     // corners moved with the copy; a stack that cannot be carried is a named loss.
-                    self.carry_live_filters(&l.layer_id, &id, d);
-                    if let Some(n) = self.copied_node(&l.layer_id, &id, None)
-                        && !carries_nothing(&n)
-                    {
-                        self.new_nodes.push(n);
+                    if let Some(stack) = self.ventry.records.live_filter_stack(&l.layer_id).cloned() {
+                        let mut moved = folio::StudioVectorRecords::new(doc.document_id.clone());
+                        moved.live_filters.push(folio::StudioLiveFilterStack { layer_id: id.clone(), filters: stack.filters });
+                        let room = self.ventry.records.live_filters.len() < folio::TOOLS_MAX_ENTRIES.max(vector::MAX_PATHS);
+                        match transform_live_filters(&mut moved, &id, &[1.0, 0.0, 0.0, 1.0, d[0], d[1]], "design") {
+                            Ok(()) if room => self.ventry.records.live_filters.extend(moved.live_filters),
+                            _ => self.notes.push("definition_live_filters_not_copied".into()),
+                        }
+                    }
+                    if let Some(n) = self.design.nodes.iter().find(|n| n.node.node_id == l.layer_id) {
+                        let mut n = n.clone();
+                        n.node.node_id.clone_from(&id);
+                        // A copy is not inside a definition: its property references stay with the definition.
+                        n.component_property_references.clear();
+                        if !carries_nothing(&n) {
+                            self.new_nodes.push(n);
+                        }
                     }
                 }
                 Payload::Text { story_id } => {
-                    let (story, record) = self.copied_text(l, story_id, None, &id, drawn, d)?;
-                    let sid = story.story_id.clone();
+                    let rec = self.tentry.layers.iter().find(|r| r.layer_id == l.layer_id).cloned().ok_or_else(|| format!("design: text layer {} has no text record", l.layer_id))?;
+                    let mut story = self.tentry.stories.iter().find(|s| &s.story_id == story_id).cloned().ok_or("design: story missing")?;
+                    let taken: BTreeSet<String> = self.used_stories.iter().cloned().chain(self.tentry.stories.iter().map(|s| s.story_id.clone())).collect();
+                    let sid = self.fresh("STXT", &taken);
+                    story.story_id.clone_from(&sid);
+                    if let Some(StudioValue::String { value }) = over(&l.layer_id, "characters") {
+                        let len = u64::try_from(value.len()).unwrap_or(u64::MAX);
+                        story.content = folio::StoryContent::Inline { text_utf8: value.clone() };
+                        let lang = story.character_ranges.first().and_then(|r| r.applied_language.clone());
+                        story.paragraphs = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.paragraph_style, "paragraph_direction": null})).map_err(|e| format!("design: {e}"))?];
+                        story.character_ranges = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.character_style, "applied_language": lang})).map_err(|e| format!("design: {e}"))?];
+                    }
+                    let origin = [rec.origin_px[0] + d[0], rec.origin_px[1] + d[1]];
+                    if !origin.iter().all(|v| v.is_finite() && v.abs() <= hsk_studio_nib::COORDINATE_LIMIT) {
+                        return Err(format!("design: instance_coordinate_out_of_range (the copy of {} passes the coordinate limit)", l.layer_id));
+                    }
                     self.tentry.stories.push(story);
-                    self.tentry.layers.push(record);
+                    self.tentry.layers.push(TextLayerRecord { layer_id: id.clone(), story_id: sid.clone(), origin_px: origin, ..rec });
                     copy.payload = Payload::Text { story_id: sid };
                 }
                 _ => return Err(format!("design: definition layer {} ({}) is not redrawn here", l.layer_id, l.kind)),
             }
             let op = operation_for(&id, matches!(copy.payload, Payload::Group))?;
-            placed.push((id, target, Some((copy, op))));
+            self.writes.push(PlacementWrite { layer_id: id, to: Some(Place::Inside(target)), create: Some((copy, op)) });
         }
         if !carried.is_empty() {
             self.notes.push("explicit_modes_not_carried".into());
         }
-        // A kept copy moves only when its parent's stack order must change: the kept copies out of their
-        // definition order, or a new copy below a kept one (new copies go to the top of their parent).
-        let restack: BTreeSet<String> = placed
-            .iter()
-            .map(|(_, t, _)| t.clone())
-            .collect::<BTreeSet<String>>()
-            .into_iter()
-            .filter(|t| {
-                let wanted: Vec<(&str, bool)> = placed.iter().filter(|(_, pt, _)| pt == t).map(|(id, _, c)| (id.as_str(), c.is_none())).collect();
-                let kept_order: Vec<&str> = wanted.iter().filter(|(_, k)| *k).map(|(id, _)| *id).collect();
-                let current: Vec<String> = stack(doc, Some(t.as_str())).into_iter().filter(|id| kept_order.contains(&id.as_str())).collect();
-                let first_new = wanted.iter().position(|(_, k)| !*k).unwrap_or(wanted.len());
-                let kept_after_new = wanted.iter().skip(first_new).any(|(_, k)| *k);
-                kept_after_new || current.iter().map(String::as_str).ne(kept_order.iter().copied())
-            })
-            .collect();
-        for (id, target, create) in placed {
-            match create {
-                Some(c) => self.writes.push(PlacementWrite { layer_id: id, to: Some(Place::Inside(target)), create: Some(c) }),
-                None if restack.contains(&target) => self.writes.push(PlacementWrite { layer_id: id, to: Some(Place::Inside(target)), create: None }),
-                None => {}
-            }
-        }
         Ok(())
-    }
-
-    /// The copies of `group` (`old`, in definition-layer order) that are the same definition nodes as `defs`
-    /// and can be updated in place: definition layer id -> copy id (lead ruling 2026-11-13, option A). A copy
-    /// matches a definition node with the same parent node (the group for a top-level node, else the kept copy
-    /// of the node's parent), kind and name, taken in order; it is kept when its layer record is the one the
-    /// redraw would draw (overrides applied; only its id, parent and payload ids differ) and its path or story
-    /// records are present in the same number. A node whose parent is not kept has no kept copy.
-    fn matched_copies(&self, defs: &[(&StudioLayer, String)], root: &str, group: &str, old: &[(&StudioLayer, String)], drawn: &Drawn) -> BTreeMap<String, String> {
-        let mut kept: BTreeMap<String, String> = BTreeMap::new();
-        let mut used: BTreeSet<String> = BTreeSet::new();
-        for (l, parent) in defs {
-            let want = if parent == root { Some(group.to_owned()) } else { kept.get(parent).cloned() };
-            let Some(want) = want else { continue };
-            let pick = old.iter().find(|(o, op)| !used.contains(&o.layer_id) && *op == want && o.kind == l.kind && o.name == l.name);
-            if let Some((o, _)) = pick
-                && self.in_place(l, o, drawn)
-            {
-                used.insert(o.layer_id.clone());
-                kept.insert(l.layer_id.clone(), o.layer_id.clone());
-            }
-        }
-        kept
-    }
-
-    /// True when copy `o` of definition layer `l` can be updated in place ([`Self::matched_copies`]).
-    fn in_place(&self, l: &StudioLayer, o: &StudioLayer, drawn: &Drawn) -> bool {
-        let mut expect = drawn_copy(l, drawn);
-        expect.layer_id.clone_from(&o.layer_id);
-        expect.parent = o.parent.clone();
-        expect.payload = o.payload.clone();
-        if expect != *o {
-            return false;
-        }
-        match (&l.payload, &o.payload) {
-            (Payload::Group, Payload::Group) => true,
-            (Payload::Vector { path_ids }, Payload::Vector { path_ids: own }) => {
-                path_ids.iter().filter(|p| self.ventry.path(p).is_some()).count() == own.len() && own.iter().all(|p| self.ventry.path(p).is_some())
-            }
-            (Payload::Text { story_id }, Payload::Text { story_id: own }) => {
-                [story_id, own].iter().all(|s| self.tentry.stories.iter().any(|x| &x.story_id == *s))
-                    && [&l.layer_id, &o.layer_id].iter().all(|id| self.tentry.layers.iter().any(|r| &r.layer_id == *id))
-            }
-            _ => false,
-        }
-    }
-
-    /// Rewrites the records of the kept copy `cid` of definition layer `l` under the copy's own path and story
-    /// ids (stable identity): the translated paths, the definition's live filter stack, the node entry (the
-    /// copy's explicit variable modes kept), the story and the text record.
-    fn update_copy(&mut self, l: &StudioLayer, cid: &str, drawn: &Drawn, d: [f64; 2]) -> Result<(), String> {
-        let doc = self.doc;
-        let copy = doc.layers.iter().find(|x| x.layer_id == cid).ok_or_else(|| format!("design: copy {cid} missing"))?;
-        match (&l.payload, &copy.payload) {
-            (Payload::Group, Payload::Group) => {}
-            (Payload::Vector { path_ids }, Payload::Vector { path_ids: own }) => {
-                let recs: Vec<PathRecord> = path_ids.iter().filter_map(|p| self.ventry.path(p).cloned()).collect();
-                for (rec, pid) in recs.into_iter().zip(own.clone()) {
-                    let mut moved = self.moved_path(l, rec, d)?;
-                    moved.path_id.clone_from(&pid);
-                    if let Some(slot) = self.ventry.paths.iter_mut().find(|p| p.path_id == pid) {
-                        *slot = moved;
-                    }
-                }
-                self.carry_live_filters(&l.layer_id, cid, d);
-                let modes = self.design.node_design(cid).map(|n| n.explicit_variable_modes.clone()).filter(|m| !m.is_empty());
-                self.replaced_nodes.insert(cid.to_owned());
-                match self.copied_node(&l.layer_id, cid, modes.clone()) {
-                    Some(n) if !carries_nothing(&n) => self.new_nodes.push(n),
-                    Some(_) => {}
-                    None => {
-                        if let Some(m) = modes {
-                            self.new_nodes.push(modes_node(cid, m));
-                        }
-                    }
-                }
-            }
-            (Payload::Text { story_id }, Payload::Text { story_id: own }) => {
-                let own = own.clone();
-                let (story, record) = self.copied_text(l, story_id, Some(own.clone()), cid, drawn, d)?;
-                if let Some(slot) = self.tentry.stories.iter_mut().find(|s| s.story_id == own) {
-                    *slot = story;
-                }
-                if let Some(slot) = self.tentry.layers.iter_mut().find(|r| r.layer_id == cid) {
-                    *slot = record;
-                }
-            }
-            _ => return Err(format!("design: copy {cid} of {} changed kind", l.layer_id)),
-        }
-        Ok(())
-    }
-
-    /// Path record `rec` of definition layer `l` translated by `d` (refused past the coordinate limit; a network
-    /// or width profile is not copied, a named loss).
-    fn moved_path(&mut self, l: &StudioLayer, mut moved: PathRecord, d: [f64; 2]) -> Result<PathRecord, String> {
-        for c in &mut moved.path.contours {
-            for a in &mut c.anchors {
-                a.position = PathPoint::new(a.position.x + d[0], a.position.y + d[1]);
-            }
-        }
-        if moved.path.validate().is_err() {
-            return Err(format!("design: instance_coordinate_out_of_range (the copy of {} passes the path coordinate limit)", l.layer_id));
-        }
-        if moved.network.is_some() || moved.width.is_some() {
-            self.notes.push("network_or_width_profile_not_copied".into());
-            moved.network = None;
-            moved.width = None;
-        }
-        Ok(moved)
-    }
-
-    /// F8: the definition layer `def`'s live filter stack onto copy `id`, its free distort corners moved by `d`
-    /// (a kept copy's own stack is replaced only when the definition has one); one that cannot be carried is a
-    /// named loss and leaves the copy's stack as it was.
-    fn carry_live_filters(&mut self, def: &str, id: &str, d: [f64; 2]) {
-        let Some(stack) = self.ventry.records.live_filter_stack(def).cloned() else { return };
-        let mut moved = folio::StudioVectorRecords::new(self.doc.document_id.clone());
-        moved.live_filters.push(folio::StudioLiveFilterStack { layer_id: id.to_owned(), filters: stack.filters });
-        let others = self.ventry.records.live_filters.iter().filter(|s| s.layer_id != id).count();
-        let room = others < folio::TOOLS_MAX_ENTRIES.max(vector::MAX_PATHS);
-        match transform_live_filters(&mut moved, id, &[1.0, 0.0, 0.0, 1.0, d[0], d[1]], "design") {
-            Ok(()) if room => {
-                self.ventry.records.live_filters.retain(|s| s.layer_id != id);
-                self.ventry.records.live_filters.extend(moved.live_filters);
-            }
-            _ => self.notes.push("definition_live_filters_not_copied".into()),
-        }
-    }
-
-    /// The definition layer `def`'s node entry for copy `id` (property references stay with the definition;
-    /// `modes`: the kept copy's own explicit variable modes), `None` when the definition has none.
-    fn copied_node(&self, def: &str, id: &str, modes: Option<BTreeMap<String, String>>) -> Option<StudioNodeDesign> {
-        let mut n = self.design.nodes.iter().find(|n| n.node.node_id == def)?.clone();
-        n.node.node_id = id.to_owned();
-        // A copy is not inside a definition: its property references stay with the definition.
-        n.component_property_references.clear();
-        if let Some(m) = modes {
-            n.explicit_variable_modes = m;
-        }
-        Some(n)
-    }
-
-    /// The story and text record of copy `id` of text definition layer `l` (story `story_id`): the story under
-    /// `own` (a kept copy's story id) or a fresh one, `characters` drawn, the origin translated by `d`.
-    fn copied_text(&mut self, l: &StudioLayer, story_id: &str, own: Option<String>, id: &str, drawn: &Drawn, d: [f64; 2]) -> Result<(folio::StudioTextStory, TextLayerRecord), String> {
-        let rec = self.tentry.layers.iter().find(|r| r.layer_id == l.layer_id).cloned().ok_or_else(|| format!("design: text layer {} has no text record", l.layer_id))?;
-        let mut story = self.tentry.stories.iter().find(|s| s.story_id == story_id).cloned().ok_or("design: story missing")?;
-        let sid = match own {
-            Some(s) => s,
-            None => {
-                let taken: BTreeSet<String> = self.used_stories.iter().cloned().chain(self.tentry.stories.iter().map(|s| s.story_id.clone())).collect();
-                self.fresh("STXT", &taken)
-            }
-        };
-        story.story_id.clone_from(&sid);
-        if let Some(StudioValue::String { value }) = drawn.get(&(l.layer_id.clone(), "characters".to_owned())) {
-            let len = u64::try_from(value.len()).unwrap_or(u64::MAX);
-            story.content = folio::StoryContent::Inline { text_utf8: value.clone() };
-            let lang = story.character_ranges.first().and_then(|r| r.applied_language.clone());
-            story.paragraphs = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.paragraph_style, "paragraph_direction": null})).map_err(|e| format!("design: {e}"))?];
-            story.character_ranges = vec![serde_json::from_value(json!({"start": 0, "end": len, "style_ref": rec.character_style, "applied_language": lang})).map_err(|e| format!("design: {e}"))?];
-        }
-        let origin = [rec.origin_px[0] + d[0], rec.origin_px[1] + d[1]];
-        if !origin.iter().all(|v| v.is_finite() && v.abs() <= hsk_studio_nib::COORDINATE_LIMIT) {
-            return Err(format!("design: instance_coordinate_out_of_range (the copy of {} passes the coordinate limit)", l.layer_id));
-        }
-        Ok((story, TextLayerRecord { layer_id: id.to_owned(), story_id: sid, origin_px: origin, ..rec }))
     }
 
     /// Lead ruling P2 (2026-11-13; F7 and R1 before it): with `in_step` (the text entry is written in the
@@ -816,45 +656,12 @@ impl<'d> Redraw<'d> {
     pub(super) fn finish(mut self, in_step: bool) -> Result<(VectorEntry, TextEntry, Vec<PlacementWrite>, Vec<String>), String> {
         self.compact_text(in_step)?;
         self.ventry.paths.extend(self.new_paths);
-        if !self.new_nodes.is_empty() || !self.replaced_nodes.is_empty() {
+        if !self.new_nodes.is_empty() {
             let mut d2 = self.design;
-            // A kept copy's node entry is rewritten (stable identity): its old entry leaves first.
-            d2.nodes.retain(|n| !self.replaced_nodes.contains(&n.node.node_id));
             d2.nodes.extend(self.new_nodes);
             self.ventry.design = Some(d2);
         }
         Ok((self.ventry, self.tentry, self.writes, self.notes))
-    }
-}
-
-/// Definition layer `l` as its copy draws it: the drawn `visible` and `opacity` (percent) overrides applied.
-fn drawn_copy(l: &StudioLayer, drawn: &Drawn) -> StudioLayer {
-    let over = |field: &str| drawn.get(&(l.layer_id.clone(), field.to_owned()));
-    let mut copy = l.clone();
-    if let Some(StudioValue::Boolean { value }) = over("visible") {
-        copy.visible = *value;
-    }
-    if let Some(StudioValue::Float { value }) = over("opacity") {
-        let group_kind = matches!(copy.payload, Payload::Group);
-        let mut a = copy.appearance.clone().unwrap_or_else(|| folio::LayerAppearance::identity(group_kind));
-        a.opacity = (value * 100.0).clamp(0.0, 100.0);
-        copy.appearance = Some(a);
-    }
-    copy
-}
-
-/// A node entry holding only `modes` for layer `id` (F6: explicit variable modes carried to a copy).
-fn modes_node(id: &str, modes: BTreeMap<String, String>) -> StudioNodeDesign {
-    StudioNodeDesign {
-        node: NodeRef { node_kind: NodeKind::Layer, node_id: id.to_owned() },
-        auto_layout: None,
-        child_layout: None,
-        size_clamps: None,
-        constraints: None,
-        reactions: Vec::new(),
-        component_property_references: BTreeMap::new(),
-        explicit_variable_modes: modes,
-        style_refs: BTreeMap::new(),
     }
 }
 
@@ -1318,8 +1125,7 @@ impl Viewer {
     /// with `record`'s drawn overrides applied, as one chronicle transaction (entries first).
     fn redraw(&mut self, doc: &StudioDocument, group: &str, root: &str, record: &StudioComponentInstance, d: [f64; 2]) -> Result<Vec<String>, String> {
         let mut r = Redraw::new(self, doc)?;
-        // A design file instance's redraw keeps no copy: its states are keyed by the copies' ids (module docs).
-        r.instance(group, root, &drawn_overrides(record), d, false)?;
+        r.instance(group, root, &drawn_overrides(record), d)?;
         let (ventry, tentry, writes, mut notes) = r.finish(false)?;
         // Entries first (append-only records; the layers then render at once), then the layers.
         let vbytes = ventry.to_bytes(&doc.document_id)?;
@@ -1365,31 +1171,22 @@ impl Viewer {
         }
         let mut members = Vec::with_capacity(jobs.len());
         let limits = hsk_studio_components::Limits::default();
-        // Lead ruling 2026-11-13 (option A, stable identity): a redraw of the member the instance drew before
-        // (a sync, an override or property edit) keeps its copies' ids; a swap to another member does not.
-        let before = Design::new(&doc, &receipt.records, &local).ok();
         for job in jobs {
             let res = resolve_instance(&job.record, &design, &BTreeMap::new(), 0, &limits, self.cancel).map_err(|e| format!("design: {} ({e:?})", e.code()))?;
             let member = design.component(&res.component_id).ok_or("design: member missing")?;
-            let keep = before
-                .as_ref()
-                .zip(receipt.native.get(&job.record.instance_id))
-                .and_then(|(b, prev)| resolve_instance(prev, b, &BTreeMap::new(), 0, &limits, self.cancel).ok())
-                .is_some_and(|prev| prev.component_id == res.component_id);
             let def = origin_of_layer(&doc, &r.ventry, &text_before, &member.layer_id);
             let d = [job.origin[0] - def[0], job.origin[1] - def[1]];
             let mut drawn = Drawn::new();
             for f in res.fields.iter().filter(|f| DRAWN_OVERRIDES.contains(&f.field.as_str()) && matches!(f.source, Source::Override | Source::ComponentProperty(_) | Source::PropertyDefault(_))) {
                 drawn.insert((f.node_id.clone(), f.field.clone()), f.value.clone());
             }
-            r.instance(&job.group, &member.layer_id, &drawn, d, keep)?;
+            r.instance(&job.group, &member.layer_id, &drawn, d)?;
             members.push(member.component_id.clone());
         }
         let (mut ventry, tentry, more, mut notes) = r.finish(true)?;
         writes.extend(more);
         // Review F2 (lead option (b)): room for each job's new state, counted net of the states it replaces
-        // (same layer, content and instance: a sync keeps its copies' ids, lane SMB-PS-FILTER-ADJUST-COMMANDS-1
-        // stable identity), checked before the step.
+        // (same layer, content and instance: the copies' ids alternate between syncs), checked before the step.
         let after = super::component::project(&doc, &writes);
         let adds: Vec<persist::StateKey> = jobs.iter().map(|j| (j.group.clone(), j.record.instance_id.clone(), persist::content(&after, &j.group))).collect();
         persist::room_for_net(self.run.document_entry(persist::ENTRY), &adds)?;
