@@ -306,13 +306,16 @@ fn native(shape: &StudioShapeType) -> Option<Native> {
     })
 }
 
-/// How much wider and taller than its text a shape draws so the text sits inside it (1 for the
-/// rectangular shapes; Studio-declared).
+/// How much wider and taller than its text (with its inset) a shape draws so one line centred in it
+/// fits the shape's own band (1 for the rectangular shapes; Studio-declared, from the band widths: a
+/// diamond is 0.72 of its width a line above its middle, a triangle 0.4).
 pub fn text_fit(shape: &StudioShapeType) -> f64 {
     match native(shape) {
-        Some(Native::Ellipse | Native::Diamond | Native::Cloud | Native::CircleCross | Native::Polygon(_)) => 1.5,
-        Some(Native::TriangleUp | Native::TriangleDown) => 2.0,
-        Some(Native::Hexagon | Native::ParallelogramRight | Native::ParallelogramLeft | Native::Terminator) => 1.25,
+        Some(Native::Ellipse | Native::Cloud | Native::CircleCross) => 1.5,
+        Some(Native::Diamond | Native::Polygon(_)) => 2.2,
+        Some(Native::TriangleUp | Native::TriangleDown) => 3.0,
+        Some(Native::Hexagon | Native::ParallelogramRight | Native::ParallelogramLeft) => 1.4,
+        Some(Native::Terminator) => 1.25,
         _ => 1.0,
     }
 }

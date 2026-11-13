@@ -7,7 +7,7 @@ use super::super::render::Prefer;
 use super::super::text::{self, TextEntry};
 use super::super::vector::{self, PathRecord, VectorEntry, VectorStyle};
 use super::{
-    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, text_baseline, fitted_size, geo_refusal, mint_path,
+    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, SHAPE_TEXT_INSET, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, text_baseline, fitted_size, geo_refusal, mint_path,
     outline, project, rect_json, refused, route_points, text_ok, translated, uuid_parts,
 };
 use crate::PlacementWrite;
@@ -76,6 +76,7 @@ impl Viewer {
     pub(super) const fn text_setting(fields: &StudioBoardNodeFields) -> (f64, &'static str, f64) {
         match fields {
             StudioBoardNodeFields::Section { .. } => (LABEL_PT, "left", 12.0),
+            StudioBoardNodeFields::ShapeWithText { .. } => (TEXT_PT, "center", SHAPE_TEXT_INSET),
             _ => (TEXT_PT, "center", TEXT_INSET),
         }
     }
@@ -495,7 +496,7 @@ impl Viewer {
         if path.exists() && !overwrite {
             return Err(refused("overwrite_required", path.display()));
         }
-        let job = self.admit_export_job().map_err(|r| refused(&r.code, r.detail))?;
+        let job = self.admit_export_job().map_err(|r| refused(r.code, r.detail))?;
         let result = self.board_export_inner(board, path, content_bounds);
         self.settle_export_text(job, result, "board_export_failed")
     }

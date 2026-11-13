@@ -49,8 +49,10 @@ mod write;
 pub const STICKY_SIDE: f64 = 240.0;
 /// Width of a wide sticky.
 pub const STICKY_WIDE: f64 = 480.0;
-/// Text inset of a node (points = document units).
+/// Text inset of a sticky (points = document units).
 pub const TEXT_INSET: f64 = 16.0;
+/// Text inset of a shape: small, because an inset is taken square to a slanted edge too.
+pub const SHAPE_TEXT_INSET: f64 = 8.0;
 /// Text size of sticky and shape text (points).
 pub const TEXT_PT: f64 = 18.0;
 /// Text size of a section label (points).
@@ -354,8 +356,10 @@ fn fitted_size(fields: &StudioBoardNodeFields, text_width: f64, asked: [Option<f
             [w, (lines * line + 2.0 * TEXT_INSET).max(STICKY_SIDE)]
         }
         StudioBoardNodeFields::ShapeWithText { shape_type, .. } => {
+            // 5 % and 4 points of slack over the one-line advance: the area layout breaks a line that
+            // fits only exactly.
             let fit = geo::text_fit(shape_type);
-            [asked[0].unwrap_or(SHAPE_MIN[0]).max((text_width + 2.0 * TEXT_INSET) * fit), asked[1].unwrap_or(SHAPE_MIN[1]).max((line + 2.0 * TEXT_INSET) * fit)]
+            [asked[0].unwrap_or(SHAPE_MIN[0]).max((text_width * 1.05 + 4.0 + 2.0 * SHAPE_TEXT_INSET) * fit), asked[1].unwrap_or(SHAPE_MIN[1]).max((line + 2.0 * SHAPE_TEXT_INSET) * fit)]
         }
         _ => [asked[0].unwrap_or(SHAPE_MIN[0]), asked[1].unwrap_or(SHAPE_MIN[1])],
     }
@@ -376,7 +380,7 @@ fn outline(fields: &StudioBoardNodeFields, rect: &BoardRect) -> Result<OwnedPath
 /// a diamond's or a triangle's top holds no line), a sticky and a section start at the top (Studio reading).
 fn text_baseline(fields: &StudioBoardNodeFields, rect: &BoardRect) -> (folio::StudioFirstBaseline, f64) {
     match fields {
-        StudioBoardNodeFields::ShapeWithText { .. } => (folio::StudioFirstBaseline::Fixed, ((rect.h - 2.0 * TEXT_INSET - TEXT_PT * 1.3) / 2.0).max(0.0) + TEXT_PT * 0.8),
+        StudioBoardNodeFields::ShapeWithText { .. } => (folio::StudioFirstBaseline::Fixed, ((rect.h - 2.0 * SHAPE_TEXT_INSET - TEXT_PT * 1.3) / 2.0).max(0.0) + TEXT_PT * 0.8),
         _ => (folio::StudioFirstBaseline::Ascent, 0.0),
     }
 }
