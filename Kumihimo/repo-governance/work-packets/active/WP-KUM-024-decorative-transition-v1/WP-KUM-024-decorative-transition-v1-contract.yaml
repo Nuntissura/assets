@@ -1,0 +1,28 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-024-decorative-transition-v1
+title: Direct Vulkan decorative transition state
+scope:
+- Prepare a private, dependency-free transition state and focused cases for the future root and detached direct
+  Vulkan presenters.
+files:
+- product/kumihimo-vulkan/src/decorative_transition.rs
+dependencies:
+- Published D8 decision at 7607822c88240dffaac7ec1e90f6ad2b4cfb8fe4 and shared clipping at 3b3494f898bfd6450fe1980dfd8959a1acb70e8d.
+spec_refs:
+- DEC-KUM-DIRECT-VULKAN-RENDERER-v1
+- TOPIC-KUM-RENDER
+- TOPIC-KUM-BOUNDARIES
+requirements:
+- Use caller-supplied monotonic time and existing theme duration. Sample decorative progress against an already
+  committed destination. The preference setter has no access to layout commit, focus, hit testing, content deadlines
+  or GPU state.
+- On an effective switch to reduced motion, discard active interpolation and its deadline and request one redraw.
+  Subsequent sampling yields the committed destination. An unchanged value is inert. Normal motion resumes only
+  on a new transition.
+acceptance:
+- Deterministic cases cover normal completion, active preference switch, duplicate input, normal-motion resume and
+  independent state for two surfaces.
+- Root and detached integration and actual Vulkan acceptance remain in the subsequent presenter scope.
+proof:
+- After separate compiler allocation, run the focused state tests and independent source review. Actual presenter
+  proof remains distinct.

@@ -185,3 +185,11 @@ work_packets:
   state_ref: repo-governance/work-packets/active/WP-KUM-023-direct-vulkan-renderer-v1/WP-KUM-023-direct-vulkan-renderer-v1-state.yaml
   next_action: Independently reread the published shared clipping source and proof state.
   blockers: []
+- wp_id: WP-KUM-024-decorative-transition-v1
+  title: Direct Vulkan decorative transition state
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-024-decorative-transition-v1/WP-KUM-024-decorative-transition-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-024-decorative-transition-v1/WP-KUM-024-decorative-transition-v1-state.yaml
+  next_action: Review and publish the exact WP predecessor, then allocate the private source file.
+  blockers:
+  - Publish the scoped WP predecessor and record dependency readiness before coding.
