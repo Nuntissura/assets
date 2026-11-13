@@ -887,7 +887,7 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             let (id, prop) = (p.text("layer_id")?, p.text("property")?);
             let ((_, keys), _) = slot(e, &id, &prop, None)?;
             keys.clear();
-            Ok(())
+            implied_return(e, &id, &prop)
         }
         "keyframe.add_at_current" => {
             let (id, prop, time) = key_address(p)?;
@@ -904,6 +904,7 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
                 add_at_current(sv, keys, time, interpolable)?;
                 "added"
             };
+            implied_return(e, &id, &prop)?;
             e.say("toggled", json!(toggled));
             Ok(())
         }
@@ -915,7 +916,7 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
                 return no("keyframe_not_found", &prop);
             };
             keys.remove(at);
-            Ok(())
+            implied_return(e, &id, &prop)
         }
         "keyframe.move" => {
             let (id, prop, time) = key_address(p)?;
@@ -1783,6 +1784,18 @@ fn named<'m>(m: &'m mut BTreeMap<String, StudioKeyedValue>, name: &str, prop: &s
 /// changes no render and disabling animation returns to it ([STU-MOT-020b]); `hint` is the caller's
 /// value where no implied value is knowable.
 fn slot<'e>(e: &'e mut Edit<'_>, layer_id: &str, prop: &str, hint: Option<&[f64]>) -> R<(Slot<'e>, bool)> {
+    seeded_slot(e, layer_id, prop, hint, false)
+}
+
+/// [`slot`] for a command that writes keys with `value` (`keyframe.set`, `keyframe.paste`): an anchor
+/// or position stream it creates is `static_implied` ([STU-MOT-020b]: its prior static value is the
+/// implied one, derived from the content, so `value` only fills the record and the stream goes when
+/// its last key does; lane SMB-FIX-ANIMATION-VALUES-1).
+fn key_slot<'e>(e: &'e mut Edit<'_>, layer_id: &str, prop: &str, value: &[f64]) -> R<(Slot<'e>, bool)> {
+    seeded_slot(e, layer_id, prop, Some(value), true)
+}
+
+fn seeded_slot<'e>(e: &'e mut Edit<'_>, layer_id: &str, prop: &str, hint: Option<&[f64]>, from_keys: bool) -> R<(Slot<'e>, bool)> {
     if prop.is_empty() || prop.len() > MAX_ADDRESS {
         return no("parameter_invalid", "property");
     }
@@ -1816,7 +1829,9 @@ fn slot<'e>(e: &'e mut Edit<'_>, layer_id: &str, prop: &str, hint: Option<&[f64]
                         // The implied anchor and position depend on the content bounds.
                         return no("property_default_unknown", prop);
                     };
-                    l.streams.push(StudioPropertyStream { property, static_value: start.to_vec(), keyframes: Vec::new() });
+                    // Keys over an implied anchor or position keep it implied; a set value is static.
+                    let static_implied = from_keys && default.is_none();
+                    l.streams.push(StudioPropertyStream { property, static_value: start.to_vec(), keyframes: Vec::new(), static_implied });
                     l.streams.len().saturating_sub(1)
                 }
             };
@@ -2048,8 +2063,33 @@ fn property_read(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         let v = value_at(&static_value, &keyframes, t, interpolable);
         e.say("value_at", json!(v));
     }
+    if implied_stream(e, &id, &prop).is_some_and(|s| s.static_implied) {
+        // The static value only fills the record: the property returns to its implied value.
+        e.say("static_implied", json!(true));
+    }
     e.say("static_value", json!(static_value));
     e.say("keyframes", json!(keyframes));
+    Ok(())
+}
+
+/// The layer stream of an address whose value can be implied (anchor, position).
+fn implied_stream<'e>(e: &'e Edit<'_>, layer_id: &str, prop: &str) -> Option<&'e StudioPropertyStream> {
+    let property = match prop {
+        "anchor" => StudioLayerProperty::Anchor,
+        "position" => StudioLayerProperty::Position,
+        _ => return None,
+    };
+    e.comp.layer(layer_id).and_then(|(_, l)| l.stream(property))
+}
+
+/// [STU-MOT-020b]: an anchor or position whose static value is implied returns to implied when its
+/// last key goes (disable animation, delete or toggle): the stream is removed, never left holding the
+/// value that only filled the record (lane SMB-FIX-ANIMATION-VALUES-1).
+fn implied_return(e: &mut Edit<'_>, layer_id: &str, prop: &str) -> R<()> {
+    let Some(property) = implied_stream(e, layer_id, prop).filter(|s| s.static_implied && s.keyframes.is_empty()).map(|s| s.property) else {
+        return Ok(());
+    };
+    e.layer_mut(layer_id)?.streams.retain(|s| s.property != property);
     Ok(())
 }
 
@@ -2121,7 +2161,7 @@ fn key_set(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
     let value: Vec<f64> = req!(p, "value")?;
     let (in_interp, out_interp): (Option<Interp>, Option<Interp>) = (opt!(p, "in_interp")?, opt!(p, "out_interp")?);
     let (in_tangent, out_tangent): (Option<Vec<StudioTemporalTangent>>, Option<Vec<StudioTemporalTangent>>) = (opt!(p, "in_tangent")?, opt!(p, "out_tangent")?);
-    let ((_, keys), _) = slot(e, &id, &prop, Some(&value))?;
+    let ((_, keys), _) = key_slot(e, &id, &prop, &value)?;
     let at = match keys.binary_search_by_key(&time, |k| k.time) {
         Ok(at) => {
             keys[at].value = value;
@@ -2437,8 +2477,11 @@ fn key_paste(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
             }
             placed.push(k);
         }
-        let hint = placed.first().map(|k| k.value.clone());
-        let ((sv, slot_keys), _) = slot(e, &id, &prop, hint.as_deref())?;
+        let first = placed.first().map(|k| k.value.clone());
+        let ((sv, slot_keys), _) = match first.as_deref() {
+            Some(v) => key_slot(e, &id, &prop, v)?,
+            None => slot(e, &id, &prop, None)?,
+        };
         if placed.iter().any(|k| k.value.len() != sv.len()) {
             return no("paste_property_mismatch", &prop);
         }

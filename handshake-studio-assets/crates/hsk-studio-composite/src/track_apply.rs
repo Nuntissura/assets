@@ -201,7 +201,7 @@ fn put(layer: &mut StudioCompositionLayer, property: StudioLayerProperty, keys: 
     if let Some(s) = layer.streams.iter_mut().find(|s| s.property == property) {
         s.keyframes = keys;
     } else {
-        layer.streams.push(StudioPropertyStream { property, static_value: fallback, keyframes: keys });
+        layer.streams.push(StudioPropertyStream { property, static_value: fallback, keyframes: keys, static_implied: false });
         layer.streams.sort_by_key(|s| s.property);
     }
 }

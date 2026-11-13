@@ -985,6 +985,7 @@ pub fn instantiate_template(
                         property: Prop::Opacity,
                         static_value: vec![0.0],
                         keyframes: Vec::new(),
+                        static_implied: false,
                     });
                 }
             }
@@ -1008,7 +1009,7 @@ pub fn instantiate_template(
                         Prop::Scale => vec![100.0, 100.0],
                         Prop::Anchor | Prop::Position => return Err(source(id, TEMPLATE_TARGET)),
                     };
-                    layer.streams.push(hsk_studio_folio::StudioPropertyStream { property: *property, static_value: base, keyframes: Vec::new() });
+                    layer.streams.push(hsk_studio_folio::StudioPropertyStream { property: *property, static_value: base, keyframes: Vec::new(), static_implied: false });
                 }
                 let k = usize::from(*component);
                 for s in layer.streams.iter_mut().filter(|s| s.property == *property) {

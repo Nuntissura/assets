@@ -56,6 +56,7 @@ fn keyed_property(layer_id: &str, v: &hsk_studio_folio::StudioKeyedValue) -> Res
             property: hsk_studio_folio::StudioLayerProperty::Position,
             static_value: v.static_value.clone(),
             keyframes: v.keyframes.clone(),
+            static_implied: false,
         },
     )
 }

@@ -237,6 +237,12 @@ pub struct StudioPropertyStream {
     pub static_value: Vec<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keyframes: Vec<StudioCompositionKeyframe>,
+    /// STU-MOT-020b for an anchor or position the keys created (lane SMB-FIX-ANIMATION-VALUES-1):
+    /// the prior static value is the implied one, derived from the content, so `static_value` only
+    /// fills the record and disabling animation removes the stream. Valid only on an anchor or
+    /// position stream with keyframes; absent = `false`, so earlier records are byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub static_implied: bool,
 }
 
 /// Precomposition source (STU-MOT-005 `composition` kind): the layer's content is another
@@ -878,6 +884,10 @@ fn validate_stream(
             && (s.property != StudioLayerProperty::Opacity
                 || v.iter().all(|x| (0.0..=100.0).contains(x)))
     };
+    // An implied static value exists only for a content-derived property while it is animated.
+    let implied_ok = matches!(s.property, StudioLayerProperty::Anchor | StudioLayerProperty::Position)
+        && !s.keyframes.is_empty();
+    check(!s.static_implied || implied_ok, &t, "static_implied")?;
     validate_keyed(&t, dim, &value_ok, &s.static_value, &s.keyframes, cx)
 }
 

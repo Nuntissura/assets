@@ -312,6 +312,7 @@ pub(crate) fn keyed_property(layer_id: &str, v: &hsk_studio_folio::StudioKeyedVa
             property: StudioLayerProperty::Position,
             static_value: v.static_value.clone(),
             keyframes: v.keyframes.clone(),
+            static_implied: false,
         },
     )
 }
@@ -398,6 +399,7 @@ fn mask_property(layer_id: &str, m: &hsk_studio_folio::StudioCompositionMask) ->
             property: StudioLayerProperty::Position,
             static_value: m.static_value.clone(),
             keyframes: m.keyframes.clone(),
+            static_implied: false,
         },
     )
 }
@@ -414,6 +416,7 @@ fn pin_property(layer_id: &str, pin: &hsk_studio_folio::StudioCornerPin) -> Resu
             property: StudioLayerProperty::Position,
             static_value: pin.static_value.clone(),
             keyframes: pin.keyframes.clone(),
+            static_implied: false,
         },
     )
 }

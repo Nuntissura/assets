@@ -95,8 +95,9 @@ fn apply_writes_linear_keys_on_the_chosen_properties_only() {
             in_tangent: vec![],
             out_tangent: vec![],
         }],
+        static_implied: false,
     };
-    let scale = StudioPropertyStream { property: StudioLayerProperty::Scale, static_value: vec![50.0, 50.0], keyframes: vec![] };
+    let scale = StudioPropertyStream { property: StudioLayerProperty::Scale, static_value: vec![50.0, 50.0], keyframes: vec![], static_implied: false };
     let target = layer(vec![opacity.clone(), scale.clone()]);
     let axes = TrackAxes { position: true, rotation: true, scale: false };
     let out = apply_track(&target, &track, TIMING, axes, [5.0, -5.0], 10.0, [50.0, 50.0]).unwrap();
