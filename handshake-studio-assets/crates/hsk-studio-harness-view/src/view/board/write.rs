@@ -551,7 +551,7 @@ impl Viewer {
         let text_entry = match story {
             Some(id) => {
                 let mut te = self.text_entry()?;
-                super::super::layer_records::drop_stories(&mut te, &BTreeSet::from([id]));
+                super::super::layer_records::drop_board_story(&mut te, &id);
                 Some(te)
             }
             None => None,

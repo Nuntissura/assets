@@ -111,8 +111,11 @@ impl Viewer {
     /// an open layout editor are re-read after the step.
     pub fn delete_page(&mut self, page: &str) -> Result<u64, String> {
         // Lane SMB-DS-VARIABLES-AUTHOR-1 (review F6): a deleted spread's explicit variable modes go in its step.
+        // Lane SMB-FIX-LAYER-RECORD-PRUNE-1 (lead ruling Q4): the removed layers' records leave in the page step.
+        let before = self.before_structure();
         let ok = self.run.delete_page(page) && self.container_records_into_step("delete_page");
         let revision = self.after_edit(ok, format!("delete_page {page}"))?;
+        self.prune_removed("delete_page", before)?;
         self.place_sync();
         if self.layout_editor().is_some() {
             self.layout_sync();

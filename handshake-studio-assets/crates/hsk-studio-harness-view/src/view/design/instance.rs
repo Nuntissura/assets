@@ -734,8 +734,9 @@ fn with_instance(records: &StudioDesignRecords, record: &StudioComponentInstance
 }
 
 /// F3: the live filter stacks and paths of the layers a native step deletes leave the vector entry
-/// in that step (a path another layer, live shape or vector record still names stays).
-fn drop_deleted_copies(ventry: &mut VectorEntry, doc: &StudioDocument, writes: &[PlacementWrite], deleted: &BTreeSet<String>) {
+/// in that step (a path another layer, live shape or vector record still names stays, and so does one in
+/// `referenced`: lane SMB-FIX-LAYER-RECORD-PRUNE-1 lead ruling Q6, the reference scan of `view::layer_records`).
+fn drop_deleted_copies(ventry: &mut VectorEntry, doc: &StudioDocument, writes: &[PlacementWrite], deleted: &BTreeSet<String>, referenced: &BTreeSet<String>) {
     if deleted.is_empty() {
         return;
     }
@@ -755,7 +756,7 @@ fn drop_deleted_copies(ventry: &mut VectorEntry, doc: &StudioDocument, writes: &
         .collect();
     // A path any other vector record names (brush strokes, swatch bindings and the like) stays too.
     let named = serde_json::to_string(&ventry.records).unwrap_or_default();
-    ventry.paths.retain(|p| !gone.contains(&p.path_id) || kept.contains(&p.path_id) || named.contains(p.path_id.as_str()));
+    ventry.paths.retain(|p| !gone.contains(&p.path_id) || kept.contains(&p.path_id) || named.contains(p.path_id.as_str()) || referenced.contains(&p.path_id));
 }
 
 impl Viewer {
@@ -1138,7 +1139,8 @@ impl Viewer {
         let mut r = Redraw::new(self, doc)?;
         r.instance(group, root, &drawn_overrides(record), d)?;
         let (ventry, tentry, writes, mut notes) = r.finish(false)?;
-        // Entries first (append-only records; the layers then render at once), then the layers.
+        // Entries first (the copies' records added; the layers then render at once), then the layers; the step takes
+        // the deleted copies' records along (`view::layer_records`).
         let vbytes = ventry.to_bytes(&doc.document_id)?;
         self.run.set_document_entry(vector::ENTRY, Some(vbytes)).map_err(|e| format!("design: vector entry {e}"))?;
         if !tentry.layers.is_empty() {
@@ -1214,7 +1216,20 @@ impl Viewer {
         authored.nodes.retain(|n| !deleted.contains(&n.node.node_id));
         super::component::check_caps(authored)?;
         self.check_authored(&doc, &writes, authored)?;
-        drop_deleted_copies(&mut ventry, &doc, &writes, &deleted);
+        // Lead ruling Q6: a copy's path the document after the step, another entry or the receipt names stays; a scan
+        // that cannot run keeps every one of them.
+        let copies: BTreeSet<String> = doc.layers.iter().filter(|l| deleted.contains(&l.layer_id)).flat_map(|l| match &l.payload {
+            Payload::Vector { path_ids } => path_ids.clone(),
+            _ => Vec::new(),
+        }).collect();
+        let referenced = if copies.is_empty() {
+            BTreeSet::new()
+        } else {
+            let mut own = ventry.clone();
+            own.paths.retain(|p| !copies.contains(&p.path_id));
+            own.to_bytes(&doc.document_id).ok().and_then(|bytes| self.referenced_paths(&after, &copies, &bytes).ok()).unwrap_or_else(|| copies.clone())
+        };
+        drop_deleted_copies(&mut ventry, &doc, &writes, &deleted, &referenced);
         let vbytes = ventry.to_bytes(&doc.document_id)?;
         let target = jobs.first().map_or_else(String::new, |j| j.group.clone());
         // Lead ruling P2: the text entry (copies added, copies no longer drawn compacted) is in the same

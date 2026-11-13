@@ -136,6 +136,7 @@ impl Viewer {
             return Err(CommandRefusal::new("unknown_command", json!({"command_id": command_id})));
         };
         let before = self.run().ops().len();
+        self.prune_warnings.clear();
         let result = check_declared(row, params).and_then(|()| self.run_row(row, Fields(params), before));
         if self.run().ops().len() == before {
             let outcome = match &result {
@@ -144,7 +145,14 @@ impl Viewer {
             };
             self.run.command_outcome(row.command_id, outcome);
         }
-        result
+        // Lane SMB-FIX-LAYER-RECORD-PRUNE-1 (lead ruling Q3): a structure step whose records could not all be pruned.
+        match result {
+            Ok(Value::Object(mut map)) if !self.prune_warnings.is_empty() => {
+                map.insert("warnings".to_owned(), json!(self.prune_warnings));
+                Ok(Value::Object(map))
+            }
+            other => other,
+        }
     }
 
     fn run_row(&mut self, row: &CommandEntry, f: Fields<'_>, before: usize) -> Result<Value, CommandRefusal> {

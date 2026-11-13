@@ -802,20 +802,28 @@ impl Viewer {
     /// Lead decision 2026-11-13 (records never outlive their layer): [`ENTRY`] (else the import records) without the
     /// rows and placed instances of `removed` (the layers a structure step removed; lane SMB-FIX-LAYER-RECORD-PRUNE-1,
     /// `view::layer_records`, which puts it into that step), read after the step, so it is not pruned to the document;
-    /// `None` when it holds none of them or cannot be read (an unreadable entry is not applied at render and never
-    /// blocks a step).
-    pub(super) fn raster_records_without(&self, removed: &BTreeSet<String>) -> Option<Vec<u8>> {
-        let mut entry = match self.read_place_entry().ok()? {
-            Some(e) => e,
-            None => Entry::new(self.place.import.clone()?),
+    /// `Ok(None)` when it holds none of them; `Err` when it names one and does not parse (the step commits without it
+    /// and carries the warning `prune_skipped:raster_records`, lead ruling Q3).
+    pub(super) fn raster_records_without(&self, removed: &BTreeSet<String>) -> Result<Option<Vec<u8>>, String> {
+        let mut entry = match self.run.document_entry(ENTRY) {
+            Some(bytes) => match Entry::parse(bytes) {
+                Ok(e) => e,
+                // Lead ruling Q3: an entry naming a removed layer that does not parse is a warning of the step.
+                Err(e) if removed.iter().any(|id| !id.is_empty() && bytes.windows(id.len()).any(|w| w == id.as_bytes())) => return Err(format!("does not decode: {e}")),
+                Err(_) => return Ok(None),
+            },
+            None => match self.place.import.clone() {
+                Some(r) => Entry::new(r),
+                None => return Ok(None),
+            },
         };
         let held = |id: &String| removed.contains(id);
         if !entry.records.layers.iter().any(|r| held(&r.layer_id)) && !entry.instances.iter().any(|i| held(&i.layer_id)) {
-            return None;
+            return Ok(None);
         }
         entry.records.layers.retain(|r| !held(&r.layer_id));
         entry.instances.retain(|i| !held(&i.layer_id));
-        entry.to_bytes().ok()
+        entry.to_bytes().map(Some).map_err(|e| e.to_string())
     }
 
     /// The opened document's folder, canonical, as captured at its open ([`PlaceState`]).

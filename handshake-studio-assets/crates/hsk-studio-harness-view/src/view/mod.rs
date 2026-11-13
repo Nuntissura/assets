@@ -256,6 +256,8 @@ pub struct Viewer {
     /// Develop state of an opened camera raw / DNG (module `develop`).
     develop: Option<develop::DevelopDoc>,
     status: Vec<String>,
+    /// Lane SMB-FIX-LAYER-RECORD-PRUNE-1 (lead ruling Q3): `prune_skipped:<entry>` warnings of the structure steps since the last driven row.
+    prune_warnings: Vec<String>,
     zoom: f32,
     pan: egui::Vec2,
     fit: bool,
@@ -373,6 +375,7 @@ impl Viewer {
             selected: None,
             develop: None,
             status: Vec::new(),
+            prune_warnings: Vec::new(),
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             fit: true,

@@ -805,9 +805,12 @@ impl Viewer {
         let mut document = doc.document.clone();
         change(&mut document);
         fit_spreads(&mut document);
+        // Lane SMB-FIX-LAYER-RECORD-PRUNE-1 (lead ruling Q4): a page delete or reflow that removes layers takes their
+        // records along in its step.
+        let before = self.before_structure();
         if self.run.submit_layout(command, command, document, records) {
             self.dirty = true;
-            return Ok(());
+            return self.prune_removed(command, before);
         }
         let code = self.op_error();
         self.say(format!("layout: {command} {code}"));

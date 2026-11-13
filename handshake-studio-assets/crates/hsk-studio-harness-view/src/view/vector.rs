@@ -8,7 +8,8 @@
 //! (`studio/vector.<sha256>`, schema `hsk.harness.vector_paths@1`; held in memory until the
 //! session carries that token, see [`entry_persistable`]), together with the Folio
 //! `StudioLiveShapes` records of shapes whose parameters are still editable (STU-VEC-010). Paths
-//! are append-only while referenced and content-addressed by a fresh `SVPT` id per edit, so every
+//! are append-only while referenced and named by a fresh `SVPT` id per edit (an id a prune freed may be
+//! minted again, lead ruling Q5: no reference to it remains and undo restores whole entries), so every
 //! revision the history can return to still resolves; unreferenced paths of removed layers are
 //! pruned in the removing step, and undo restores them (lane SMB-FIX-LAYER-RECORD-PRUNE-1,
 //! `view::layer_records`, with the other records of removed layers).
@@ -691,12 +692,13 @@ impl VectorEntry {
         });
         // Lane SMB-AI-TYPE-PATH-RECOLOR: meshes and path texts of layers the document holds.
         r.gradient_meshes.retain(|m| vector(&m.layer_id));
-        // Lane SMB-AI-LIVE-EFFECTS-1: live filter stacks of vector layers the document holds (a
-        // deleted layer keeps its stack for the revisions the history can return to).
+        // Lane SMB-AI-LIVE-EFFECTS-1: live filter stacks of vector layers the document holds (a package
+        // written before lane SMB-FIX-LAYER-RECORD-PRUNE-1 may hold a deleted layer's stack; since then the
+        // removing step takes it along, `view::layer_records`).
         r.live_filters.retain(|s| vector(&s.layer_id));
         r.path_texts.retain(|p| doc.layers.iter().any(|l| l.layer_id == p.path_layer_id && matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&p.path_id))));
-        // Lane SMB-AI-AREA-TYPE-3: area texts likewise (a deleted container layer keeps its record
-        // for the revisions the history can return to).
+        // Lane SMB-AI-AREA-TYPE-3: area texts likewise (a deleted container's record, as for the stacks
+        // above: only a package written before lane SMB-FIX-LAYER-RECORD-PRUNE-1 holds one).
         r.area_texts.retain(|a| doc.layers.iter().any(|l| l.layer_id == a.container_layer_id && matches!(&l.payload, Payload::Vector { path_ids } if path_ids.contains(&a.container_id))));
         let design = self.design.clone().unwrap_or_else(|| folio::StudioDesignRecords::new(doc.document_id.clone()));
         folio::validate_vector_records(&r, doc, Some(&design), folio::Budget::default(), cancel).map_err(|d| format!("vector_entry_vector_records: {:?} {}", d.code, d.target))
@@ -2186,6 +2188,8 @@ impl Viewer {
     }
 
     fn replace_with_pieces_deleting(&mut self, op: &str, pieces: Vec<(String, AnchorPath, VectorStyle)>, doomed: &[String]) -> Result<Vec<String>, String> {
+        // Lane SMB-FIX-LAYER-RECORD-PRUNE-1 (lead ruling Q2): never silently unclip a layer or drop text.
+        self.refuse_dropping_dependents(op, doomed)?;
         let mut entry = self.vector_entry()?;
         if entry.paths.len().saturating_add(pieces.len()) > MAX_PATHS {
             return Err(format!("{op}: vector_entry_over_budget"));
@@ -2668,6 +2672,8 @@ impl Viewer {
     fn pathfinder_inner(&mut self, op: PathfinderOp, layer_ids: &[String]) -> Result<Vec<String>, String> {
         // Lane SMB-BOARD-1 (review F6): a board node is not rewritten into plain paths.
         self.board_refuse_vector_rewrite("pathfinder", layer_ids)?;
+        // Lane SMB-FIX-LAYER-RECORD-PRUNE-1 (lead ruling Q2): never silently unclip a layer or drop text.
+        self.refuse_dropping_dependents("pathfinder", layer_ids)?;
         let mut operands: Vec<(u64, String, PathRecord)> = Vec::new();
         let mut parent: Option<Parent> = None;
         for id in layer_ids {
