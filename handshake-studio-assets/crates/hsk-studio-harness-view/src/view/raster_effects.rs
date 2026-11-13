@@ -389,6 +389,15 @@ fn steps(precision: Option<u8>) -> [f64; 3] {
     }
 }
 
+/// `n` as JSON: an integer for an integer parameter (the tables state whole numbers), else a number.
+fn number_json(ty: ParamType, n: f64) -> Value {
+    match ty {
+        // The declared integer defaults are small whole numbers (0..=10 in the table).
+        ParamType::Int(_) if n.fract() == 0.0 && n.abs() < 9.0e15 => json!(n as i64),
+        _ => json!(n),
+    }
+}
+
 fn numeric(ty: ParamType) -> Option<&'static str> {
     match ty {
         ParamType::Float => Some("number"),
@@ -400,7 +409,7 @@ fn numeric(ty: ParamType) -> Option<&'static str> {
 /// One parameter's spec record as the command surface shows it.
 pub fn param_spec_json(index: usize, p: &EffectParam) -> Value {
     let default = match p.default {
-        DefaultValue::Number(v, _) => json!(v),
+        DefaultValue::Number(v, _) => number_json(p.ty, v),
         DefaultValue::Token(t, _) => json!(t),
         DefaultValue::Unknown => json!(UNKNOWN),
     };
@@ -696,9 +705,10 @@ fn check_param(kind: &str, p: &EffectParam, v: &Value) -> Result<Value, CommandR
     }
 }
 
+/// A declared default as the parameter's JSON value (an integer parameter's as an integer).
 fn default_json(p: &EffectParam) -> Option<Value> {
     match p.default {
-        DefaultValue::Number(n, _) => Some(json!(n)),
+        DefaultValue::Number(n, _) => Some(number_json(p.ty, n)),
         DefaultValue::Token(t, _) => Some(json!(t)),
         DefaultValue::Unknown => None,
     }
