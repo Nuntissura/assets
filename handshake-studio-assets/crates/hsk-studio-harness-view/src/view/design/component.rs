@@ -392,6 +392,21 @@ pub(super) fn check_caps(d: &StudioDesignRecords) -> Result<(), String> {
     super::variables::check_caps(d)
 }
 
+/// A layer's node record carrying only explicit variable modes (review F6: a duplicated container's).
+fn modes_node(layer: &str, modes: &BTreeMap<String, String>) -> StudioNodeDesign {
+    StudioNodeDesign {
+        node: NodeRef { node_kind: NodeKind::Layer, node_id: layer.to_owned() },
+        auto_layout: None,
+        child_layout: None,
+        size_clamps: None,
+        constraints: None,
+        reactions: Vec::new(),
+        component_property_references: BTreeMap::new(),
+        explicit_variable_modes: modes.clone(),
+        style_refs: BTreeMap::new(),
+    }
+}
+
 /// `id` and every layer under it in the order `duplicate_layer` copies them (pre-order, each stack
 /// bottom first).
 fn preorder(doc: &StudioDocument, id: &str) -> Vec<String> {
@@ -848,15 +863,21 @@ impl Viewer {
     /// per layer in its pre-order). Each authored instance of the subtree gets a copy that is an
     /// instance of the same main with the same properties and overrides (a new record and binding),
     /// in the duplicate's one undo step; an instance of the design file's records is refused
-    /// `duplicate_instance_unsupported` (never a silent plain group). `None`: the subtree draws no
-    /// instance (the caller commits the plain duplicate).
+    /// `duplicate_instance_unsupported` (never a silent plain group). Review F6 (lane
+    /// SMB-DS-VARIABLES-AUTHOR-1): each copied container keeps the explicit variable modes of its source, in
+    /// the same step. `None`: the subtree draws no instance and sets no explicit mode (the caller commits
+    /// the plain duplicate).
     pub(in crate::view) fn duplicate_instances(&mut self, source: &str, writes: &[PlacementWrite], what: &str) -> Result<Option<u64>, String> {
-        let Some(receipt) = self.design_receipt() else { return Ok(None) };
         let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
         let order = preorder(&doc, source);
+        let modes: Vec<StudioNodeDesign> = match self.vector_entry().ok().and_then(|e| e.design) {
+            Some(d) if order.len() == writes.len() => order.iter().zip(writes).filter_map(|(src, w)| d.node_design(src).filter(|n| !n.explicit_variable_modes.is_empty()).map(|n| modes_node(&w.layer_id, &n.explicit_variable_modes))).collect(),
+            _ => Vec::new(),
+        };
+        let receipt = self.design_receipt();
         let mut found = Vec::new();
         for (src, w) in order.iter().zip(writes) {
-            if let Some(b) = receipt.bindings.iter().find(|b| &b.layer_id == src) {
+            if let Some(b) = receipt.as_ref().and_then(|r| r.bindings.iter().find(|b| &b.layer_id == src)) {
                 if !b.native {
                     return Err(refused("duplicate_instance_unsupported", format!("{src} draws an instance of the design file's records")));
                 }
@@ -864,8 +885,23 @@ impl Viewer {
             }
         }
         if found.is_empty() {
-            return Ok(None);
+            if modes.is_empty() {
+                return Ok(None);
+            }
+            if !vector::entry_persistable() {
+                return Err(refused("vector_entry_not_persistable", "the session holds no vector entry token"));
+            }
+            let mut ventry = self.vector_entry()?;
+            let mut d = ventry.design.take().unwrap_or_else(|| StudioDesignRecords::new(doc.document_id.clone()));
+            d.nodes.extend(modes);
+            check_caps(&d)?;
+            self.check_authored(&doc, writes, &d)?;
+            ventry.design = Some(d);
+            let bytes = ventry.to_bytes(&doc.document_id)?;
+            let ok = self.run.restructure_and_entry("duplicate_layer", writes, vector::ENTRY, bytes);
+            return self.after_edit(ok, what.to_owned()).map(Some);
         }
+        let Some(receipt) = receipt else { return Ok(None) };
         if order.len() != writes.len() {
             return Err(refused("duplicate_instance_unsupported", "the copy does not follow the source's layers"));
         }
@@ -896,12 +932,14 @@ impl Viewer {
         persist::room_for(self.run.document_entry(persist::ENTRY), bindings.len()).map_err(|e| e.replacen("design: ", "component: ", 1))?;
         let Ctx { doc, mut ventry, mut authored, .. } = c;
         settle(&mut authored, &project(&doc, writes));
+        authored.nodes.extend(modes);
         check_caps(&authored)?;
         self.check_authored(&doc, writes, &authored)?;
         ventry.design = Some(authored);
         let bytes = ventry.to_bytes(&doc.document_id)?;
         let ok = self.run.restructure_and_entry("duplicate_layer", writes, vector::ENTRY, bytes);
         let revision = self.after_edit(ok, what.to_owned())?;
+        let design_before = self.run.document_entry(persist::ENTRY).map(<[u8]>::to_vec);
         for (copy, record, main) in bindings {
             let saved = (|| {
                 let after = self.design_receipt().ok_or("design: records")?;
@@ -915,11 +953,41 @@ impl Viewer {
                 self.write_design_state(entry, &after, state, record.main_component_id.is_some())
             })();
             if let Err(e) = saved {
-                let undone = if self.run.undo() { Ok(()) } else { Err(self.op_error()) };
+                // Review F5 (sibling site): the bindings written so far go back and the rollback leaves no redo entry.
+                let _ = self.run.set_document_entry(persist::ENTRY, design_before.clone());
+                let undone = if self.run.rollback_newest_step() { Ok(()) } else { Err(self.op_error()) };
                 return Err(super::instance::rollback_error(&e, undone));
             }
         }
         Ok(Some(revision))
+    }
+
+    /// Review F6 (lane SMB-DS-VARIABLES-AUTHOR-1): the vector entry with the node records of artboards and
+    /// page spreads the document no longer holds removed (their explicit variable modes), for the delete's
+    /// own step (`Run::entries_into_newest_step`). `None`: nothing to remove.
+    pub(in crate::view) fn records_after_container_delete(&self) -> Option<Vec<u8>> {
+        if !vector::entry_persistable() {
+            return None;
+        }
+        let doc = self.run.snapshot()?.document();
+        let mut ventry = self.vector_entry().ok()?;
+        let d = ventry.design.as_mut()?;
+        let held: BTreeSet<&str> = doc.artboards.iter().map(|a| a.artboard_id.as_str()).chain(doc.page_spreads.iter().map(|s| s.page_spread_id.as_str())).collect();
+        let before = d.nodes.len();
+        d.nodes.retain(|n| n.node.node_kind == NodeKind::Layer || held.contains(n.node.node_id.as_str()));
+        if d.nodes.len() == before {
+            return None;
+        }
+        ventry.to_bytes(&doc.document_id).ok()
+    }
+
+    /// Review F6: after an artboard or page delete committed (`op`), its node records leave the vector
+    /// entry inside that delete's step; a refused write rolls the delete back. True when nothing was left.
+    pub(in crate::view) fn container_records_into_step(&mut self, op: &str) -> bool {
+        match self.records_after_container_delete() {
+            Some(bytes) => self.run.entries_into_newest_step(op, vec![(vector::ENTRY, bytes)]),
+            None => true,
+        }
     }
 
     /// The owner of a property: an authored standalone component or a set (members' properties are

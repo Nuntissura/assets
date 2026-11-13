@@ -2794,8 +2794,9 @@ impl Session {
     /// keeps whole for its undo). The package gets a COPY of the held entries with that token's entry
     /// replaced under the name rule of [`Session::set_document_entry`]; the session's own entries are never
     /// touched, so a refused, failed or canceled save leaves the session as it was (the same atomic write
-    /// path, the same compare as `save_to`). After the save the session stays dirty when the written entry
-    /// differs from the held one. Refused like `set_document_entry` before anything is written: an unknown
+    /// path, the same compare as `save_to`). After the save the session is clean, also when the written entry
+    /// differs from the held one (lead ruling Q3: the difference is undo-reachable history, which is never
+    /// saved). Refused like `set_document_entry` before anything is written: an unknown
     /// token is `unsafe_name`; all entries above `max_entry_bytes` `total_too_large`; a validated sequence
     /// token's bytes must validate.
     pub fn save_to_with_entry(
@@ -2830,7 +2831,6 @@ impl Session {
             }
             sequence_records::check_entry(token, &bytes, self.snapshot.document(), self.config.budgets.folio(), cancel)?;
         }
-        let differs = self.document_entry(token) != Some(bytes.as_slice());
         let sha256_hex = sha256_hex_of(&bytes);
         let mut held: Vec<Quarantined> = self
             .quarantined
@@ -2848,11 +2848,7 @@ impl Session {
             (Some(origin), Some(disk)) if same_destination(origin, path) => Expect::Unchanged(disk.clone()),
             _ => Expect::Anything,
         };
-        let receipt = self.save_inner_with(path, expect, Some(&held), cancel)?;
-        if differs {
-            self.entries_changed = true;
-        }
-        Ok(receipt)
+        self.save_inner_with(path, expect, Some(&held), cancel)
     }
 
     /// The previews to write: only those that describe the revision being written. Host-supplied

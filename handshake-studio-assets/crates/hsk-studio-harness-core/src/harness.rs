@@ -1519,52 +1519,125 @@ impl Run<'_> {
             if !run.restructure_and_entry_step(op, writes, token, bytes) {
                 return false;
             }
-            let Some((ctx, revision, label)) = run.undo_stack.last().map(|s| (s.ctx.clone(), s.revision, s.label.clone())) else {
-                return false;
-            };
-            let cancel = run.cancel;
-            let mut written: Vec<EntryRestore> = Vec::with_capacity(more.len());
-            let mut failed = None;
-            for (token, bytes) in more {
-                let Some(session) = run.session.as_mut() else {
-                    failed = Some("not_open");
-                    break;
-                };
-                let previous = session.document_entry(token).map(<[u8]>::to_vec);
-                if let Err(e) = session.set_document_entry(token, Some(bytes), cancel) {
-                    failed = Some(e.code());
-                    break;
-                }
-                written.push(EntryRestore { token: token.to_string(), bytes: previous });
-            }
-            if let Some(code) = failed {
-                // Nothing stays half done: the further entries go back, then the structure step and its
-                // entry are undone.
-                for restore in written.iter().rev() {
-                    if let Some(session) = run.session.as_mut() {
-                        let _ = session.set_document_entry(&restore.token, restore.bytes.clone(), cancel);
-                    }
-                }
-                if run.undo_stack.len() > depth {
-                    let _ = run.quietly(Self::undo);
-                }
-                let before = run.frames.count();
-                run.current = Some(ctx);
-                return run.own_op(op, before, Err(code));
-            }
-            for restore in written {
-                run.emit_entry_business_event(&restore.token, &ctx, None, restore.bytes.as_deref(), false);
-                let step = HistoryStep { label: format!("{op} {}", restore.token), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision };
-                run.undo_stack.push(step);
-            }
-            run.attach_events_to_last_record();
-            if run.undo_stack.len() > depth.saturating_add(1) {
-                let inner: Vec<HistoryStep> = run.undo_stack.drain(depth..).collect();
-                run.undo_stack.push(HistoryStep { label, inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None, containers: None, layout: None, ctx, revision });
-            }
-            run.redo_stack.clear();
-            true
+            run.group_entries_with_newest(op, depth, more)
         })
+    }
+
+    /// Sets the session document entries `entries` INSIDE the newest history step (lane
+    /// SMB-DS-VARIABLES-AUTHOR-1, review F6: the explicit variable modes of a deleted artboard or page leave
+    /// the vector entry in the delete's own step), for a caller whose entries depend on what that step did:
+    /// each entry is an entry-only step of the newest step's command, grouped with it into ONE group step
+    /// exactly as [`Run::restructure_and_entries`] does. A refused write puts back the entries already
+    /// written and rolls the newest step back ([`Run::rollback_newest_step`]); `op` names the refusal record.
+    pub fn entries_into_newest_step(&mut self, op: &str, entries: Vec<(&str, Vec<u8>)>) -> bool {
+        self.note_unrecordable("layer.restructure_and_entry");
+        let Some(depth) = self.undo_stack.len().checked_sub(1) else {
+            let before = self.frames.count();
+            return self.own_op(op, before, Err("nothing_to_undo"));
+        };
+        self.group_entries_with_newest(op, depth, entries)
+    }
+
+    /// Writes `entries` as entry-only steps of the step at `depth` (the newest) and groups them with it.
+    fn group_entries_with_newest(&mut self, op: &str, depth: usize, entries: Vec<(&str, Vec<u8>)>) -> bool {
+        let Some((ctx, revision, label)) = self.undo_stack.get(depth).map(|s| (s.ctx.clone(), s.revision, s.label.clone())) else {
+            return false;
+        };
+        let cancel = self.cancel;
+        let mut written: Vec<EntryRestore> = Vec::with_capacity(entries.len());
+        let mut failed = None;
+        for (token, bytes) in entries {
+            let Some(session) = self.session.as_mut() else {
+                failed = Some("not_open");
+                break;
+            };
+            let previous = session.document_entry(token).map(<[u8]>::to_vec);
+            if let Err(e) = session.set_document_entry(token, Some(bytes), cancel) {
+                failed = Some(e.code());
+                break;
+            }
+            written.push(EntryRestore { token: token.to_string(), bytes: previous });
+        }
+        if let Some(code) = failed {
+            // Nothing stays half done: the further entries go back, then the newest step and its entry are
+            // undone (a refused rollback is a known gap, review F4: next-lane candidate "atomic multi-entry
+            // history step").
+            for restore in written.iter().rev() {
+                if let Some(session) = self.session.as_mut() {
+                    let _ = session.set_document_entry(&restore.token, restore.bytes.clone(), cancel);
+                }
+            }
+            if self.undo_stack.len() > depth {
+                let _ = self.rollback_newest_step();
+            }
+            let before = self.frames.count();
+            self.current = Some(ctx);
+            return self.own_op(op, before, Err(code));
+        }
+        for restore in written {
+            self.emit_entry_business_event(&restore.token, &ctx, None, restore.bytes.as_deref(), false);
+            let step = HistoryStep { label: format!("{op} {}", restore.token), inverse: Value::Null, entry: Some(restore), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision };
+            self.undo_stack.push(step);
+        }
+        self.attach_events_to_last_record();
+        if self.undo_stack.len() > depth.saturating_add(1) {
+            let inner: Vec<HistoryStep> = self.undo_stack.drain(depth..).collect();
+            self.undo_stack.push(HistoryStep { label, inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None, containers: None, layout: None, ctx, revision });
+        }
+        self.redo_stack.clear();
+        true
+    }
+
+    /// Undoes the newest step as the rollback of a command that failed after the step committed (lane
+    /// SMB-DS-VARIABLES-AUTHOR-1, review F5): its records are written as for any undo, but the undone step
+    /// leaves NO redo entry (F-R42-2: a rollback is not an undo the user can redo). Returns whether the undo
+    /// applied.
+    pub fn rollback_newest_step(&mut self) -> bool {
+        let redo = self.redo_stack.len();
+        let ok = self.quietly(Self::undo);
+        if ok {
+            self.redo_stack.truncate(redo);
+        }
+        ok
+    }
+
+    /// ONE entry-only history step of the typed command `command_id` (a RUN_COMMANDS id; lane
+    /// SMB-DS-VARIABLES-AUTHOR-1, review F3, HOST INTEGRATION (3)-(5)): the session document entry `token`
+    /// set to `bytes`; the record, the step's attribution and its label (the undo name) are `command_id`,
+    /// and the step emits `event` when the entry bytes changed. A refused write changes nothing and leaves
+    /// the redo history as it was. One record `command_id`.
+    pub fn set_entry_step(&mut self, command_id: &'static str, event: Option<StudioBusinessEventId>, token: &str, bytes: Vec<u8>) -> bool {
+        self.note_unrecordable(command_id);
+        self.keeping_redo_without_new_step(|run| run.entry_step(command_id, event, token, bytes))
+    }
+
+    fn entry_step(&mut self, command_id: &'static str, event: Option<StudioBusinessEventId>, token: &str, bytes: Vec<u8>) -> bool {
+        let before = self.frames.count();
+        let Some(session) = self.session.as_ref() else {
+            return self.push(command_id, before, Err("not_open"), None, None);
+        };
+        let previous = session.document_entry(token).map(<[u8]>::to_vec);
+        let ctx = self.begin(command_id, None);
+        let cancel = self.cancel;
+        let set = match self.session.as_mut() {
+            Some(s) => s.set_document_entry(token, Some(bytes), cancel).map_err(|e| e.code()),
+            None => Err("not_open"),
+        };
+        if let Err(code) = set {
+            return self.own_op(command_id, before, Err(code));
+        }
+        let revision = self.revision().unwrap_or(0);
+        if let Some(event) = event {
+            let after = self.session.as_ref().and_then(|s| s.document_entry(token)).map(<[u8]>::to_vec);
+            if after != previous {
+                let sequence = hsk_studio_accord::entry_event_sequence(event, token, previous.as_deref(), after.as_deref(), &ctx);
+                let entry = self.business_event_entry(event, &ctx, revision, &[], Some(sequence));
+                self.pending_events.push(entry);
+            }
+        }
+        self.undo_stack.push(HistoryStep { label: command_id.to_string(), inverse: Value::Null, entry: Some(EntryRestore { token: token.to_string(), bytes: previous }), timeline: None, group: None, sequences: None, containers: None, layout: None, ctx, revision });
+        self.redo_stack.clear();
+        self.own_op(command_id, before, Ok(json!({"entry": token})))
     }
 
     fn restructure_and_entry_step(&mut self, op: &str, writes: &[PlacementWrite], token: &str, bytes: Vec<u8>) -> bool {

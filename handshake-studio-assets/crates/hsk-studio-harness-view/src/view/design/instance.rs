@@ -502,6 +502,25 @@ impl<'d> Redraw<'d> {
             post_order(doc, c, &mut order);
             self.writes.extend(order.into_iter().map(|id| PlacementWrite { layer_id: id, to: None, create: None }));
         }
+        // Review F6 (lane SMB-DS-VARIABLES-AUTHOR-1): explicit variable modes set on a copy this redraw
+        // deletes move to the copy of the same definition layer that replaces it (matched by position when
+        // the copy and the definition have the same layers, else by kind and name); one that matches
+        // nothing is a named loss.
+        let old = definition_layers(doc, group).unwrap_or_default();
+        let mut carried: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        let mut matched: BTreeSet<usize> = BTreeSet::new();
+        for (i, (o, _)) in old.iter().enumerate() {
+            let Some(modes) = self.design.node_design(&o.layer_id).map(|n| n.explicit_variable_modes.clone()).filter(|m| !m.is_empty()) else { continue };
+            let same = |j: usize| defs.get(j).is_some_and(|(dl, _)| dl.kind == o.kind && dl.name == o.name) && !matched.contains(&j);
+            let at = if old.len() == defs.len() && same(i) { Some(i) } else { (0..defs.len()).find(|j| same(*j)) };
+            match at.and_then(|j| defs.get(j).map(|(dl, _)| (j, dl.layer_id.clone()))) {
+                Some((j, def)) => {
+                    matched.insert(j);
+                    carried.insert(def, modes);
+                }
+                None => self.notes.push("explicit_modes_not_carried".into()),
+            }
+        }
         // Creates: each definition layer copied (bottom first, each to the top of its new parent).
         let mut new_id: BTreeMap<String, String> = BTreeMap::new();
         for (l, parent) in &defs {
@@ -521,7 +540,21 @@ impl<'d> Redraw<'d> {
                 copy.appearance = Some(a);
             }
             match &l.payload {
-                Payload::Group => {}
+                Payload::Group => {
+                    if let Some(modes) = carried.remove(&l.layer_id) {
+                        self.new_nodes.push(StudioNodeDesign {
+                            node: NodeRef { node_kind: NodeKind::Layer, node_id: id.clone() },
+                            auto_layout: None,
+                            child_layout: None,
+                            size_clamps: None,
+                            constraints: None,
+                            reactions: Vec::new(),
+                            component_property_references: BTreeMap::new(),
+                            explicit_variable_modes: modes,
+                            style_refs: BTreeMap::new(),
+                        });
+                    }
+                }
                 Payload::Vector { path_ids } => {
                     let mut ids = Vec::with_capacity(path_ids.len());
                     for pid in path_ids {
@@ -593,6 +626,9 @@ impl<'d> Redraw<'d> {
             let op = operation_for(&id, matches!(copy.payload, Payload::Group))?;
             self.writes.push(PlacementWrite { layer_id: id, to: Some(Place::Inside(target)), create: Some((copy, op)) });
         }
+        if !carried.is_empty() {
+            self.notes.push("explicit_modes_not_carried".into());
+        }
         Ok(())
     }
 
@@ -607,10 +643,9 @@ impl<'d> Redraw<'d> {
             compact_copy_text(&mut self.tentry, &after);
         }
         if self.tentry.layers.len() > text::MAX_TEXT_LAYERS || self.tentry.stories.len() > text::MAX_TEXT_LAYERS {
-            return Err(format!(
-                "design: text_layer_over_cap (the redraw passes the window's {} text records; a design file instance's copies are compacted when the document is saved and reopened)",
-                text::MAX_TEXT_LAYERS
-            ));
+            // Review F7: only a design file instance's redraw leaves records a save and reopen compacts.
+            let why = if in_step { "the document draws that many text layers after the redraw" } else { "a design file instance's copies are compacted when the document is saved and reopened" };
+            return Err(format!("design: text_layer_over_cap (the redraw passes the window's {} text records; {why})", text::MAX_TEXT_LAYERS));
         }
         Ok(())
     }
@@ -1069,7 +1104,8 @@ impl Viewer {
         match saved {
             Ok(n) => notes.extend(n),
             Err(e) => {
-                let undone = if self.run.undo() { Ok(()) } else { Err(self.op_error()) };
+                // Review F5 (sibling site): a rollback leaves no redo entry.
+                let undone = if self.run.rollback_newest_step() { Ok(()) } else { Err(self.op_error()) };
                 return Err(rollback_error(&e, undone));
             }
         }
@@ -1118,7 +1154,6 @@ impl Viewer {
         if !vector::entry_persistable() {
             return Err(not_persistable(op));
         }
-        persist::room_for(self.run.document_entry(persist::ENTRY), jobs.len())?;
         let doc = self.run.snapshot().ok_or("nothing open")?.document().clone();
         let mut records = receipt.records.clone();
         for job in jobs {
@@ -1149,6 +1184,11 @@ impl Viewer {
         }
         let (mut ventry, tentry, more, mut notes) = r.finish(true)?;
         writes.extend(more);
+        // Review F2 (lead option (b)): room for each job's new state, counted net of the states it replaces
+        // (same layer, content and instance: the copies' ids alternate between syncs), checked before the step.
+        let after = super::component::project(&doc, &writes);
+        let adds: Vec<persist::StateKey> = jobs.iter().map(|j| (j.group.clone(), j.record.instance_id.clone(), persist::content(&after, &j.group))).collect();
+        persist::room_for_net(self.run.document_entry(persist::ENTRY), &adds)?;
         let authored = ventry.design.get_or_insert_with(|| StudioDesignRecords::new(doc.document_id.clone()));
         for job in jobs {
             match authored.component_instances.iter_mut().find(|i| i.instance_id == job.record.instance_id) {
@@ -1174,6 +1214,9 @@ impl Viewer {
             self.run.restructure_and_entries(op, &writes, vec![(vector::ENTRY, vbytes), (text::ENTRY, tbytes)])
         };
         let revision = self.after_edit(ok, format!("{op} {target}"))?;
+        // Review F5: a state refused after the step puts back the states written so far and rolls the step
+        // back with no redo entry.
+        let design_before = self.run.document_entry(persist::ENTRY).map(<[u8]>::to_vec);
         for (job, member) in jobs.iter().zip(&members) {
             let saved = (|| {
                 let after = self.design_receipt().ok_or("design: records")?;
@@ -1190,7 +1233,12 @@ impl Viewer {
             match saved {
                 Ok(n) => notes.extend(n),
                 Err(e) => {
-                    let undone = if self.run.undo() { Ok(()) } else { Err(self.op_error()) };
+                    let restored = self.run.set_document_entry(persist::ENTRY, design_before.clone());
+                    let undone = if self.run.rollback_newest_step() { Ok(()) } else { Err(self.op_error()) };
+                    let e = match restored {
+                        Ok(()) => e,
+                        Err(code) => format!("{e} (the design states written before it could not be put back: {code})"),
+                    };
                     return Err(rollback_error(&e, undone));
                 }
             }

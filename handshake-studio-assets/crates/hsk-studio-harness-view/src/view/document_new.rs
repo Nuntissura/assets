@@ -76,7 +76,8 @@ impl Viewer {
 
     /// `artboard.delete`.
     pub fn delete_artboard(&mut self, artboard: &str) -> Result<u64, String> {
-        let ok = self.run.delete_artboard(artboard);
+        // Lane SMB-DS-VARIABLES-AUTHOR-1 (review F6): the artboard's explicit variable modes go in its step.
+        let ok = self.run.delete_artboard(artboard) && self.container_records_into_step("delete_artboard");
         self.after_edit(ok, format!("delete_artboard {artboard}"))
     }
 
@@ -109,7 +110,8 @@ impl Viewer {
     /// `page.delete`. The page's content goes with it (lane SMB-LAYOUT-DELETE-CASCADE-1): the raster records and
     /// an open layout editor are re-read after the step.
     pub fn delete_page(&mut self, page: &str) -> Result<u64, String> {
-        let ok = self.run.delete_page(page);
+        // Lane SMB-DS-VARIABLES-AUTHOR-1 (review F6): a deleted spread's explicit variable modes go in its step.
+        let ok = self.run.delete_page(page) && self.container_records_into_step("delete_page");
         let revision = self.after_edit(ok, format!("delete_page {page}"))?;
         self.place_sync();
         if self.layout_editor().is_some() {

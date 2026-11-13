@@ -211,17 +211,24 @@ fn edited_instance_survives_save_and_reopen() {
     let path = s.0.join("edited.handshake");
     v.save(&path, false).unwrap();
     let mut w = reopen(&path);
-    // Lead ruling P3 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): the save leaves out the variant switch's
-    // state (its copies were deleted by the override's redraw), built on a copy; the session keeps its entry
-    // for undo. Independent expectation (review F8): each instance layer keeps exactly its newest state.
+    // Lead rulings P3 and Q2 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): the save, built on a copy, leaves
+    // out only the states that name a layer the saved document does not hold; the session keeps its entry for
+    // undo. Checked against the reopened document (review F8): every newest state is kept, and each held state
+    // is saved exactly when its layer and all its children are layers of the reopened document (the swap
+    // redraws `other` after the override, and its copies may take ids the switch's copies gave up).
     assert_eq!(entry(&v).unwrap(), bytes, "the save never changes the in-session entry");
     let held: folio::StudioDesignStateRecords = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(held.instances.iter().filter(|st| st.layer_id == inst).count(), 2, "the session holds the switch's and the override's states");
     let reopened: folio::StudioDesignStateRecords = serde_json::from_slice(&entry(&w).unwrap()).unwrap();
+    let layers: std::collections::BTreeSet<String> = doc(&w).layers.iter().map(|l| l.layer_id.clone()).collect();
     for layer in [&inst, &other] {
-        let newest: Vec<_> = held.instances.iter().rev().filter(|st| &st.layer_id == layer).take(1).collect();
-        let kept: Vec<_> = reopened.instances.iter().filter(|st| &st.layer_id == layer).collect();
-        assert_eq!(kept, newest, "{layer}: its newest state only");
+        if let Some(newest) = held.instances.iter().rev().find(|st| &st.layer_id == layer) {
+            assert!(reopened.instances.contains(newest), "{layer}: its newest state is saved");
+        }
+    }
+    for st in &held.instances {
+        let exists = layers.contains(&st.layer_id) && st.content_signature.iter().all(|c| layers.contains(c));
+        assert_eq!(reopened.instances.contains(st), exists, "{} {:?}: saved exactly when its layers exist", st.layer_id, st.content_signature);
     }
     assert_eq!(children(&w, &inst), children(&v, &inst));
     let after = w.instance_view(&inst).unwrap();

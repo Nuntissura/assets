@@ -15,8 +15,13 @@
 //! also after a reopen. No later write prunes a state while the session lives (lead ruling
 //! 2026-11-11 on review F1/F2 of lane SMB-DS-COMPONENTS-AUTHOR-1): a write past
 //! [`MAX_PERSISTED_STATES`] (Folio's bound) is refused `design_state_over_cap` before anything is
-//! written, never evicted. States whose layer is gone are dropped when a document is opened with no
-//! history (`Viewer::design_opened`): nothing can return to them then.
+//! written, never evicted; the room a write needs is counted net of the states it replaces (same layer,
+//! content and instance; [`room_for_net`], review F2, lead option (b) 2026-11-13). States that name a
+//! layer the document no longer holds (the state's layer or one of its children: copies a redraw
+//! deleted) are left out of a save ([`Viewer::design_save_entry`], built on a copy) and dropped when a
+//! document is opened with no history (`Viewer::design_opened`): nothing can return to them then. A
+//! state whose layers all still exist is kept even when the layer's children differ now: moving a
+//! child out and back, or grouping and ungrouping, returns to it with no history (review F1, lead Q2).
 //!
 //! Native bindings (lane SMB-DS-COMPONENTS-AUTHOR-1): a state whose instance is not one of the design
 //! file's is the binding of an authored instance (layer, instance, content). Its record is the vector
@@ -213,6 +218,28 @@ pub(super) fn room_for(stored: Option<&[u8]>, more: usize) -> Result<(), String>
     Ok(())
 }
 
+/// One state a write adds: (layer, instance, content).
+pub(super) type StateKey = (String, String, Vec<String>);
+
+/// [`room_for`] counted NET (review F2, lead option (b) 2026-11-13): the held states, minus those `adds`
+/// replace ([`push_state`] replaces a state of the same layer, content and instance), plus the distinct
+/// `adds`. Nothing a later undo can reach is dropped for room; the bound stays Folio's.
+pub(super) fn room_for_net(stored: Option<&[u8]>, adds: &[StateKey]) -> Result<(), String> {
+    let held = stored.and_then(raw_states).map(|r| r.instances).unwrap_or_default();
+    let new: BTreeSet<(&str, &str, &[String])> = adds.iter().map(|(l, i, c)| (l.as_str(), i.as_str(), c.as_slice())).collect();
+    let replaced = held.iter().filter(|s| new.contains(&(s.layer_id.as_str(), s.instance_id.as_str(), s.content_signature.as_slice()))).count();
+    if held.len().saturating_sub(replaced).saturating_add(new.len()) > MAX_PERSISTED_STATES {
+        return Err(format!("design: design_state_over_cap (the document keeps at most {MAX_PERSISTED_STATES} instance states, every state undo can reach included)"));
+    }
+    Ok(())
+}
+
+/// True when the state names only layers of `present` (the document's layer ids): its layer and every
+/// child of its content (review F1, lead Q2: never pruned because the children differ now).
+fn layers_exist(present: &BTreeSet<&str>, s: &StudioInstanceState) -> bool {
+    present.contains(s.layer_id.as_str()) && s.content_signature.iter().all(|c| present.contains(c.as_str()))
+}
+
 /// Appends `state` to `records` (replacing the state of the same layer, content and instance: a layer id
 /// a delete gave up can be minted again for another instance, whose states never replace these), refused
 /// `design_state_over_cap` when the entry would pass [`MAX_PERSISTED_STATES`] (F2: never an eviction).
@@ -305,11 +332,12 @@ impl Viewer {
         Ok(notes)
     }
 
-    /// Run when a document is opened (view `open`): with no undo or redo step nothing can return to
-    /// a layer that is gone or to a layer's earlier children, so the `design` states of absent layers
-    /// (lead ruling 2026-11-11, F1 (b)) and, for authored instances, the states of superseded contents
-    /// and of instances whose record the document no longer holds (ruling R2, 2026-11-12: none of them
-    /// can bind again) are dropped (a design file instance's states are kept as saved),
+    /// Run when a document is opened (view `open`): with no undo or redo step nothing can bring back a
+    /// layer that is gone, so the `design` states of absent layers (lead ruling 2026-11-11, F1 (b)) and,
+    /// for authored instances, the states naming a child the document no longer holds and those of
+    /// instances whose record is gone (ruling R2, 2026-11-12; review F1 / lead Q2 2026-11-13: never because
+    /// the children differ now, a move or an ungroup can return to them) are dropped (a design file
+    /// instance's states are kept as saved),
     /// and the `text` records of redraw copies the document no longer draws are compacted (ruling R1).
     /// Each entry is written only when something was dropped.
     pub(in crate::view) fn design_opened(&mut self) {
@@ -322,14 +350,15 @@ impl Viewer {
         let (design_file, native) = self.design_receipt().map_or_else(Default::default, |r| (r.design_file, r.native.into_keys().collect::<BTreeSet<_>>()));
         if let Some(mut records) = self.run.document_entry(ENTRY).and_then(raw_states) {
             let before = records.instances.len();
+            let present: BTreeSet<&str> = doc.layers.iter().map(|l| l.layer_id.as_str()).collect();
             // A design file instance's states keep their contents (its saved entry reopens byte for byte,
-            // lane SMB-FIG-EDIT-2); a native binding keeps only the current content of a live record.
+            // lane SMB-FIG-EDIT-2); a native binding keeps the states of a live record whose layers all still
+            // exist (review F1, lead Q2: never because the children differ now).
             records.instances.retain(|s| {
-                let present = doc.layers.iter().any(|l| l.layer_id == s.layer_id);
                 if design_file.contains(&s.instance_id) {
-                    present
+                    present.contains(s.layer_id.as_str())
                 } else {
-                    present && native.contains(&s.instance_id) && s.content_signature == content(&doc, &s.layer_id)
+                    native.contains(&s.instance_id) && layers_exist(&present, s)
                 }
             });
             if records.instances.len() != before {
@@ -350,22 +379,21 @@ impl Viewer {
         }
     }
 
-    /// Lead ruling P3 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): the `design` entry as a save writes it,
-    /// when it differs from the session's. A reopened document has no history, so it can never return to
-    /// a state of content its layer no longer draws: the save leaves out the states of absent layers and of
-    /// superseded contents (design file instances too), and for authored instances the states whose record
-    /// is gone (what [`Self::design_opened`] drops). The reopen then prunes nothing more and reads byte for
-    /// byte what was saved. Built on a copy: the session's entry, which undo still needs, is never changed.
-    /// `None`: nothing to leave out, the save writes the session's entry.
+    /// Lead ruling P3 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1), review F1 / lead Q2: the `design` entry
+    /// as a save writes it, when it differs from the session's. A reopened document has no history, so it can
+    /// never bring back a layer it does not hold: the save leaves out the states that name one (their layer
+    /// or a child of their content: the copies a redraw deleted), design file instances too, and for authored
+    /// instances the states whose record is gone (what [`Self::design_opened`] drops). A state whose layers
+    /// all exist is kept, also when the layer's children differ now. The reopen then prunes nothing more and
+    /// reads byte for byte what was saved. Built on a copy: the session's entry, which undo still needs, is
+    /// never changed. `None`: nothing to leave out, the save writes the session's entry.
     pub(in crate::view) fn design_save_entry(&self) -> Option<Vec<u8>> {
         let doc = self.run.snapshot()?.document();
         let mut records = raw_states(self.run.document_entry(ENTRY)?)?;
         let (design_file, native) = self.design_receipt().map_or_else(Default::default, |r| (r.design_file, r.native.into_keys().collect::<BTreeSet<_>>()));
+        let present: BTreeSet<&str> = doc.layers.iter().map(|l| l.layer_id.as_str()).collect();
         let before = records.instances.len();
-        records.instances.retain(|s| {
-            let current = doc.layers.iter().any(|l| l.layer_id == s.layer_id) && s.content_signature == content(doc, &s.layer_id);
-            current && (design_file.contains(&s.instance_id) || native.contains(&s.instance_id))
-        });
+        records.instances.retain(|s| layers_exist(&present, s) && (design_file.contains(&s.instance_id) || native.contains(&s.instance_id)));
         if records.instances.len() == before {
             return None;
         }
@@ -384,9 +412,31 @@ impl Viewer {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PERSISTED_STATES, push_state, room_for};
+    use super::{MAX_PERSISTED_STATES, StateKey, push_state, room_for, room_for_net};
     use hsk_studio_folio::{StudioDesignStateRecords, StudioInstanceState};
     use std::collections::BTreeMap;
+
+    /// Review F2 (lead option (b)): room is counted net of the states a write replaces; a write that adds
+    /// past Folio's bound is refused, whatever it replaces elsewhere.
+    #[test]
+    fn room_is_counted_net_of_replaced_states() {
+        let mut r = StudioDesignStateRecords::new("SDOC-019abcde-0000-7000-8000-000000000001".to_owned());
+        for i in 0..1023 {
+            push_state(&mut r, state(i)).unwrap();
+        }
+        let bytes = serde_json::to_vec(&r).unwrap();
+        let key = |i: usize| -> StateKey { let s = state(i); (s.layer_id, s.instance_id, s.content_signature) };
+        // 341 states that replace held ones plus one new: 1023 - 341 + 342 = 1024 fits.
+        let mut adds: Vec<StateKey> = (0..341).map(key).collect();
+        adds.push(key(5000));
+        assert!(room_for_net(Some(&bytes), &adds).is_ok());
+        assert!(room_for(Some(&bytes), adds.len()).is_err(), "the gross count would refuse it");
+        // Two new ones do not fit; a repeated key counts once.
+        adds.push(key(5001));
+        assert!(room_for_net(Some(&bytes), &adds).unwrap_err().starts_with("design: design_state_over_cap"));
+        let twice = vec![key(5000), key(5000)];
+        assert!(room_for_net(Some(&bytes), &twice).is_ok());
+    }
 
     fn state(i: usize) -> StudioInstanceState {
         StudioInstanceState {

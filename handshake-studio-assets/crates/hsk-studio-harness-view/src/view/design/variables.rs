@@ -18,20 +18,26 @@
 //! the default to the first remaining mode; names are slash paths unique within the collection, mode names
 //! unique within the collection; a variable another variable aliases is not removed (`variable_aliased`).
 //! [STU-DS-123]: no mode ceiling beyond Folio's own `MAX_MODES`; the Studio-declared advisory threshold is
-//! [`VARIABLE_VALUE_ADVISORY`] stored values (variables x modes), reported as `advisory` in every result
-//! and in `state_json().design.variables` (an advisory, never a refusal).
+//! [`VARIABLE_VALUE_ADVISORY`] stored values (variables x modes), reported as `advisory` in every mutating
+//! result and in `state_json().design.variables` (an advisory, never a refusal) and stated in the manual
+//! (harness-core `DRIVE_LIMITS`).
+//!
+//! Host integration (review F3): each mutating row commits ONE entry-only step through
+//! `Run::set_entry_step` under its own catalog id: the op record, the step's attribution and its label
+//! (the undo name) are the row id, and its business event is STUDIO_VARIABLE_SET.
 //!
 //! Out of scope (declared): extended collections ([STU-DS-124]; Folio refuses `is_extension`) and their
 //! commands `variable_collection.extend`, `variable.values_by_mode_for_collection` and
 //! `variable.remove_override_for_mode`; `EXPRESSION` values ([STU-DS-126], [STU-DS-131]; no Folio home);
 //! the binding commands and bindable-field sets ([STU-DS-130]; no Folio home), so `rebound` is always 0;
 //! the library-loading asynchronous read forms; the variables of an opened design file's receipt are
-//! read-only here (`variable_not_authored`).
+//! not available here (`variable_not_authored`: not resolved, not listed in the state; review F7).
 #![deny(clippy::arithmetic_side_effects)]
 use super::super::Viewer;
 use super::super::vector::{self, VectorEntry, style};
 use super::component::{mint_in, variant_definitions};
 use super::instance::{carries_nothing, settle};
+use hsk_studio_accord::StudioBusinessEventId;
 use hsk_studio_components::{ComponentsError, Limits, VariableTable, resolve_variable};
 use hsk_studio_folio::{
     self as folio, NodeKind, NodeRef, Parent, StudioDesignRecords, StudioDocument, StudioMode, StudioNodeDesign, StudioPublishing, StudioValue, StudioVariable,
@@ -167,43 +173,49 @@ fn alias_edges(d: &StudioDesignRecords) -> BTreeMap<&str, BTreeSet<&str>> {
     edges
 }
 
-/// The alias path from `from` to `to` (both included; breadth first over sorted edges, so the answer is
-/// deterministic), or `None`.
-fn alias_path(d: &StudioDesignRecords, from: &str, to: &str) -> Option<Vec<String>> {
+/// Most variables one cycle check visits (the entry's variable cap): past it the check is refused typed
+/// `variable_alias_check_over_budget` (review F7).
+pub const MAX_ALIAS_CHECK_VISITS: usize = style::MAX_ENTRY_VARIABLES;
+
+/// [STU-DS-175]: refused `variable_alias_cycle` naming the cycle in resolution order when `variable`'s
+/// values in `d` alias back to it. The alias edges are built once; ONE breadth-first walk from all the
+/// variable's alias targets (sorted, so the answer is deterministic) visits each variable at most once,
+/// with a cancel point per visit and a typed refusal past [`MAX_ALIAS_CHECK_VISITS`] (review F7).
+fn check_cycle(d: &StudioDesignRecords, variable: &str, cancel: &hsk_studio_accord::CancellationToken) -> Result<(), String> {
+    check_cycle_within(d, variable, cancel, MAX_ALIAS_CHECK_VISITS)
+}
+
+fn check_cycle_within(d: &StudioDesignRecords, variable: &str, cancel: &hsk_studio_accord::CancellationToken, bound: usize) -> Result<(), String> {
     let edges = alias_edges(d);
+    let Some(starts) = edges.get(variable) else { return Ok(()) };
     let mut came: BTreeMap<&str, &str> = BTreeMap::new();
-    let mut queue = std::collections::VecDeque::from([from]);
-    let mut seen = BTreeSet::from([from]);
+    let mut seen: BTreeSet<&str> = starts.iter().copied().collect();
+    let mut queue: std::collections::VecDeque<&str> = starts.iter().copied().collect();
+    let mut visits = 0_usize;
     while let Some(at) = queue.pop_front() {
-        if at == to {
-            let mut path = vec![to.to_owned()];
-            let mut cur = to;
+        cancel.check().map_err(|_| refused("canceled", "the alias cycle check was canceled"))?;
+        visits = visits.saturating_add(1);
+        if visits > bound {
+            return Err(refused("variable_alias_check_over_budget", format!("the alias walk passes {bound} variables")));
+        }
+        if at == variable {
+            let mut cycle = vec![variable.to_owned()];
+            let mut cur = at;
+            let mut back = Vec::new();
             while let Some(prev) = came.get(cur) {
-                path.push((*prev).to_owned());
+                back.push((*prev).to_owned());
                 cur = prev;
             }
-            path.reverse();
-            return Some(path);
+            back.reverse();
+            cycle.extend(back);
+            cycle.push(variable.to_owned());
+            return Err(refused("variable_alias_cycle", cycle.join(" -> ")));
         }
         for next in edges.get(at).into_iter().flatten() {
             if seen.insert(next) {
                 came.insert(next, at);
                 queue.push_back(next);
             }
-        }
-    }
-    None
-}
-
-/// [STU-DS-175]: refused `variable_alias_cycle` naming the cycle in resolution order when `variable`'s
-/// values in `d` alias back to it.
-fn check_cycle(d: &StudioDesignRecords, variable: &str) -> Result<(), String> {
-    let targets: BTreeSet<&str> = d.variables.iter().filter(|v| v.variable_id == variable).flat_map(|v| v.values_by_mode.values().filter_map(StudioValue::alias_target)).collect();
-    for target in targets {
-        if let Some(path) = alias_path(d, target, variable) {
-            let mut cycle = vec![variable.to_owned()];
-            cycle.extend(path);
-            return Err(refused("variable_alias_cycle", cycle.join(" -> ")));
         }
     }
     Ok(())
@@ -255,7 +267,7 @@ fn publishing(id: &str, description: String) -> StudioPublishing {
 }
 
 /// The authoring context: the document, the vector entry, its records (settled as every authoring commit
-/// is) and the variable ids of an opened design file's receipt (read-only here).
+/// is) and the variable ids of an opened design file's receipt (not available here).
 struct Vars {
     doc: StudioDocument,
     ventry: VectorEntry,
@@ -347,23 +359,26 @@ impl Viewer {
         Ok(Vars { doc, ventry, d, fig })
     }
 
-    /// Stores the records as one entry-only step (caps and Folio's whole-set check first).
-    fn commit_variables(&mut self, op: &str, target: &str, v: Vars) -> Result<u64, String> {
+    /// Stores the records as one entry-only step of the row `command` (caps and Folio's whole-set check
+    /// first): review F3, its record, attribution and undo name are the catalog id and its business event
+    /// is STUDIO_VARIABLE_SET. Returns the revision and the [STU-DS-123] advisory of the stored records.
+    fn commit_variables(&mut self, command: &'static str, target: &str, v: Vars) -> Result<(u64, Value), String> {
         if !vector::entry_persistable() {
             return Err(refused("vector_entry_not_persistable", "the session holds no vector entry token"));
         }
         let Vars { doc, mut ventry, d, .. } = v;
         super::component::check_caps(&d)?;
         self.check_authored(&doc, &[], &d)?;
+        let adv = advisory(stored_values(&d));
         ventry.design = Some(d);
         let bytes = ventry.to_bytes(&doc.document_id)?;
-        let ok = self.run.set_tiles_and_entry(op, target, None, vector::ENTRY, bytes);
-        self.after_edit(ok, format!("{op} {target}"))
+        let ok = self.run.set_entry_step(command, Some(StudioBusinessEventId::VariableSet), vector::ENTRY, bytes);
+        self.after_edit(ok, format!("{command} {target}")).map(|revision| (revision, adv))
     }
 
     #[allow(clippy::too_many_lines)]
     fn variable_inner(&mut self, command: VariableCommand) -> Result<Value, String> {
-        let op = command.id().replace('.', "_");
+        let cmd = command.id();
         match command {
             VariableCommand::CollectionCreate { name, mode_name } => {
                 let mut v = self.vars()?;
@@ -387,9 +402,8 @@ impl Viewer {
                     default_mode_id: mode.clone(),
                     variable_ids: Vec::new(),
                 });
-                let values = stored_values(&v.d);
-                let revision = self.commit_variables(&op, &id, v)?;
-                Ok(json!({"collection_id": id, "mode_id": mode, "revision": revision, "advisory": advisory(values)}))
+                let (revision, adv) = self.commit_variables(cmd, &id, v)?;
+                Ok(json!({"collection_id": id, "mode_id": mode, "revision": revision, "advisory": adv}))
             }
             VariableCommand::AddMode { collection, name } => {
                 let mut v = self.vars()?;
@@ -413,9 +427,8 @@ impl Viewer {
                         var.values_by_mode.insert(mode.clone(), value);
                     }
                 }
-                let values = stored_values(&v.d);
-                let revision = self.commit_variables(&op, &collection, v)?;
-                Ok(json!({"collection_id": collection, "mode_id": mode, "revision": revision, "advisory": advisory(values)}))
+                let (revision, adv) = self.commit_variables(cmd, &collection, v)?;
+                Ok(json!({"collection_id": collection, "mode_id": mode, "revision": revision, "advisory": adv}))
             }
             VariableCommand::RenameMode { collection, mode, name } => {
                 let mut v = self.vars()?;
@@ -431,8 +444,8 @@ impl Viewer {
                 if let Some(m) = k.modes.iter_mut().find(|m| m.mode_id == mode) {
                     m.name.clone_from(&name);
                 }
-                let revision = self.commit_variables(&op, &collection, v)?;
-                Ok(json!({"collection_id": collection, "mode_id": mode, "name": name, "revision": revision}))
+                let (revision, adv) = self.commit_variables(cmd, &collection, v)?;
+                Ok(json!({"collection_id": collection, "mode_id": mode, "name": name, "revision": revision, "advisory": adv}))
             }
             VariableCommand::RemoveMode { collection, mode } => {
                 let mut v = self.vars()?;
@@ -451,9 +464,8 @@ impl Viewer {
                     var.values_by_mode.remove(&mode);
                 }
                 let cleared = v.clear_explicit(|c, m| c == collection && m == mode);
-                let values = stored_values(&v.d);
-                let revision = self.commit_variables(&op, &collection, v)?;
-                Ok(json!({"collection_id": collection, "mode_id": mode, "default_mode_id": default, "explicit_modes_cleared": cleared, "revision": revision, "advisory": advisory(values)}))
+                let (revision, adv) = self.commit_variables(cmd, &collection, v)?;
+                Ok(json!({"collection_id": collection, "mode_id": mode, "default_mode_id": default, "explicit_modes_cleared": cleared, "revision": revision, "advisory": adv}))
             }
             VariableCommand::CollectionRemove { collection } => {
                 let mut v = self.vars()?;
@@ -467,9 +479,8 @@ impl Viewer {
                 v.d.variable_collections.remove(ci);
                 v.d.variables.retain(|x| x.variable_collection_id != collection);
                 let cleared = v.clear_explicit(|c, _| c == collection);
-                let values = stored_values(&v.d);
-                let revision = self.commit_variables(&op, &collection, v)?;
-                Ok(json!({"collection_id": collection, "variables_removed": inside.len(), "explicit_modes_cleared": cleared, "revision": revision, "advisory": advisory(values)}))
+                let (revision, adv) = self.commit_variables(cmd, &collection, v)?;
+                Ok(json!({"collection_id": collection, "variables_removed": inside.len(), "explicit_modes_cleared": cleared, "revision": revision, "advisory": adv}))
             }
             VariableCommand::Create { collection, name, resolved_type, value, scopes, description, hidden_from_publishing } => {
                 let mut v = self.vars()?;
@@ -505,10 +516,9 @@ impl Viewer {
                     code_syntax: BTreeMap::new(),
                 });
                 v.d.variable_collections[ci].variable_ids.push(id.clone());
-                check_cycle(&v.d, &id)?;
-                let values = stored_values(&v.d);
-                let revision = self.commit_variables(&op, &id, v)?;
-                Ok(json!({"variable_id": id, "collection_id": collection, "revision": revision, "advisory": advisory(values)}))
+                check_cycle(&v.d, &id, self.cancel)?;
+                let (revision, adv) = self.commit_variables(cmd, &id, v)?;
+                Ok(json!({"variable_id": id, "collection_id": collection, "revision": revision, "advisory": adv}))
             }
             VariableCommand::Remove { variable } => {
                 let mut v = self.vars()?;
@@ -522,9 +532,8 @@ impl Viewer {
                 for k in v.d.variable_collections.iter_mut().filter(|k| k.collection_id == collection) {
                     k.variable_ids.retain(|x| *x != variable);
                 }
-                let values = stored_values(&v.d);
-                let revision = self.commit_variables(&op, &variable, v)?;
-                Ok(json!({"variable_id": variable, "collection_id": collection, "revision": revision, "advisory": advisory(values)}))
+                let (revision, adv) = self.commit_variables(cmd, &variable, v)?;
+                Ok(json!({"variable_id": variable, "collection_id": collection, "revision": revision, "advisory": adv}))
             }
             VariableCommand::SetValueForMode { variable, mode, value } => {
                 let mut v = self.vars()?;
@@ -533,9 +542,9 @@ impl Viewer {
                 v.mode(ci, &mode)?;
                 v.value_fits(v.d.variables[vi].resolved_type, &value)?;
                 v.d.variables[vi].values_by_mode.insert(mode.clone(), value);
-                check_cycle(&v.d, &variable)?;
-                let revision = self.commit_variables(&op, &variable, v)?;
-                Ok(json!({"variable_id": variable, "mode_id": mode, "revision": revision}))
+                check_cycle(&v.d, &variable, self.cancel)?;
+                let (revision, adv) = self.commit_variables(cmd, &variable, v)?;
+                Ok(json!({"variable_id": variable, "mode_id": mode, "revision": revision, "advisory": adv}))
             }
             VariableCommand::SetCodeSyntax { variable, platform, name } => {
                 let mut v = self.vars()?;
@@ -544,8 +553,8 @@ impl Viewer {
                     return Err(refused("code_syntax_name_invalid", "1..=128 bytes, no control character"));
                 }
                 v.d.variables[vi].code_syntax.insert(platform.clone(), name.clone());
-                let revision = self.commit_variables(&op, &variable, v)?;
-                Ok(json!({"variable_id": variable, "platform": platform, "name": name, "revision": revision}))
+                let (revision, adv) = self.commit_variables(cmd, &variable, v)?;
+                Ok(json!({"variable_id": variable, "platform": platform, "name": name, "revision": revision, "advisory": adv}))
             }
             VariableCommand::RemoveCodeSyntax { variable, platform } => {
                 let mut v = self.vars()?;
@@ -553,8 +562,8 @@ impl Viewer {
                 if v.d.variables[vi].code_syntax.remove(&platform).is_none() {
                     return Err(refused("code_syntax_absent", format!("{variable} has no {platform} name")));
                 }
-                let revision = self.commit_variables(&op, &variable, v)?;
-                Ok(json!({"variable_id": variable, "platform": platform, "revision": revision}))
+                let (revision, adv) = self.commit_variables(cmd, &variable, v)?;
+                Ok(json!({"variable_id": variable, "platform": platform, "revision": revision, "advisory": adv}))
             }
             VariableCommand::CreateAlias { variable } => {
                 let v = self.vars()?;
@@ -572,7 +581,7 @@ impl Viewer {
                 let ci = v.collection(&collection)?;
                 v.mode(ci, &mode)?;
                 if v.d.node_design(&node).and_then(|n| n.explicit_variable_modes.get(&collection)) == Some(&mode) {
-                    return Ok(json!({"node": node, "collection_id": collection, "mode_id": mode, "rebound": 0, "changed": false}));
+                    return Ok(json!({"node": node, "collection_id": collection, "mode_id": mode, "rebound": 0, "changed": false, "advisory": advisory(stored_values(&v.d))}));
                 }
                 match v.d.nodes.iter_mut().find(|n| n.node.node_id == node) {
                     Some(n) => {
@@ -590,9 +599,9 @@ impl Viewer {
                         style_refs: BTreeMap::new(),
                     }),
                 }
-                let revision = self.commit_variables(&op, &node, v)?;
+                let (revision, adv) = self.commit_variables(cmd, &node, v)?;
                 // No property is bound to a variable yet (bindings have no Folio home): nothing to re-resolve.
-                Ok(json!({"node": node, "collection_id": collection, "mode_id": mode, "rebound": 0, "changed": true, "revision": revision}))
+                Ok(json!({"node": node, "collection_id": collection, "mode_id": mode, "rebound": 0, "changed": true, "revision": revision, "advisory": adv}))
             }
             VariableCommand::ClearExplicitMode { node, collection } => {
                 let mut v = self.vars()?;
@@ -606,8 +615,8 @@ impl Viewer {
                     n.explicit_variable_modes.remove(&collection);
                 }
                 v.d.nodes.retain(|n| !carries_nothing(n));
-                let revision = self.commit_variables(&op, &node, v)?;
-                Ok(json!({"node": node, "collection_id": collection, "rebound": 0, "revision": revision}))
+                let (revision, adv) = self.commit_variables(cmd, &node, v)?;
+                Ok(json!({"node": node, "collection_id": collection, "rebound": 0, "revision": revision, "advisory": adv}))
             }
         }
     }
@@ -685,7 +694,86 @@ fn resolution_refusal(e: &ComponentsError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{VARIABLE_VALUE_ADVISORY, admits, advisory, label_ok, name_ok};
+    use super::{VARIABLE_VALUE_ADVISORY, admits, advisory, check_caps, check_cycle_within, label_ok, name_ok, publishing};
+    use super::style;
+    use hsk_studio_accord::CancellationToken;
+    use hsk_studio_folio::{StudioDesignRecords, StudioMode, StudioValue, StudioVariable, StudioVariableCollection, VariableCollectionSchema, VariableSchema, VariableType};
+    use std::collections::BTreeMap;
+
+    fn vid(i: usize) -> String {
+        format!("SVAR-019abcde-0000-7000-8000-{i:012x}")
+    }
+
+    fn variable(i: usize, value: StudioValue) -> StudioVariable {
+        StudioVariable {
+            schema_id: VariableSchema::V1,
+            variable_id: vid(i),
+            name: format!("v/{i}"),
+            hidden_from_publishing: false,
+            publishing: publishing(&vid(i), String::new()),
+            variable_collection_id: "SVCL-019abcde-0000-7000-8000-000000000001".into(),
+            resolved_type: VariableType::Float,
+            values_by_mode: BTreeMap::from([("mode-1".to_owned(), value)]),
+            scopes: Vec::new(),
+            code_syntax: BTreeMap::new(),
+        }
+    }
+
+    /// `n` variables, each aliasing the next; the last aliases the first when `cycle`.
+    fn chain(n: usize, cycle: bool) -> StudioDesignRecords {
+        let mut d = StudioDesignRecords::new("SDOC-019abcde-0000-7000-8000-000000000001".to_owned());
+        for i in 0..n {
+            let next = i.saturating_add(1);
+            let value = if next < n || cycle { StudioValue::VariableAlias { id: vid(if next < n { next } else { 0 }), resolved_type: VariableType::Float } } else { StudioValue::Float { value: 1.0 } };
+            d.variables.push(variable(i, value));
+        }
+        d
+    }
+
+    /// Review F7, STU-DS-175: the cycle is named in resolution order; the walk is bounded and cancelable.
+    #[test]
+    fn the_alias_cycle_check_names_the_cycle_and_is_bounded_and_cancelable() {
+        let token = CancellationToken::default();
+        let e = check_cycle_within(&chain(5, true), &vid(0), &token, 100).unwrap_err();
+        let expected = [0, 1, 2, 3, 4, 0].map(vid).join(" -> ");
+        assert!(e.starts_with("variable: variable_alias_cycle") && e.contains(&expected), "{e}");
+        assert!(check_cycle_within(&chain(5, false), &vid(0), &token, 100).is_ok());
+        let e = check_cycle_within(&chain(50, false), &vid(0), &token, 10).unwrap_err();
+        assert!(e.starts_with("variable: variable_alias_check_over_budget"), "{e}");
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        let e = check_cycle_within(&chain(5, true), &vid(0), &canceled, 100).unwrap_err();
+        assert!(e.starts_with("variable: canceled"), "{e}");
+    }
+
+    /// Review F8: the entry caps of the variable records refuse typed before a write.
+    #[test]
+    fn the_variable_caps_refuse_typed() {
+        let collection = |i: usize| StudioVariableCollection {
+            schema_id: VariableCollectionSchema::V1,
+            collection_id: format!("SVCL-019abcde-0000-7000-8000-{i:012x}"),
+            name: format!("c{i}"),
+            hidden_from_publishing: false,
+            publishing: publishing("x", String::new()),
+            is_extension: false,
+            modes: vec![StudioMode { mode_id: "mode-1".into(), name: "Mode 1".into() }],
+            default_mode_id: "mode-1".into(),
+            variable_ids: Vec::new(),
+        };
+        let mut d = StudioDesignRecords::new("SDOC-019abcde-0000-7000-8000-000000000001".to_owned());
+        d.variable_collections = (0..style::MAX_ENTRY_COLLECTIONS).map(collection).collect();
+        assert!(check_caps(&d).is_ok());
+        d.variable_collections.push(collection(style::MAX_ENTRY_COLLECTIONS));
+        assert!(check_caps(&d).unwrap_err().starts_with("variable: variable_collection_over_cap"));
+        let mut d = StudioDesignRecords::new("SDOC-019abcde-0000-7000-8000-000000000001".to_owned());
+        d.variables = (0..=style::MAX_ENTRY_VARIABLES).map(|i| variable(i, StudioValue::Float { value: 0.0 })).collect();
+        assert!(check_caps(&d).unwrap_err().starts_with("variable: variable_over_cap"));
+        let mut d = StudioDesignRecords::new("SDOC-019abcde-0000-7000-8000-000000000001".to_owned());
+        let mut wide = variable(0, StudioValue::Float { value: 0.0 });
+        wide.values_by_mode = (0..=style::MAX_ENTRY_VARIABLE_VALUES).map(|m| (format!("m{m}"), StudioValue::Float { value: 0.0 })).collect();
+        d.variables.push(wide);
+        assert!(check_caps(&d).unwrap_err().starts_with("variable: variable_value_over_cap"));
+    }
 
     #[test]
     fn scope_admission_follows_the_closed_set() {

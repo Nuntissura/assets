@@ -58,9 +58,10 @@ impl NotProducedReason {
 
 /// The variants nothing asset-local produces, with the reason. Never a fake producer
 /// (`variants_without_a_producer_are_listed_not_faked`). harness-core's Run produces the other
-/// nine: DOCUMENT_CREATED, LAYER_CREATED, LAYER_MUTATED, VECTOR_PATH_EDITED, TEXT_EDITED,
-/// RAW_DEVELOPED, IMPORT_COMPLETED, HISTORY_UNDONE and HISTORY_REDONE.
-pub const NOT_PRODUCED_ASSET_LOCALLY: [(StudioBusinessEventId, NotProducedReason); 13] = [
+/// ten: DOCUMENT_CREATED, LAYER_CREATED, LAYER_MUTATED, VECTOR_PATH_EDITED, TEXT_EDITED,
+/// RAW_DEVELOPED, IMPORT_COMPLETED, HISTORY_UNDONE, HISTORY_REDONE and VARIABLE_SET (the variable rows,
+/// lane SMB-DS-VARIABLES-AUTHOR-1).
+pub const NOT_PRODUCED_ASSET_LOCALLY: [(StudioBusinessEventId, NotProducedReason); 12] = [
     (StudioBusinessEventId::DocumentPromoted, NotProducedReason::NoPromotionOrProposalFlow),
     (StudioBusinessEventId::EditProposalRecorded, NotProducedReason::NoPromotionOrProposalFlow),
     (StudioBusinessEventId::EditPromoted, NotProducedReason::NoPromotionOrProposalFlow),
@@ -71,7 +72,6 @@ pub const NOT_PRODUCED_ASSET_LOCALLY: [(StudioBusinessEventId, NotProducedReason
     (StudioBusinessEventId::EffectApplied, NotProducedReason::NoMappedCommand),
     (StudioBusinessEventId::StyleApplied, NotProducedReason::NoMappedCommand),
     (StudioBusinessEventId::ComponentPublished, NotProducedReason::NoMappedCommand),
-    (StudioBusinessEventId::VariableSet, NotProducedReason::NoMappedCommand),
     (StudioBusinessEventId::PrototypeEdited, NotProducedReason::NoMappedCommand),
     (StudioBusinessEventId::ExportRendered, NotProducedReason::ExportOutsideRun),
 ];
