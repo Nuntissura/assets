@@ -46,7 +46,7 @@ fn an_envelope_without_command_keeps_its_bytes() {
     // The pre-lane encoding of this envelope (struct field order, no whitespace): no `command`
     // key, not even `null`.
     let before = concat!(
-        r#"{"bridge_version":1,"correlation_id":7,"idempotency_key":null,"#,
+        r#"{"bridge_version":2,"correlation_id":7,"idempotency_key":null,"#,
         r#""actor":{"account_id":"account","principal_id":"principal","owner_account_id":"owner","#,
         r#""owner_principal_id":"owner-principal","access_space_id":"space","session_id":"session"},"#,
         r#""resource_id":"SDOC-019abcde-0000-7000-8000-000000000001","expected_revision":9,"#,

@@ -247,7 +247,9 @@ fn the_site_lock_names_its_holder_and_never_blocks() {
         define(run, &dir);
         cmd(run, "web.remote_target", json!({"target_id": "local", "root_path": s(&dir.at("target"))}));
         cmd(run, "web.export_recipe", json!({"output_root": s(&dir.at("out")), "documents": "site"}));
-        for (id, params) in [("web.site_report", json!({})), ("web.export", json!({})), ("web.move_file", json!({"from": "orphan.png", "to": "img/orphan.png"}))] {
+        // Lane SMB-WEB-SITE-2 (lead ruling F10): a read (the site report) takes no lock and runs while a writer holds it.
+        cmd(run, "web.site_report", json!({}));
+        for (id, params) in [("web.export", json!({})), ("web.move_file", json!({"from": "orphan.png", "to": "img/orphan.png"}))] {
             assert_eq!(refused(run, id, params), "site_locked", "{id}");
             let record = run.ops().last().unwrap();
             assert_eq!(record["detail"]["holder"], json!({"account_id": "lane-b", "client_session": "s-other", "command_id": "web.move_file"}), "{id}: only three fields, never the whole file: {record}");

@@ -264,7 +264,7 @@ fn roundtrip_envelopes_through_session_and_idempotent_replay() {
         let requests = rig.bridge.sent_requests();
         assert_eq!(
             String::from_utf8(requests[0].clone()).unwrap(),
-            r#"{"bridge_version":1,"correlation_id":1,"idempotency_key":null,"actor":{"account_id":"account","principal_id":"principal","owner_account_id":"owner","owner_principal_id":"owner-principal","access_space_id":"space","session_id":"session"},"resource_id":"SDOC-019abcde-0000-7000-8000-000000000001","expected_revision":0,"lease_epoch":3,"body":{"grant_check":{"action":"edit"}}}"#
+            r#"{"bridge_version":2,"correlation_id":1,"idempotency_key":null,"actor":{"account_id":"account","principal_id":"principal","owner_account_id":"owner","owner_principal_id":"owner-principal","access_space_id":"space","session_id":"session"},"resource_id":"SDOC-019abcde-0000-7000-8000-000000000001","expected_revision":0,"lease_epoch":3,"body":{"grant_check":{"action":"edit"}}}"#
         );
         let commit = sent(&rig).remove(2);
         assert_eq!(
@@ -498,9 +498,9 @@ fn wire_strictness_and_descriptor() {
             ..limits
         };
         let cases: Vec<(&str, &str, &str)> = vec![
-            ("unknown_field", "\"bridge_version\":1", "\"bridge_version\":1,\"extra\":1"),
-            ("wrong_version", "\"bridge_version\":1", "\"bridge_version\":2"),
-            ("duplicate_key", "\"bridge_version\":1", "\"bridge_version\":1,\"bridge_version\":1"),
+            ("unknown_field", "\"bridge_version\":2", "\"bridge_version\":2,\"extra\":1"),
+            ("wrong_version", "\"bridge_version\":2", "\"bridge_version\":1"),
+            ("duplicate_key", "\"bridge_version\":2", "\"bridge_version\":2,\"bridge_version\":2"),
             ("duplicate_key", "\"account_id\":\"account\"", "\"account_id\":\"account\",\"account_id\":\"x\""),
             ("invalid_resource_id", "\"SDOC-", "\"ZZZZ-"),
             ("invalid_hex", "7b7d", "7B7D"),
@@ -525,17 +525,19 @@ fn wire_strictness_and_descriptor() {
         assert_eq!(codes.len(), 12, "every cause has its own stable code");
         // The encoder never produces what the decoder refuses.
         let mut foreign = envelope.clone();
-        foreign.bridge_version = 2;
+        foreign.bridge_version = 1;
         assert_eq!(encode_envelope(&foreign, &limits).unwrap_err().code(), "wrong_version");
         // Replies are held to the same strictness.
         let reply = encode_reply(&Reply::new(7, ReplyBody::Ack), &limits).unwrap();
-        assert_eq!(reply, br#"{"bridge_version":1,"correlation_id":7,"result":"ack"}"#);
+        assert_eq!(reply, br#"{"bridge_version":2,"correlation_id":7,"result":"ack"}"#);
         let extra = String::from_utf8(reply).unwrap().replacen("\"ack\"", "\"ack\",\"x\":1", 1);
         assert_eq!(decode_reply(extra.as_bytes(), &limits).unwrap_err().code(), "unknown_field");
 
         // The descriptor is JSON and lists every not-implemented host consumer as such.
         let descriptor: Value = serde_json::from_str(DESCRIPTOR).unwrap();
         assert!(descriptor["storage"].as_str().unwrap().starts_with("NONE"));
+        // Lane SMB-WEB-SITE-2 (lead F10): the `read` action is a wire change, so the generation moved to 2.
+        assert_eq!((BRIDGE_VERSION, descriptor["bridge_version"].as_u64()), (2, Some(2)));
         let later = descriptor["later_host_adapters"].as_array().unwrap();
         assert!(later.len() >= 6);
         assert!(later.iter().all(|a| a["status"] == "NOT_IMPLEMENTED_HOST_ONLY"));
@@ -621,6 +623,35 @@ fn job_admission_needs_a_standing_grant() {
         );
         assert_eq!(host.jobs_in_flight(), (0, 0), "denied admissions hold nothing");
         assert!(matches!(admit(&host, &a, DOC, 1, 1), JobDecision::Admitted { .. }));
+    });
+}
+
+/// Lane SMB-WEB-SITE-2 (lead ruling F10): grants form a hierarchy for `read` only. A standing `edit` grant implies
+/// `read` (grant check and job admission); a `read` grant implies nothing else; `export` does not imply `read`; a
+/// revoked `edit` grant no longer implies it (denied `grant_revoked`).
+#[test]
+fn edit_implies_read_at_the_host() {
+    bounded_case("read_grant_hierarchy", || {
+        let host = TransientHost::default();
+        let (editor, reader, exporter) = (actor(), other_actor("account", "reader"), other_actor("account", "exporter"));
+        let doc = DomainId::parse(DOC).unwrap();
+        host.grant(&editor, &doc, Action::Edit);
+        host.grant(&reader, &doc, Action::Read);
+        host.grant(&exporter, &doc, Action::Export);
+        let read = || Body::JobAdmit { action: ActionWire::Read, jobs: 1, bytes: 0 };
+        let check = |action: ActionWire| Body::GrantCheck { action };
+        let granted = |reply: ReplyBody| matches!(reply, ReplyBody::Grant(GrantDecision { granted: true, .. }));
+        for who in [&editor, &reader] {
+            assert!(matches!(ask(&host, &request(who, DOC, None, 0, EPOCH, read())), ReplyBody::Job(JobDecision::Admitted { .. })));
+            assert!(granted(ask(&host, &request(who, DOC, None, 0, EPOCH, check(ActionWire::Read)))));
+        }
+        assert_eq!(ask(&host, &request(&exporter, DOC, None, 0, EPOCH, read())), ReplyBody::Job(JobDecision::Denied { code: JobDenyCode::GrantMissing }));
+        assert!(!granted(ask(&host, &request(&exporter, DOC, None, 0, EPOCH, check(ActionWire::Read)))));
+        assert!(!granted(ask(&host, &request(&reader, DOC, None, 0, EPOCH, check(ActionWire::Edit)))), "read implies nothing else");
+        let edit = Body::JobAdmit { action: ActionWire::Edit, jobs: 1, bytes: 0 };
+        assert_eq!(ask(&host, &request(&reader, DOC, None, 0, EPOCH, edit)), ReplyBody::Job(JobDecision::Denied { code: JobDenyCode::GrantMissing }));
+        host.revoke(&editor, &doc, Action::Edit);
+        assert_eq!(ask(&host, &request(&editor, DOC, None, 0, EPOCH, read())), ReplyBody::Job(JobDecision::Denied { code: JobDenyCode::GrantRevoked }));
     });
 }
 
@@ -815,8 +846,8 @@ fn only_canonical_bytes_decode() {
         assert_eq!(decode_envelope(good.as_bytes(), &limits).unwrap(), envelope);
 
         let code = |text: &str| decode_envelope(text.as_bytes(), &limits).unwrap_err().code();
-        let without_version = good.replacen("\"bridge_version\":1,", "", 1);
-        let reordered = format!("{},\"bridge_version\":1}}", without_version.strip_suffix('}').unwrap());
+        let without_version = good.replacen("\"bridge_version\":2,", "", 1);
+        let reordered = format!("{},\"bridge_version\":2}}", without_version.strip_suffix('}').unwrap());
         let variants = [
             ("space after a colon", good.replacen("\"correlation_id\":7", "\"correlation_id\": 7", 1)),
             ("space after a comma", good.replacen("\"correlation_id\":7,", "\"correlation_id\":7, ", 1)),
