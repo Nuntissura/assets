@@ -123,6 +123,8 @@ mod project_bin;
 pub use project_bin::*;
 mod export_settings;
 pub use export_settings::*;
+mod board;
+pub use board::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]
@@ -798,7 +800,8 @@ fn validate(
                     }
                 }
             }
-            ("vector", Payload::Vector { path_ids }) => {
+            // Lane SMB-BOARD-1 (STU-WB-102): a vector-backed board node kind is a vector layer.
+            (kind, Payload::Vector { path_ids }) if kind == "vector" || board::is_board_vector_kind(kind) => {
                 for v in path_ids {
                     canceled(token)?;
                     id(v, "SVPT", &l.layer_id)?;
@@ -907,7 +910,8 @@ fn validate(
                     // SMB-FOLIO-VECTOR-IMAGE-PORT: a vector source may declare its single `out`
                     // port `image` (rasterisable vector) so a vector layer can be a group input.
                     // The vector-typed form is unchanged; edges still require equal value types.
-                    "vector" => match op.outputs.as_slice() {
+                    // Lane SMB-BOARD-1: a vector-backed board node kind sources like a vector layer.
+                    kind if kind == "vector" || board::is_board_vector_kind(kind) => match op.outputs.as_slice() {
                         [
                             Port {
                                 value_type: ValueType::Image,
