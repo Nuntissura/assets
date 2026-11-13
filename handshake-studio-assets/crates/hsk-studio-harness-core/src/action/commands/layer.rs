@@ -31,7 +31,8 @@ pub(super) const ROWS: &[CommandEntry] = &[
     // Placement-only writes; a restructure that creates a layer carries a record payload and is
     // reported not_recordable at record time.
     entry(CMD_RESTRUCTURE, "restructure", "Restructure layers", true, true, &[OP, WRITES]),
-    entry("layer.restructure_and_entry", "restructure_and_entry", "Restructure layers with document entry", false, true, &[]),
+    // Lane SMB-DS-VARIABLES-AUTHOR-1: several entries in the same step (P2, review F6).
+    entry("layer.restructure_and_entry", "restructure_and_entry / restructure_and_entries / entries_into_newest_step", "Restructure layers with document entry", false, true, &[]),
     entry("layer.set_tiles", "set_tiles", "Replace raster tiles", false, true, &[]),
     entry("layer.set_tiles_and_entry", "set_tiles_and_entry", "Replace raster tiles with document entry", false, true, &[]),
     entry("layer.set_vector_paths", "set_vector_paths", "Replace vector paths", false, true, &[]),

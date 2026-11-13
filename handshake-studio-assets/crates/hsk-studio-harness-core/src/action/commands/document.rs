@@ -33,7 +33,8 @@ const BACKGROUND_FILL: ParamSpec = p("background_fill", ValueType::Enumerated);
 const PRESET: ParamSpec = p("preset", ValueType::String);
 
 pub(super) const ROWS: &[CommandEntry] = &[
-    entry("document.set_document_entry", "set_document_entry", "Set document entry", false, true, &[]),
+    // Lane SMB-DS-VARIABLES-AUTHOR-1 (review F3): set_entry_step is the entry as one history step of a typed row.
+    entry("document.set_document_entry", "set_document_entry / set_entry_step", "Set document entry", false, true, &[]),
     entry("document.stage_tile", "stage_tile", "Stage tile body", false, false, &[]),
     entry("document.submit_sequence", "submit_sequence", "Replace sequence", false, true, &[]),
     entry("document.submit_sequence_and_entry", "submit_sequence_and_entry", "Replace sequence with document entry", false, true, &[]),
@@ -58,7 +59,8 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("document.open", "open_path / open_bytes / expect_on_disk", "Open document", false, false, &[]),
     entry("document.import", "open_import / open_import_detailed", "Open and convert to native", false, false, &[]),
     entry("document.reopen", "reopen_bytes / reopen_path", "Reopen saved document", false, false, &[]),
-    entry("document.save", "save_to / save_new / save_replacing", "Save document", false, false, &[PATH, OVERWRITE]),
+    // Lane SMB-DS-VARIABLES-AUTHOR-1 (lead ruling P3): save_to_with_entry writes a pruned copy of one entry.
+    entry("document.save", "save_to / save_new / save_replacing / save_to_with_entry", "Save document", false, false, &[PATH, OVERWRITE]),
     entry("document.checkpoint", "checkpoint", "Checkpoint document", false, false, &[]),
     entry("document.verify", "verify_live / verify_reopened", "Verify document", false, false, &[]),
     entry("document.summary", "summary", "Document summary", false, false, &[]),
