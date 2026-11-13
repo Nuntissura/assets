@@ -517,3 +517,52 @@ fn f11_f13_dry_run_diffs_and_docs_are_honest() {
     assert_eq!(dry, ["web.format_source"]);
     assert!(!hsk_studio_harness_core::manual::DRIVE_LIMITS.iter().any(|l| l.starts_with("no dry_run")), "the manual names the one dry-runnable row");
 }
+
+/// A template with one locked head line and one editable region (the instance markup of lane SMB-WEB-SITE-2).
+const LOCKED_TEMPLATE: &str = "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+<!-- TemplateBeginEditable name=\"doctitle\" --><title>T</title><!-- TemplateEndEditable -->
+<link rel=\"stylesheet\" href=\"../styles/site.css\">
+</head>
+<body>
+<!-- TemplateBeginEditable name=\"main\" --><p id=\"lead\">Main</p><!-- TemplateEndEditable -->
+</body>
+</html>
+";
+
+/// Review F12 (lead Q4, after the rebase onto SMB-WEB-SITE-2): the code rows edit through the host's one edit path, so
+/// in a template instance a code edit outside the editable regions refuses `template_edit_in_locked_region` (the guard
+/// of lane SMB-WEB-SITE-2) naming the template, a whole-document job included, and one inside an editable region is
+/// accepted.
+#[test]
+fn f12_code_edits_in_locked_template_regions_are_refused() {
+    let dir = Scratch::new("locked");
+    let site = dir.0.join("site");
+    std::fs::create_dir_all(site.join("Templates")).unwrap();
+    std::fs::create_dir_all(site.join("styles")).unwrap();
+    std::fs::write(site.join("Templates").join("main.dwt"), LOCKED_TEMPLATE).unwrap();
+    std::fs::write(site.join("styles").join("site.css"), "body { color: black; }\n").unwrap();
+    with_run(|run| {
+        cmd(run, "web.site", json!({"display_name": "code", "local_root": s(&site)}));
+        cmd(run, "web.template_instance", json!({"template": "Templates/main.dwt", "path": "page.html"}));
+        cmd(run, "web.save", json!({}));
+        let src = source(run);
+        let link = src.find("<link").unwrap();
+        let link_end = link + src[link..].find('>').unwrap() + 1;
+        for (id, params) in [
+            ("web.apply_comment", json!({"start": link, "end": link_end})),
+            ("web.indent", json!({"start": link, "end": link + 1})),
+            ("web.indent", json!({})),
+            ("web.set_doctype", json!({"declaration_id": "html_401_strict"})),
+        ] {
+            assert_eq!(refused(run, id, params.clone()), "template_edit_in_locked_region", "{id} {params}");
+            let detail = run.ops().last().unwrap()["detail"].clone();
+            assert_eq!(detail["template"], "Templates/main.dwt", "{id}: {detail}");
+        }
+        let lead = src.find("<p id=\"lead\">").unwrap();
+        let lead_end = lead + "<p id=\"lead\">Main</p>".len();
+        cmd(run, "web.apply_comment", json!({"start": lead, "end": lead_end}));
+        assert!(source(run).contains("<!--<p id=\"lead\">Main</p>-->"), "an edit inside the editable region is accepted");
+    });
+}
