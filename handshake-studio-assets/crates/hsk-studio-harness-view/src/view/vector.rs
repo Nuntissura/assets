@@ -8,8 +8,10 @@
 //! (`studio/vector.<sha256>`, schema `hsk.harness.vector_paths@1`; held in memory until the
 //! session carries that token, see [`entry_persistable`]), together with the Folio
 //! `StudioLiveShapes` records of shapes whose parameters are still editable (STU-VEC-010). Paths
-//! are append-only and content-addressed by a fresh `SVPT` id per edit, so every revision the
-//! history can return to still resolves.
+//! are append-only while referenced and content-addressed by a fresh `SVPT` id per edit, so every
+//! revision the history can return to still resolves; unreferenced paths of removed layers are
+//! pruned in the removing step, and undo restores them (lane SMB-FIX-LAYER-RECORD-PRUNE-1,
+//! `view::layer_records`, with the other records of removed layers).
 //!
 //! Transactions: every edit is ONE chronicle transaction of `placement` writes through the session
 //! (undoable as one step, re-validated by Folio). A new path or shape creates a vector layer above

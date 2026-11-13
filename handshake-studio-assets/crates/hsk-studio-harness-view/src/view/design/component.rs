@@ -27,8 +27,8 @@
 //! Review fa15c84d, lead rulings 2026-11-11: record ids are minted past every id the records and the
 //! `design` entry's states ever named (F4); every write checks the entry's decode caps first
 //! (`component_over_cap`, `instance_over_cap`, `design_node_over_cap`; F3); a layer delete drops the
-//! component, set and instance records keyed to the deleted layers and their component-property
-//! references in its own undo step (F5, [`Viewer::records_after_delete`]); `component.sync_instances`
+//! component, set and instance records keyed to the deleted layers and their node entries in its own
+//! undo step (F5; every structure step since lane SMB-FIX-LAYER-RECORD-PRUNE-1, `view::layer_records`); `component.sync_instances`
 //! refuses an instance whose override names a node its definition no longer holds
 //! (`override_target_gone`) and redraws the others (F6); a duplicated instance is an instance of the
 //! same main with its properties and overrides (F10, [`Viewer::duplicate_instances`]).
