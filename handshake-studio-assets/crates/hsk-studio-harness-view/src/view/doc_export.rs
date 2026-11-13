@@ -854,6 +854,11 @@ impl Viewer {
     /// refusal's code), reported as the report's `job`.
     pub fn export_document(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
         let result = self.export_document_admitted(path, recipe, overwrite);
+        self.record_document_export(path, recipe, result)
+    }
+
+    /// The op record `export_document`, its terminal Observe frame and the status line of one export's `result`.
+    fn record_document_export(&mut self, path: &Path, recipe: &DocExportRecipe, result: Result<Value, Refusal>) -> Result<Value, Refusal> {
         let recorded = match &result {
             Ok(r) => Ok(json!({"format": r["format"], "width": r["width"], "height": r["height"], "bytes": r["bytes"]})),
             Err(r) => Err(r.code),
@@ -867,6 +872,15 @@ impl Viewer {
     }
 
     fn export_document_admitted(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
+        self.export_document_checks(path, overwrite)?;
+        let job = self.admit_export_job()?;
+        let result = self.export_document_inner(path, recipe, overwrite);
+        self.settle_export_job(job, result)
+    }
+
+    /// The path, source and open-document checks of [`Viewer::export_document`], typed, before anything is asked or
+    /// written.
+    fn export_document_checks(&self, path: &Path, overwrite: bool) -> Result<(), Refusal> {
         if path.as_os_str().is_empty() {
             return Err(refuse("export_path", "no output path"));
         }
@@ -876,9 +890,25 @@ impl Viewer {
         if self.run.snapshot().is_none() {
             return Err(refuse("nothing_open", "open a document first"));
         }
-        let job = self.admit_export_job()?;
-        let result = self.export_document_inner(path, recipe, overwrite);
-        self.settle_export_job(job, result)
+        Ok(())
+    }
+
+    /// [`Viewer::export_document`] for a batch target whose one job [`RecipeTargets`] admitted before anything reached
+    /// the destination (lane SMB-FIX-EXPORT-ADMISSION-1): the same checks, op record and terminal frame, and no second
+    /// ask; the caller settles its job. Private to this module, so no other route can skip admission (the
+    /// `compile_fail` example on [`RecipeTargets`]).
+    fn export_document_for_admitted_target(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
+        let result = self.export_document_checks(path, overwrite).and_then(|()| self.export_document_inner(path, recipe, overwrite));
+        self.record_document_export(path, recipe, result)
+    }
+
+    /// One export job of `resource` bound to its `revision` (a batch target's source document, which is in no viewer
+    /// yet), asked through the viewer's JobPort with the viewer's lifecycle, actor and correlation source: a refusal is
+    /// typed `overloaded`, `canceled` or `stale_revision` with the port's detail.
+    fn admit_target_export(&self, resource: DomainId, revision: u64) -> Result<AdmittedJob, Refusal> {
+        let admission = self.job_admission_of(resource);
+        let correlation = admission.next_correlation();
+        admission.admit(admission.request(Action::Export, 0, revision, correlation), revision, self.cancel).map_err(|r| refuse(r.code(), refusal_json(r).to_string()))
     }
 
     /// One export job of the open document admitted through the viewer's JobPort before anything is
@@ -953,13 +983,26 @@ impl Viewer {
 /// The batch runner's non-native output targets (STU-AUT-129, scenario photo-retouch step 116): `format_id`
 /// `png`, `jpeg`, `tiff` or `psd` with its default options, or `export_recipe_id` naming a recipe added here (its
 /// format must be the target's). Each input's document is checkpointed into a unique temp beside the output,
-/// opened in a viewer attributed to the job's context, exported by [`Viewer::export_document`] and the temp is
-/// removed. Admission (lane SMB-R60-FOLLOWUPS-1 item 1, review c43f2d90 batch-port ruling): with
-/// [`RecipeTargets::with_job_port`] that viewer is bound to the caller's JobPort, so its `export_document`
-/// admits through it once per target (a refusal is the target's typed code, `overloaded`, `canceled` or
-/// `stale_revision`, and no output is written); without one (the CLI, no host port) it admits through the
-/// viewer's own asset-local port. Studio reading: `colour_profile_policy` and `resize_policy` stay refused by the runner; the recipe
-/// carries colour and size.
+/// opened in a viewer attributed to the job's context, exported with [`Viewer::export_document`]'s checks, op record
+/// and terminal frame, and the temp is removed. Studio reading: `colour_profile_policy` and `resize_policy` stay
+/// refused by the runner; the recipe carries colour and size.
+///
+/// Admission (lane SMB-FIX-EXPORT-ADMISSION-1, R60 attempt 3 probes e1 and e2; HBR-HOST-004, STU-ARC-008): a target
+/// is one export job of the run's document bound to the run's revision, asked once through the caller's JobPort
+/// ([`RecipeTargets::with_job_port`]; without one, the CLI, the export viewer's asset-local port) before anything
+/// reaches the destination, the checkpoint temp included. A refusal is the target's typed code (`overloaded`,
+/// `canceled` or `stale_revision`) with nothing written. The export itself does not ask again; the job settles once,
+/// `completed` (`completed_stale` when the run's head moved) as the report's `job`, or `canceled` / `failed` with the
+/// target's code. One ask per target (tests `harness/tests/fix_export_admission.rs`, `r60_followups_jobs.rs`). The
+/// export without an ask is private to this module:
+///
+/// ```compile_fail,E0624
+/// use hsk_studio_harness_view::view::Viewer;
+/// use hsk_studio_harness_view::view::doc_export::{DocExportRecipe, DocFormat};
+/// fn skip_admission(v: &mut Viewer) {
+///     let _ = v.export_document_for_admitted_target(std::path::Path::new("x.png"), &DocExportRecipe::of_format(DocFormat::Png { depth: 8 }), false);
+/// }
+/// ```
 pub struct RecipeTargets {
     recipes: BTreeMap<String, DocExportRecipe>,
     context: RunContext,
@@ -1012,21 +1055,41 @@ impl TargetExporter for RecipeTargets {
 
     fn write(&mut self, run: &mut hsk_studio_harness_core::Run<'_>, target: &OutputTarget, path: &Path, replace: bool) -> Result<(), String> {
         let recipe = self.recipe(target).map_err(str::to_string)?;
-        let bytes = run.checkpoint().ok_or_else(|| "batch_checkpoint_failed".to_string())?;
-        let (temp, mut file) = create_unique_sibling(path, ".batch-src.handshake").map_err(|_| "batch_destination_unavailable".to_string())?;
-        let written = file.write_all(&bytes).and_then(|()| file.sync_all());
-        drop(file);
-        let result = written.map_err(|_| "batch_destination_unavailable".to_string()).and_then(|()| {
-            let mut viewer = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), self.context.clone());
-            if let Some(port) = &self.port {
-                viewer.set_job_port(std::sync::Arc::clone(port));
+        let (document_id, revision) = run.snapshot().map(|s| (s.document().document_id.clone(), s.document().revision)).ok_or_else(|| "batch_checkpoint_failed".to_string())?;
+        let resource = DomainId::parse(&document_id).map_err(|_| "document_id".to_string())?;
+        let mut viewer = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), self.context.clone());
+        if let Some(port) = &self.port {
+            viewer.set_job_port(std::sync::Arc::clone(port));
+        }
+        // The target's one ask, before anything reaches the destination (type docs).
+        let job = viewer.admit_target_export(resource, revision).map_err(|r| r.code.to_string())?;
+        let result = write_admitted_target(&mut viewer, run, &recipe, path, replace);
+        let head = run.snapshot().map_or(revision, |s| s.document().revision);
+        match result {
+            Ok(mut report) => {
+                report["job"] = settlement_json(&job.complete(head));
+                self.reports.push((path.to_path_buf(), report));
+                Ok(())
             }
-            viewer.open(&temp).map_err(|_| "batch_export_open_failed".to_string())?;
-            let report = viewer.export_document(path, &recipe, replace).map_err(|r| r.code.to_string())?;
-            self.reports.push((path.to_path_buf(), report));
-            Ok(())
-        });
-        let _ = std::fs::remove_file(&temp);
-        result
+            Err(code) => {
+                job.settle(if code == "canceled" { JobOutcome::Canceled } else { JobOutcome::Failed(code) });
+                Err(code.to_string())
+            }
+        }
     }
+}
+
+/// The admitted part of [`RecipeTargets::write`]: `run`'s checkpoint into a unique temp beside `path`, opened in
+/// `viewer` and exported without a second ask; the temp is removed on every path.
+fn write_admitted_target(viewer: &mut Viewer, run: &mut hsk_studio_harness_core::Run<'_>, recipe: &DocExportRecipe, path: &Path, replace: bool) -> Result<Value, &'static str> {
+    let bytes = run.checkpoint().ok_or("batch_checkpoint_failed")?;
+    let (temp, mut file) = create_unique_sibling(path, ".batch-src.handshake").map_err(|_| "batch_destination_unavailable")?;
+    let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+    drop(file);
+    let result = written.map_err(|_| "batch_destination_unavailable").and_then(|()| {
+        viewer.open(&temp).map_err(|_| "batch_export_open_failed")?;
+        viewer.export_document_for_admitted_target(path, recipe, replace).map_err(|r| r.code)
+    });
+    let _ = std::fs::remove_file(&temp);
+    result
 }

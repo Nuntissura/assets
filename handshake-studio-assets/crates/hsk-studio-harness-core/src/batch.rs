@@ -6,9 +6,12 @@
 //! between steps. Tests `tests/action_batch.rs`.
 //!
 //! Every input runs in its own [`Run`] of the caller's [`Harness`]: open, digest, Job Runtime
-//! admission (optional [`JobPort`], one ticket per input, released on every exit path), the
+//! admission (optional [`JobPort`], one slot per input, released on every exit path), the
 //! automation through [`Run::play_action`] (headless), then one native package per output target
-//! through [`Run::save_to`]. Inputs are never moved, deleted or written over. A target of another format
+//! through [`Run::save_to`]. The input's slot (lane SMB-FIX-EXPORT-ADMISSION-1) is held through the
+//! automation and the native targets and lent (released) before each target the exporter writes, which
+//! asks for its own job; it is asked again only before a native target that follows one, so the runner
+//! and a target never hold two slots of one port at once. Inputs are never moved, deleted or written over. A target of another format
 //! or with an export recipe is written by the caller's [`TargetExporter`] port (lane SMB-DOC-EXPORT-1; the
 //! viewer's document export recipe), under the same naming, collision and overwrite rules; without the port it
 //! refuses as before.
@@ -486,7 +489,9 @@ pub trait TargetExporter {
     /// (an unknown format or recipe).
     fn extension(&self, target: &OutputTarget) -> Result<&'static str, &'static str>;
     /// Writes `run`'s current document to exactly `path`. With `replace` false nothing at `path` may be
-    /// replaced (`destination_exists`). Returns the typed code of a failure.
+    /// replaced (`destination_exists`). Returns the typed code of a failure. The runner holds no slot of
+    /// its own while this runs (module docs), so an exporter admitting through the runner's port takes
+    /// that slot; the folders the runner made for `path` are removed again (while empty) when this fails.
     fn write(&mut self, run: &mut Run<'_>, target: &OutputTarget, path: &Path, replace: bool) -> Result<(), String>;
 }
 
@@ -765,17 +770,38 @@ fn render_name(template: &[TemplateToken], input: &Path, position: usize, format
     Ok(name)
 }
 
-/// A Job Runtime ticket, released on drop (every exit path).
-struct Ticket<'p> {
+/// The input's Job Runtime slot (module docs): an `Edit` job of the opened document, asked when not
+/// held, lent before a target the exporter writes, released on drop (every exit path).
+struct Slot<'p> {
     port: &'p Arc<dyn JobPort>,
+    resource: DomainId,
+    cost: Cost,
     ticket: Option<JobTicket>,
 }
 
-impl Drop for Ticket<'_> {
-    fn drop(&mut self) {
+impl Slot<'_> {
+    /// Holds the slot, asking the port unless it is held; a refusal is the typed
+    /// `job_admission_refused(retry_after_ms=N)` code.
+    fn hold(&mut self) -> Result<(), String> {
+        if self.ticket.is_none() {
+            let scope = JobScope { resource: &self.resource, action: JobAction::Edit };
+            let ticket = self.port.admit(&scope, self.cost).map_err(|refused| format!("job_admission_refused(retry_after_ms={})", refused.retry_after_ms))?;
+            self.ticket = Some(ticket);
+        }
+        Ok(())
+    }
+
+    /// Releases the slot while a target's own job runs.
+    fn lend(&mut self) {
         if let Some(t) = self.ticket.take() {
             self.port.release(t);
         }
+    }
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.lend();
     }
 }
 
@@ -954,16 +980,14 @@ fn process(
         }
         Err(code) => out.digest_note = Some(code.to_string()),
     }
-    let _ticket = match jobs {
+    let mut slot = match jobs {
         None => None,
         Some(port) => {
             let doc = run.snapshot().map(|s| s.document().document_id.clone()).unwrap_or_default();
             let resource = DomainId::parse(&doc).map_err(|_| Failure::before_output("admission", "job_resource_invalid"))?;
-            let cost = Cost { jobs: 1, bytes: out.input_bytes.unwrap_or(0) };
-            match port.admit(&JobScope { resource: &resource, action: JobAction::Edit }, cost) {
-                Ok(t) => Some(Ticket { port, ticket: Some(t) }),
-                Err(refused) => return Err(Failure::before_output("admission", format!("job_admission_refused(retry_after_ms={})", refused.retry_after_ms))),
-            }
+            let mut slot = Slot { port, resource, cost: Cost { jobs: 1, bytes: out.input_bytes.unwrap_or(0) }, ticket: None };
+            slot.hold().map_err(|code| Failure::before_output("admission", code))?;
+            Some(slot)
         }
     };
     let played = match &job.applied_automation {
@@ -990,7 +1014,7 @@ fn process(
     }
     let mut first_failure: Option<Failure> = None;
     for target in &job.output_targets {
-        let receipt = write_target(&mut run, job, target, input, position, written, exporter.as_deref_mut());
+        let receipt = write_target(&mut run, job, target, input, position, written, exporter.as_deref_mut(), slot.as_mut());
         if first_failure.is_none() && matches!(receipt.outcome, "refused" | "failed") {
             first_failure = Some(Failure { stage: "output", code: receipt.code.clone().unwrap_or_default(), retryable: false });
         }
@@ -999,7 +1023,17 @@ fn process(
     first_failure.map_or(Ok(()), Err)
 }
 
-fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input: &Path, position: usize, written: &mut BTreeSet<PathBuf>, exporter: Option<&mut (dyn TargetExporter + '_)>) -> TargetReceipt {
+#[allow(clippy::too_many_arguments)]
+fn write_target(
+    run: &mut Run<'_>,
+    job: &BatchJob,
+    target: &OutputTarget,
+    input: &Path,
+    position: usize,
+    written: &mut BTreeSet<PathBuf>,
+    exporter: Option<&mut (dyn TargetExporter + '_)>,
+    mut slot: Option<&mut Slot<'_>>,
+) -> TargetReceipt {
     let receipt = |path: Option<&Path>, outcome: &'static str, code: Option<&str>| TargetReceipt {
         format_id: target.format_id.clone(),
         path: path.map(|p| p.to_string_lossy().into_owned()),
@@ -1024,10 +1058,17 @@ fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input:
         Ok(n) => n,
         Err(code) => return receipt(None, "refused", Some(code)),
     };
-    let dir = Path::new(&target.destination);
-    if std::fs::create_dir_all(dir).is_err() {
-        return receipt(None, "failed", Some("batch_destination_unavailable"));
+    // A native target is written under the input's slot (asked again when an exporter target lent it).
+    if native
+        && let Some(s) = slot.as_mut()
+        && let Err(code) = s.hold()
+    {
+        return receipt(None, "failed", Some(&code));
     }
+    let dir = Path::new(&target.destination);
+    let Ok(made) = make_folders(dir) else {
+        return receipt(None, "failed", Some("batch_destination_unavailable"));
+    };
     let mut path = dir.join(format!("{name}.{ext}"));
     let taken = |p: &Path, written: &BTreeSet<PathBuf>| p.exists() || written.contains(p);
     if taken(&path, written) {
@@ -1052,7 +1093,17 @@ fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input:
     // Only Overwrite may replace: another process can take the free name after the check above.
     let replace = target.overwrite_policy == OverwritePolicy::Overwrite;
     let saved = match exporter.as_mut() {
-        Some(e) => e.write(run, target, &path, replace),
+        Some(e) => {
+            // The target's own job takes the slot (module docs); a failed target leaves no folder made here.
+            if let Some(s) = slot.as_mut() {
+                s.lend();
+            }
+            let saved = e.write(run, target, &path, replace);
+            if saved.is_err() {
+                remove_made(&made);
+            }
+            saved
+        }
         None if replace => if run.save_to(&path) { Ok(()) } else { Err(last_error(run, "save_failed")) },
         None => if run.save_new(&path) { Ok(()) } else { Err(last_error(run, "save_failed")) },
     };
@@ -1065,6 +1116,37 @@ fn write_target(run: &mut Run<'_>, job: &BatchJob, target: &OutputTarget, input:
             return receipt(Some(&path), "skipped_existing", None);
         }
         receipt(Some(&path), "failed", Some(&code))
+    }
+}
+
+/// Creates `dir` and its missing parents (as `create_dir_all`) and returns the folders this call made,
+/// deepest first: a folder that already existed, or that another process made meanwhile, is never named.
+/// A failure removes what this call made (while empty) before returning it.
+fn make_folders(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let missing: Vec<&Path> = dir.ancestors().take_while(|p| !p.as_os_str().is_empty() && !p.is_dir()).collect();
+    let mut made = Vec::with_capacity(missing.len());
+    for p in missing.iter().rev() {
+        match std::fs::create_dir(p) {
+            Ok(()) => made.push(p.to_path_buf()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && p.is_dir() => {}
+            Err(e) => {
+                made.reverse();
+                remove_made(&made);
+                return Err(e);
+            }
+        }
+    }
+    made.reverse();
+    Ok(made)
+}
+
+/// Removes the folders [`make_folders`] made, deepest first, while each is empty (`remove_dir` never
+/// removes a folder with anything in it); stops at the first that stays.
+fn remove_made(made: &[PathBuf]) {
+    for p in made {
+        if std::fs::remove_dir(p).is_err() {
+            break;
+        }
     }
 }
 
