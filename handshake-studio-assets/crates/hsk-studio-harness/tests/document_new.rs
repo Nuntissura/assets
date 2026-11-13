@@ -327,7 +327,7 @@ mod through_the_viewer {
             (serde_json::from_slice::<Value>(bytes).unwrap()["artboards"].as_array().unwrap().len(), bytes.len())
         };
         let mut v = vector_doc(100.0, 100.0);
-        let first = containers(&v)["artboards"][0]["artboard_id"].as_str().unwrap().to_owned();
+        let first = containers(&v)["artboards"][0]["id"].as_str().unwrap().to_owned();
         let on = ArtboardOptionsEdit { show_center_mark: Some(true), ..ArtboardOptionsEdit::default() };
         v.set_artboard_options(&first, &on).unwrap();
         let (_, one) = rows(&v);

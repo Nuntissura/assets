@@ -536,7 +536,10 @@ fn hostile_board_commands_are_typed_refusals_that_change_nothing() {
         ("board.shape_with_text.create", json!({"x": 0, "y": 0, "shape_type": "figma_plugin_api@9.9.9:SQUARE", "text": "A"}), "shape_type_unknown"),
         ("board.shape_with_text.create", json!({"x": 0, "y": 0, "shape_type": "figma_plugin_api@1.141.0:SHIELD", "text": "A"}), "shape_type_geometry_not_available"),
         ("board.shape_with_text.create", json!({"x": 0, "y": 0, "shape_type": "studio_declared:rectangle", "text": "A", "width": 0}), "board_size_invalid"),
-        ("board.sticky.create", json!({"x": 0, "y": 0, "text": "two\nlines"}), "board_text_invalid"),
+        // Review F12 (lead ruling): sticky text holds several lines; another control character and a two-line
+        // section name stay refused.
+        ("board.sticky.create", json!({"x": 0, "y": 0, "text": "two\u{7}lines"}), "board_text_invalid"),
+        ("board.section.create", json!({"x": 0, "y": 0, "width": 100, "height": 100, "name": "two\nlines"}), "board_text_invalid"),
         ("board.sticky.create", json!({"x": 0, "y": 0, "text": long}), "board_text_invalid"),
         ("board.sticky.create", json!({"x": "NaN", "y": 0, "text": "A"}), "parameter_invalid"),
         ("board.sticky.create", json!({"x": 1e9, "y": 0, "text": "A"}), "board_position_invalid"),
