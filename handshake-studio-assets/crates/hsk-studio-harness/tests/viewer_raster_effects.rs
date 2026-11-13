@@ -14,6 +14,7 @@ use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::commands::CommandRefusal;
 use hsk_studio_harness::view::develop::DevelopExport;
 use hsk_studio_harness::view::export::ExportFormat;
+use hsk_studio_harness::view::place::{PlaceOptions, PlacementKind};
 use hsk_studio_harness::view::render::Prefer;
 use hsk_studio_interop_tiff as tiff;
 use serde_json::{Map, Value, json};
@@ -216,7 +217,8 @@ fn parameter_specs_are_model_visible_and_out_of_range_values_refuse_naming_the_b
     refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "median", "params": {"radius_px": 1.5}}), "parameter_invalid");
     refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "melt"}), "parameter_invalid");
     refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "add_noise", "params": {"amount_pct": 5, "distribution": "pink", "monochromatic": true, "seed": 1}}), "parameter_invalid");
-    refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "sharpen", "opacity": 101}), "parameter_out_of_range");
+    let r = refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "sharpen", "opacity": 101}), "effect_param_out_of_range");
+    assert_eq!(r.detail, json!({"param": "opacity", "value": 101.0, "hard_min": 0.0, "hard_max": 100.0}), "review F10: the STU-FX-104 shape");
     refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "sharpen", "at": 9}), "index_out_of_range");
     refused(&mut v, "effect.apply", json!({"layer": "SLYR-019abcde-0000-7000-8000-00000000ffff", "filter_kind": "sharpen"}), "layer_unknown");
     refused(&mut v, "effect.update", json!({"layer": art, "instance": "fx-9", "params": {"radius_px": 1}}), "effect_instance_unknown");
@@ -260,6 +262,8 @@ fn adjustment_layers_are_created_edited_and_applied_in_place_like_the_layer_rend
     let mut w = open(&src);
     let applied = ok(&mut w, "adjustment.apply", json!({"layer": solo, "adjustment": {"kind": "invert"}}));
     assert_eq!(applied["pixels"], 256, "{applied}");
+    // Review Q5: one job admitted through the viewer's JobPort, settled with the result.
+    assert_eq!(applied["job"]["outcome"], "completed", "{applied}");
     let close = |a: &[u8], b: &[u8]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 1);
     assert!(close(&frame(&mut w), &inverted), "apply in place equals the adjustment layer");
     let levels = json!({"kind": "levels", "records": [{"channel": "composite", "input_black": 0.1, "input_white": 0.9, "output_black": 0.0, "output_white": 1.0, "gamma": 1.4}]});
@@ -322,8 +326,23 @@ fn the_develop_dng_xmp_carries_the_crop_keys() {
     plain.open(&source).unwrap();
     plain.set_develop_dng_xmp(Some(caller.as_bytes().to_vec())).unwrap();
     let out = scratch.0.join("plain.dng");
-    plain.export_develop(&out, dng, false).unwrap();
+    let report = plain.export_develop(&out, dng, false).unwrap();
     assert_eq!(xmp_of(&out), caller, "no crop: the caller's packet byte for byte");
+    assert_eq!(report["xmp_crop_keys"], "unchanged", "{report}");
+    // Review F4: a stale crop in the caller's packet with the Studio crop full is cleared (HasCrop False, the full
+    // frame); every other crs: key and the user content stay as the caller wrote them.
+    let stale = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\" xmlns:keep=\"urn:example:keep\" keep:Note=\"untouched\" crs:Exposure2012=\"+1.00\" crs:HasCrop=\"True\" crs:CropLeft=\"0.1\"/></rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
+    plain.set_develop_dng_xmp(Some(stale.as_bytes().to_vec())).unwrap();
+    let cleared = scratch.0.join("cleared.dng");
+    let report = plain.export_develop(&cleared, dng, false).unwrap();
+    assert_eq!(report["xmp_crop_keys"], "written", "{report}");
+    let xmp = xmp_of(&cleared);
+    assert!(has(&xmp, "HasCrop", "False") && has(&xmp, "CropLeft", "0.000000"), "{xmp}");
+    assert!(xmp.contains("crs:Exposure2012=\"+1.00\"") && xmp.contains("keep:Note=\"untouched\""), "the other keys are the caller's: {xmp}");
+    plain.set_develop_dng_xmp(None).unwrap();
+    let none = scratch.0.join("none.dng");
+    let report = plain.export_develop(&none, dng, false).unwrap();
+    assert_eq!((report["xmp_crop_keys"].as_str(), report["xmp_bytes"].as_u64()), (Some("absent"), Some(0)), "no packet, no crop: none: {report}");
 
     let mut v = Viewer::new(Prefer::Cpu);
     v.open(&source).unwrap();
@@ -452,6 +471,227 @@ fn minted_layer_ids_are_never_minted_twice_and_survive_save_reopen_and_export() 
     assert_eq!(files.len(), 1, "{ran}");
     assert_eq!(files[0]["node"], json!(copy), "{ran}");
     assert!(Path::new(files[0]["path"].as_str().unwrap()).is_file());
+}
+
+// ---- review fixes of d05d2699 (lead rulings 2026-11-13) ---------------------------------------------------------
+
+fn revision(v: &Viewer) -> u64 {
+    v.run().snapshot().unwrap().document().revision
+}
+
+/// The content bounds `effect.read` reports for `layer` as `(x, y, width, height)`.
+fn content_bounds(v: &mut Viewer, layer: &str) -> (i64, i64, u64, u64) {
+    let b = filters(v, layer)["content_bounds"].clone();
+    (b["x"].as_i64().unwrap(), b["y"].as_i64().unwrap(), b["width"].as_u64().unwrap(), b["height"].as_u64().unwrap())
+}
+
+/// An identity liquify mesh over `(x, y, width, height)` at `spacing` (Folio's grid: `ceil((len - 1) / spacing) + 1`).
+fn mesh(x: i64, y: i64, width: u64, height: u64, spacing: u64) -> Value {
+    let grid = |len: u64| (len - 1).div_ceil(spacing) + 1;
+    let (cols, rows) = (grid(width), grid(height));
+    let n = usize::try_from(cols * rows).unwrap();
+    json!({"origin_x": x, "origin_y": y, "width": width, "height": height, "spacing": spacing, "cols": cols, "rows": rows,
+        "displacement": vec![[0.0, 0.0]; n], "freeze": vec![0.0; n]})
+}
+
+/// Review F1 (lead ruling Q1): an entry the render cannot run is refused at the command with the render's own
+/// predicate (pigment `FilterKernel::admit` / `filter_window_cost` against `StackLimits::default()` over the layer's
+/// content bounds), so no accepted entry leaves the frame blank. The review's examples: a box blur radius 2000
+/// (12001 taps) and radius 127 with 50 iterations (12701 taps) against `MAX_BOX_KERNEL_TAPS` 6001.
+#[test]
+fn an_entry_the_render_cannot_run_is_refused_at_the_command() {
+    let scratch = Scratch::new("raster-effects-budget");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let art = layer(&v, "art");
+    let r = refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "box_blur", "params": {"radius_px": 2000}}), "effect_render_budget_exceeded");
+    assert_eq!((r.detail["needed"].as_u64(), r.detail["limit"].as_u64()), (Some(12_001), Some(6_001)), "{}", r.detail);
+    let r = refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "box_blur", "params": {"radius_px": 127, "iterations": 50}}), "effect_render_budget_exceeded");
+    assert_eq!((r.detail["needed"].as_u64(), r.detail["limit"].as_u64()), (Some(12_701), Some(6_001)), "{}", r.detail);
+    let r = refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "surface_blur", "params": {"radius_px": 4_294_967_295u64, "threshold_levels": 10}}), "effect_render_budget_exceeded");
+    assert!(r.detail["needed"].as_u64() > r.detail["limit"].as_u64(), "{}", r.detail);
+    // At the bound the entry is taken and renders (6001 taps).
+    let plain = frame(&mut v);
+    ok(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "box_blur", "params": {"radius_px": 1000, "iterations": 3}}));
+    let wide = frame(&mut v);
+    assert_ne!(wide, plain, "the accepted entry renders");
+    // An update into the budget refusal is refused the same way and keeps the entry.
+    refused(&mut v, "effect.update", json!({"layer": art, "instance": "fx-1", "params": {"radius_px": 1001}}), "effect_render_budget_exceeded");
+    assert_eq!(frame(&mut v), wide);
+    // A liquify mesh renders over the layer's content bounds: another mesh is refused naming them.
+    let (x, y, w, h) = content_bounds(&mut v, &art);
+    let r = refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "liquify", "params": {"mesh": mesh(x + 1, y, w, h, 8), "resample": "bilinear"}}), "parameter_invalid");
+    assert_eq!(r.detail["key"], "params.mesh", "{}", r.detail);
+    ok(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "liquify", "params": {"mesh": mesh(x, y, w, h, 8), "resample": "bilinear"}}));
+    assert_eq!(filters(&mut v, &art)["filters"][1]["filter_kind"], "liquify");
+    frame(&mut v);
+}
+
+/// Review F8: the hard bound is checked on the 32-bit value the record stores: a range sigma that rounds to 0 is
+/// the 0 the engine refuses, refused here as out of range (exclusive minimum), not stored.
+#[test]
+fn a_float_parameter_is_checked_on_the_value_the_record_stores() {
+    let scratch = Scratch::new("raster-effects-f32");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let art = layer(&v, "art");
+    let r = refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "bilateral_blur", "params": {"radius_px": 1, "range_sigma": 1e-46}}), "effect_param_out_of_range");
+    assert_eq!((r.detail["param"].as_str(), r.detail["hard_min_exclusive"].as_bool()), (Some("range_sigma"), Some(true)), "{}", r.detail);
+    refused(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "gaussian_blur", "params": {"radius_px": 1e300}}), "parameter_invalid");
+    let taken = ok(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "bilateral_blur", "params": {"radius_px": 1, "range_sigma": 1e-30}}));
+    assert_eq!(taken["instance_id"], "fx-1");
+    let stored = filters(&mut v, &art)["filters"][0]["params"]["range_sigma"].as_f64().unwrap();
+    assert!(stored > 0.0 && stored as f32 == 1e-30_f32, "the record holds the 32-bit value: {stored}");
+}
+
+/// Review F10: the radial blur centre defaults to the centre of the layer's content bounds (the table's 50 %, 50 %);
+/// the dust threshold is the engine's 0..1 channel difference, the table's `pixel` kept as `table_unit`.
+#[test]
+fn the_radial_blur_centre_defaults_to_the_layer_centre_and_the_dust_threshold_is_normalized() {
+    let scratch = Scratch::new("raster-effects-defaults");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let art = layer(&v, "art");
+    let (x, y, w, h) = content_bounds(&mut v, &art);
+    let a = ok(&mut v, "effect.apply", json!({"layer": art, "filter_kind": "radial_blur"}));
+    assert_eq!(a["defaulted"], json!(["centre_x_px", "centre_y_px", "amount", "kind"]), "{a}");
+    let params = filters(&mut v, &art)["filters"][0]["params"].clone();
+    let centre = (x as f64 + w as f64 * 0.5, y as f64 + h as f64 * 0.5);
+    assert_eq!((params["centre_x_px"].as_f64(), params["centre_y_px"].as_f64()), (Some(centre.0), Some(centre.1)), "{params}");
+    let specs = ok(&mut v, "effect.parameters", json!({"filter_kind": "dust_and_scratches"}));
+    let threshold = specs["kinds"][0]["parameters"].as_array().unwrap().iter().find(|p| p["param_key"] == "threshold").unwrap().clone();
+    assert_eq!((threshold["unit"].as_str(), threshold["table_unit"].as_str(), threshold["hard_max"].as_f64()), (Some("normalized_0_1"), Some("pixel"), Some(1.0)), "{threshold}");
+}
+
+/// Review F5 (option b): the effect edits and `adjustment.edit` are entry-only steps (one undo step, the document
+/// revision unchanged); `adjustment.create` and `adjustment.apply` are revisions.
+#[test]
+fn effect_and_adjustment_edits_are_entry_only_steps_and_leave_the_revision() {
+    let scratch = Scratch::new("raster-effects-revision");
+    let src = scratch.0.join("solo.psd");
+    std::fs::write(&src, solo_psd()).unwrap();
+    let mut v = open(&src);
+    let solo = layer(&v, "solo");
+    let at = revision(&v);
+    ok(&mut v, "effect.apply", json!({"layer": solo, "filter_kind": "gaussian_blur", "params": {"radius_px": 1}}));
+    ok(&mut v, "effect.update", json!({"layer": solo, "instance": "fx-1", "opacity": 40}));
+    ok(&mut v, "effect.toggle", json!({"layer": solo, "instance": "fx-1", "enabled": false}));
+    ok(&mut v, "effect.apply", json!({"layer": solo, "filter_kind": "sharpen"}));
+    ok(&mut v, "effect.reorder", json!({"layer": solo, "instance": "fx-2", "to": 0}));
+    ok(&mut v, "effect.remove", json!({"layer": solo, "instance": "fx-2"}));
+    assert_eq!(revision(&v), at, "the effect edits leave the revision");
+    let adj = ok(&mut v, "adjustment.create", json!({"adjustment": {"kind": "invert"}}))["layer_id"].as_str().unwrap().to_string();
+    let created = revision(&v);
+    assert!(created > at, "adjustment.create is a revision: {at} -> {created}");
+    ok(&mut v, "adjustment.edit", json!({"layer": adj, "adjustment": {"kind": "posterize", "levels": 4}}));
+    assert_eq!(revision(&v), created, "adjustment.edit leaves the revision");
+    v.select(Some(solo.clone()));
+    ok(&mut v, "adjustment.apply", json!({"layer": solo, "adjustment": {"kind": "invert"}}));
+    assert!(revision(&v) > created, "adjustment.apply is a revision");
+}
+
+/// Review F9: `effect.read` summarises a liquify mesh unless `full`; an opacity-only or resample-only update keeps
+/// the stored mesh (no decode of it again); the vertex lists are capped (the cap itself: harness-view unit test
+/// `a_mesh_list_over_the_cap_is_refused_before_decoding`).
+#[test]
+fn a_large_liquify_mesh_is_summarised_and_kept_by_updates() {
+    let scratch = Scratch::new("raster-effects-mesh");
+    let src = scratch.0.join("big.psd");
+    let n = 256 * 256;
+    std::fs::write(&src, layered_psd(256, 256, &[L { name: "big", rect: [0, 0, 256, 256], channels: vec![(0, vec![90; n]), (1, vec![120; n]), (2, vec![150; n])] }])).unwrap();
+    let mut v = open(&src);
+    let big = layer(&v, "big");
+    let (x, y, w, h) = content_bounds(&mut v, &big);
+    assert_eq!((w, h), (256, 256));
+    let mut m = mesh(x, y, w, h, 1);
+    m["displacement"][1000] = json!([1.5, -0.5]);
+    ok(&mut v, "effect.apply", json!({"layer": big, "filter_kind": "liquify", "params": {"mesh": m, "resample": "bilinear"}}));
+    let summary = filters(&mut v, &big);
+    let s = &summary["filters"][0]["params"]["mesh"];
+    assert_eq!((s["summary"].as_bool(), s["vertices"].as_u64(), s["cols"].as_u64(), s["rows"].as_u64()), (Some(true), Some(65_536), Some(256), Some(256)), "{s}");
+    assert!(summary.to_string().len() < 2_000, "the summary is small: {} bytes", summary.to_string().len());
+    let full = |v: &mut Viewer| ok(v, "effect.read", json!({"layer": big, "full": true}))["filters"][0]["params"]["mesh"].clone();
+    let before = full(&mut v);
+    assert_eq!(before["displacement"].as_array().unwrap().len(), 65_536);
+    assert_eq!(before["displacement"][1000], json!([1.5, -0.5]));
+    ok(&mut v, "effect.update", json!({"layer": big, "instance": "fx-1", "opacity": 60}));
+    assert_eq!(full(&mut v), before, "an opacity update keeps the mesh");
+    ok(&mut v, "effect.update", json!({"layer": big, "instance": "fx-1", "params": {"resample": "nearest_neighbour"}}));
+    assert_eq!(full(&mut v), before, "a resample update keeps the mesh");
+    assert_eq!(filters(&mut v, &big)["filters"][0]["params"]["resample"], "nearest_neighbour");
+    refused(&mut v, "effect.update", json!({"layer": big, "instance": "fx-1", "params": {"radius_px": 1}}), "parameter_unknown");
+}
+
+/// Job port double: refuses every admit, counts the asks (as `r60_export_routes`).
+#[derive(Default)]
+struct Saturated {
+    asks: std::sync::atomic::AtomicU64,
+}
+impl hsk_studio_session::JobPort for Saturated {
+    fn admit(&self, _scope: &hsk_studio_session::JobScope<'_>, _cost: hsk_studio_session::Cost) -> Result<hsk_studio_session::JobTicket, hsk_studio_session::JobRefused> {
+        self.asks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(hsk_studio_session::JobRefused { retry_after_ms: 25 })
+    }
+    fn release(&self, _ticket: hsk_studio_session::JobTicket) {}
+}
+
+/// Review Q5: `adjustment.apply` is one job admitted through the viewer's bound JobPort; a saturated port refuses it
+/// `overloaded`, is asked exactly once, and no pixel, step or entry changes.
+#[test]
+fn adjustment_apply_is_admitted_through_the_bound_job_port() {
+    let scratch = Scratch::new("raster-effects-jobs");
+    let src = scratch.0.join("solo.psd");
+    std::fs::write(&src, solo_psd()).unwrap();
+    let mut v = open(&src);
+    let solo = layer(&v, "solo");
+    let plain = frame(&mut v);
+    let port = std::sync::Arc::new(Saturated::default());
+    v.set_job_port(port.clone());
+    let r = refused(&mut v, "adjustment.apply", json!({"layer": solo, "adjustment": {"kind": "invert"}}), "overloaded");
+    assert_eq!(r.detail["retry_after_ms"], 25, "{}", r.detail);
+    assert_eq!(port.asks.load(std::sync::atomic::Ordering::SeqCst), 1, "asked exactly once");
+    assert_eq!(frame(&mut v), plain, "no pixel changed");
+    // Refusals before admission do not ask the port.
+    refused(&mut v, "adjustment.apply", json!({"layer": solo, "adjustment": {"kind": "ocio"}}), "parameter_invalid");
+    assert_eq!(port.asks.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// Review F2: the adjustment (`7ede-9300`) and placed (`7ede-9200`) mints never mint an id again: create, delete,
+/// create gives another id, in the session and after save and reopen, so no new layer takes a deleted one's
+/// `raster_records` row.
+#[test]
+fn adjustment_and_placed_layer_ids_are_never_minted_twice() {
+    let scratch = Scratch::new("raster-effects-mint-blocks");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let create = |v: &mut Viewer| ok(v, "adjustment.create", json!({"adjustment": {"kind": "invert"}}))["layer_id"].as_str().unwrap().to_string();
+    let first = create(&mut v);
+    assert!(first.contains("-7ede-9300-"), "{first}");
+    v.delete_layer(&first).unwrap();
+    let second = create(&mut v);
+    assert_ne!(second, first, "a deleted adjustment layer's id is not minted again");
+    let place = |v: &mut Viewer| {
+        let placed = v.place_asset(&src, PlacementKind::Embedded, &PlaceOptions::default()).unwrap_or_else(|e| panic!("{e}"));
+        placed["layer_id"].as_str().unwrap().to_string()
+    };
+    let p1 = place(&mut v);
+    assert!(p1.contains("-7ede-9200-"), "{p1}");
+    v.delete_layer(&p1).unwrap();
+    let p2 = place(&mut v);
+    assert_ne!(p2, p1, "a deleted placed layer's id is not minted again");
+    v.delete_layer(&second).unwrap();
+    let saved = scratch.0.join("blocks.handshake");
+    v.save(&saved, false).unwrap();
+    let held: Vec<String> = layer_ids(&v).into_iter().chain(record_ids(&v)).chain([first, second, p1]).collect();
+    let mut r = open(&saved);
+    let third = create(&mut r);
+    let p3 = place(&mut r);
+    assert!(!held.contains(&third) && !held.contains(&p3), "{third} {p3} vs {held:?}");
+    assert_eq!(ok(&mut r, "effect.read", json!({"layer": p3}))["filters"], json!([]));
 }
 
 // ---- the rows through the process (`command --stdin`) -----------------------------------------------------------
