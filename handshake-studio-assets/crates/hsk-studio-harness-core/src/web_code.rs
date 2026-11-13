@@ -20,38 +20,59 @@
 //!   and numeric contracts, transition vocabulary, SVG web-export defaults, the gradient swatch constant, prefix rules.
 //! - `web.media_records`: every `@media` block of the document's style elements as `{media_type, conditions, rules}`
 //!   records, or the block's typed refusal.
-//! - `web.css_rule` (`stylesheet` key of an HTML `style`, `media`?, `selector`, `declarations` object): sets
-//!   (`"prop": "value"` or `{"number": n, "unit": "px"}`, composed through the property's contract) or removes
-//!   (`"prop": null`) declarations of the rule, creating the media block and rule when absent; applied in key order; a
-//!   prefix rule's emissions follow their property. Refusals `stylesheet_not_html_style`, `not_a_style_element`,
-//!   `css_*`, `media_*`, `value_*`, `unit_*`, `css_property_absent`, `css_rule_absent`, `nothing_to_change`.
+//! - `web.css_rule` (`stylesheet` key of an HTML `style`, `media`?, `selector`, `rule_index`?, `declarations` object):
+//!   sets (`"prop": "value"` or `{"number": n, "unit": "px"}`, composed through the property's contract) or removes
+//!   (`"prop": null`) declarations of the rule found by its raw selector, creating the media block and rule when absent
+//!   (a new top-level rule goes before the first `@media`); `!important` is kept; applied in key order; a prefix rule's
+//!   emissions follow their property, and a removal takes the emissions that are there. Several rules of the selector
+//!   refuse `css_rule_ambiguous` (detail `candidates`: their ranges) unless `rule_index` picks one. Refusals
+//!   `stylesheet_not_html_style`, `not_a_style_element`, `css_*`, `media_*`, `value_*`, `unit_*`, `css_property_absent`,
+//!   `css_rule_absent`, `rule_index_invalid`, `nothing_to_change`.
 //! - `web.code_navigator` (`key`): the rules of the document's style sheets whose selector matches the element, and
 //!   the count of rules outside the selector subset.
-//! - `web.code_hints` (`offset`, `type_id`?): the hint group, pattern, typed prefix and matching items there.
-//! - `web.regions` (`offset`?): the region-ownership receipts of the document (or the one holding `offset`).
-//! - `web.validate` (`rule_set`? = `html_all`, `key`?, `type_id`?): typed diagnostics, never a rewrite.
+//! - `web.code_hints` (`offset`, `type_id`?): the hint there with the record's six fields ([STU-WEB-050]: pattern,
+//!   additional_dismiss_chars, allow_whitespace_prefix, display_restriction, allow_multiple_values, items), the typed
+//!   prefix and the total.
+//! - `web.regions` (`offset`?): the region-ownership receipts of the document by its type (or the one holding `offset`).
+//! - `web.validate` (`rule_set`? = `html_all`, `key`?, `type_id`?): typed diagnostics, never a rewrite; codes of
+//!   [STU-WEB-147] to [STU-WEB-151] where the spec names one (`doctype_missing`, `tag_unknown_in_active_libraries`,
+//!   `attribute_value_outside_enumeration`, `attribute_required_set_unsatisfied`, `tag_context_violation`).
 //! - `web.lint` (`language` markup|css|script, `rules`? object of rule -> bool overrides, `key`?): diagnostics, the
-//!   rules enabled and `not_run`; `script` refuses `script_lint_provider_unselected`, an unknown rule
-//!   `lint_rule_unknown`.
+//!   rules enabled, `not_run` and `unread_sheets`; `script` refuses `script_lint_provider_unselected`, an unknown rule
+//!   `lint_rule_unknown`. A CSS document is linted as one sheet.
 //! - `web.format_source` (`key`?, `indent_char` space|tab, `indent_width` 1..16, `line_length` 0|20..1000,
-//!   `attribute_wrap` keep|wrap_over_line_length, `dry_run`?): one step; `dry_run` returns the edits and changes
-//!   nothing; already formatted text answers `changed: false` with no step (idempotent).
+//!   `attribute_wrap` keep|wrap_over_line_length, `dry_run`?): rendering-neutral (module `formatting`); one step;
+//!   `dry_run` returns the diff whole up to 1 MiB of replacement text (`truncated` says whether it stopped there,
+//!   `sha256_after` the result's digest) and changes nothing; already formatted text answers `changed: false` with no
+//!   step (idempotent).
 //! - `web.apply_comment` (`key` or `start`+`end`) and `web.remove_comment` (`offset`): comment syntax from the language
-//!   there. Refusals `range_crosses_languages`, `comment_would_nest`, `range_splits_a_tag`, `already_commented`,
-//!   `no_comment_here`.
+//!   there (by the document's type: a CSS file gets `/* */`). Refusals `range_crosses_languages`, `comment_would_nest`,
+//!   `range_splits_a_tag`, `range_splits_a_token`, `range_in_rcdata`, `range_in_raw_text`, `already_commented`,
+//!   `comment_inner_has_markers`, `no_comment_here`.
 //! - `web.balance_braces` (`start`, `end`?), `web.select_parent_tag` (`key`), `web.collapse_full_tag` (`key`),
 //!   `web.collapse_selection` (`start`, `end`): ranges and keys only (fold state is the view's).
-//! - `web.indent` / `web.outdent` (`key` or `start`+`end`, `indent_char`?, `indent_width`?): one step; lines in a
-//!   verbatim element refuse `range_in_verbatim`.
+//! - `web.indent` / `web.outdent` (`key` or `start`+`end`, or neither for the whole document; `indent_char`?,
+//!   `indent_width`?): one step; a selection's line in a verbatim element or an attribute value refuses
+//!   `range_in_verbatim` / `range_in_attribute_value` (the whole document skips those lines); more than 65536 lines
+//!   refuse `range_too_large`.
+//!
+//! Jobs and bounds (review F2, lead Q1): the whole-document rows `web.format_source`, `web.validate`, `web.lint` and a
+//! whole-document `web.indent` / `web.outdent` are admitted as jobs through the host's job port (module `web_site`;
+//! `overloaded`, `canceled`, `stale_revision`; the result carries `job`), after their parameter checks. Every engine
+//! call runs with the command's cancellation token and a work budget: a cancel stops it at the next check
+//! (`canceled`), and work past the budget refuses `work_budget_exceeded`; selection-local rows stay synchronous under
+//! the same budget.
 //!
 //! Every parse or apply failure of the engine refuses with the engine's code, and a refusal changes nothing.
 #![deny(clippy::arithmetic_side_effects)]
 
+use super::web_site::{self, JobOn};
 use super::{MAX_ROWS, No, P, R, WebHost, bounded, key, key_text, no, patched, row_text};
 use crate::action::CommandEntry;
 use hsk_studio_accord::{CancellationToken, CommandContext};
 use hsk_studio_web::css_properties::{self as css, Category, ControlType, DeclarationChange, NumericContract};
-use hsk_studio_web::doc_types::{self, CodeError, DOCTYPES, DOCUMENT_TYPES, DocumentType, DtdContext, InternalKind};
+use hsk_studio_session::Action;
+use hsk_studio_web::doc_types::{self, CodeError, DOCTYPES, DOCUMENT_TYPES, DocumentType, DtdContext, InternalKind, Work};
 use hsk_studio_web::formatting::{self, AttributeWrap, FormatOptions, IndentChar};
 use hsk_studio_web::hints::{self, SchemeRegistry};
 use hsk_studio_web::validation::{self, Diagnostic, Language, Report};
@@ -90,7 +111,8 @@ pub(super) fn owns(command_id: &str) -> bool {
 }
 
 fn code(e: &CodeError) -> No {
-    No(e.code, e.at.as_ref().map_or_else(String::new, |r| format!("{}..{}", r.start, r.end)), None)
+    let detail = (!e.list.is_empty()).then(|| json!({"candidates": e.list.iter().take(MAX_ROWS).map(span).collect::<Vec<_>>()}));
+    No(e.code, e.at.as_ref().map_or_else(String::new, |r| format!("{}..{}", r.start, r.end)), detail)
 }
 
 fn span(r: &Range<usize>) -> Value {
@@ -118,14 +140,23 @@ fn node_of(doc: &WebDoc, text: &str) -> R<NodeId> {
 
 /// The range a selection-taking row works on: `key` (the node's span) or `start` and `end`.
 fn selection(doc: &WebDoc, p: &P<'_>) -> R<Range<usize>> {
+    optional_selection(doc, p)?.ok_or(No("parameter_missing", "key".into(), None))
+}
+
+/// [`selection`], or `None` when neither `key` nor `start`/`end` is given (the whole document).
+fn optional_selection(doc: &WebDoc, p: &P<'_>) -> R<Option<Range<usize>>> {
     match (p.opt_text("key")?, opt_offset(doc, p, "start")?, opt_offset(doc, p, "end")?) {
-        (Some(k), None, None) => doc.node(node_of(doc, k)?).map(|n| n.span.clone()).ok_or(No("no_such_node", bounded(k), None)),
-        (None, Some(s), Some(e)) if s <= e => Ok(s..e),
+        (Some(k), None, None) => doc.node(node_of(doc, k)?).map(|n| Some(n.span.clone())).ok_or(No("no_such_node", bounded(k), None)),
+        (None, Some(s), Some(e)) if s <= e => Ok(Some(s..e)),
         (None, Some(_), Some(_)) => no("range_invalid", "start..end"),
-        (None, _, _) => no("parameter_missing", "key"),
+        (None, None, None) => Ok(None),
+        (None, _, _) => no("parameter_missing", "start/end"),
         (Some(_), _, _) => no("parameter_invalid", "key and start/end"),
     }
 }
+
+/// Bytes of replacement text a dry-run diff returns whole (review F11).
+const MAX_DIFF_BYTES: usize = 1 << 20;
 
 fn kind_json(k: InternalKind) -> &'static str {
     k.token()
@@ -155,11 +186,22 @@ fn entry_json(e: &css::PropertyEntry) -> Value {
 
 fn diagnostics_json(report: &Report) -> Value {
     let d = |x: &Diagnostic| json!({"severity": x.severity.token(), "rule_set_id": x.rule_set_id, "rule_id": x.rule_id, "byte_range": span(&x.byte_range), "element_path": x.element_path, "message": row_text(&x.message), "code": x.code});
-    json!({"diagnostics": report.diagnostics.iter().take(MAX_ROWS).map(d).collect::<Vec<_>>(), "total": report.diagnostics.len(), "truncated": report.truncated, "not_run": report.not_run})
+    json!({"diagnostics": report.diagnostics.iter().take(MAX_ROWS).map(d).collect::<Vec<_>>(), "total": report.diagnostics.len(), "truncated": report.truncated, "not_run": report.not_run, "unread_sheets": report.unread_sheets})
 }
 
-fn edits_json(edits: &[TextEdit]) -> Value {
-    json!(edits.iter().take(MAX_ROWS).map(|e| json!({"span": span(&e.span), "replacement": row_text(&e.replacement)})).collect::<Vec<_>>())
+/// The dry-run diff: whole replacements up to [`MAX_DIFF_BYTES`], then `truncated` with the count left out.
+fn diff_json(edits: &[TextEdit]) -> (Value, bool, usize) {
+    let mut used = 0usize;
+    let mut out = Vec::new();
+    for e in edits {
+        if out.len() >= MAX_ROWS || used.saturating_add(e.replacement.len()) > MAX_DIFF_BYTES {
+            break;
+        }
+        used = used.saturating_add(e.replacement.len());
+        out.push(json!({"span": span(&e.span), "replacement": e.replacement}));
+    }
+    let left = edits.len().saturating_sub(out.len());
+    (json!(out), left > 0, left)
 }
 
 fn indent_unit(p: &P<'_>) -> R<String> {
@@ -250,6 +292,7 @@ impl WebHost {
     }
 
     pub(super) fn code_command(&mut self, row: &'static CommandEntry, p: &P<'_>, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
+        let schemes = SchemeRegistry::shipped();
         match row.command_id {
             "web.document_types" => {
                 let types: Vec<Value> = match p.opt_text("type_id")? {
@@ -282,7 +325,7 @@ impl WebHost {
                 let tag = match p.opt_text("tag")? {
                     None => None,
                     Some(name) => {
-                        let def = vocabulary.tag(t.type_id, name).ok_or(No("tag_unknown", bounded(name), None))?;
+                        let def = vocabulary.tag(t.type_id, name).ok_or(No("tag_unknown_in_active_libraries", bounded(name), None))?;
                         let attrs = vocabulary.attributes_of(def);
                         Some(json!({
                             "tag_name": def.tag_name, "library_id": def.library_id, "has_end_tag": def.has_end_tag.token(), "tag_type": def.tag_type.map(|x| x.token()),
@@ -314,7 +357,7 @@ impl WebHost {
             }
             "web.media_records" => {
                 let doc = self.doc()?;
-                let blocks = css::document_media_records(doc);
+                let blocks = css::document_media_records(doc, &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 Ok(json!({"blocks": blocks.iter().take(MAX_ROWS).map(|b| json!({
                     "stylesheet": key_text(doc, b.style), "query": row_text(&b.query), "query_range": span(&b.query_range),
                     "records": b.records.as_ref().ok().map(|list| list.iter().map(|r| json!({"media_type": r.media_type, "conditions": r.conditions.iter().map(|c| json!({"feature": c.feature, "operator": c.operator, "value": c.value, "unit": c.unit})).collect::<Vec<_>>(), "rules": r.rules.iter().map(|s| row_text(s)).collect::<Vec<_>>()})).collect::<Vec<_>>()),
@@ -325,14 +368,18 @@ impl WebHost {
                 let doc = self.doc()?;
                 let style = node_of(doc, p.text("stylesheet")?)?;
                 let changes = changes(p)?;
-                let outcome = css::rule_edit(doc, style, p.opt_text("media")?, p.text("selector")?, &changes, &css::shipped_prefix_rules()).map_err(|e| code(&e))?;
+                let rule_index = match p.0.get("rule_index") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or(No("parameter_invalid", "rule_index".into(), None))?),
+                };
+                let outcome = css::rule_edit(doc, style, p.opt_text("media")?, p.text("selector")?, rule_index, &changes, &css::shipped_prefix_rules(), &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 let extra = json!({"created_media": outcome.created_media, "created_rule": outcome.created_rule, "set": outcome.set, "removed": outcome.removed});
                 self.code_edit(row, vec![outcome.edit], ctx, cancel, extra)
             }
             "web.code_navigator" => {
                 let doc = self.doc()?;
                 let id = node_of(doc, p.text("key")?)?;
-                let (rules, unsupported) = css::affecting_rules(doc, id).map_err(|e| code(&e))?;
+                let (rules, unsupported) = css::affecting_rules(doc, id, &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 Ok(json!({"key": key_text(doc, id), "rules": rules.iter().take(MAX_ROWS).map(|r| json!({"stylesheet": key_text(doc, r.style), "media": r.media, "selector": row_text(&r.selector), "specificity": r.specificity, "range": span(&r.whole), "declarations": r.declarations})).collect::<Vec<_>>(), "total": rules.len(), "unsupported_rules": unsupported}))
             }
             "web.code_hints" => {
@@ -340,24 +387,28 @@ impl WebHost {
                 let at = offset(doc, p, "offset")?;
                 let t = self.code_type(p)?;
                 let vocabulary = TagRegistry::shipped();
-                let hint = hints::hints_at(doc, &vocabulary, t.type_id, at).map_err(|e| code(&e))?;
+                let hint = hints::hints_at(doc, &vocabulary, &schemes, t.type_id, at, &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 let groups = hints::hint_groups(&vocabulary, t.type_id);
                 Ok(json!({
                     "offset": at, "type_id": t.type_id,
-                    "hint": hint.map(|h| json!({"group_id": h.group_id, "pattern": row_text(&h.pattern), "prefix": row_text(&h.prefix), "scheme_id": h.scheme_id, "allow_multiple_values": h.allow_multiple_values, "items": h.items.iter().map(|i| json!({"label": i.label, "value": i.value, "icon_id": i.icon_id, "description": i.description})).collect::<Vec<_>>(), "total": h.total})),
+                    "hint": hint.map(|h| json!({
+                        "group_id": h.group_id, "pattern": row_text(&h.pattern), "additional_dismiss_chars": h.additional_dismiss_chars, "allow_whitespace_prefix": h.allow_whitespace_prefix,
+                        "display_restriction": h.display_restriction, "allow_multiple_values": h.allow_multiple_values, "prefix": row_text(&h.prefix), "scheme_id": h.scheme_id,
+                        "items": h.items.iter().map(|i| json!({"label": i.label, "value": i.value, "icon_id": i.icon_id, "description": i.description})).collect::<Vec<_>>(), "total": h.total,
+                    })),
                     "groups": groups.iter().map(|g| json!({"group_id": g.group_id, "hints": g.hints.len(), "items": g.item_count(), "described": g.described()})).collect::<Vec<_>>(),
                 }))
             }
             "web.regions" => {
                 let doc = self.doc()?;
                 let at = opt_offset(doc, p, "offset")?;
-                let schemes = SchemeRegistry::shipped();
-                let all = hints::regions(doc, &schemes);
+                let t = self.code_type(p)?;
+                let all = hints::regions(doc, &schemes, t.type_id, &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 let list: Vec<&hints::Region> = match at {
                     Some(o) => hints::region_at(&all, o).into_iter().collect(),
                     None => all.iter().collect(),
                 };
-                Ok(json!({"regions": list.iter().take(MAX_ROWS).map(|r| json!({"range": span(&r.range), "scheme_id": r.scheme_id, "candidates": r.candidates, "decision": r.decision, "open_delimiter": r.open_delimiter, "close_delimiter": r.close_delimiter, "enclosing": r.enclosing})).collect::<Vec<_>>(), "total": list.len(), "schemes": schemes.schemes().iter().map(|s| json!({"scheme_id": s.scheme_id, "priority": s.priority})).collect::<Vec<_>>()}))
+                Ok(json!({"type_id": t.type_id, "regions": list.iter().take(MAX_ROWS).map(|r| json!({"range": span(&r.range), "scheme_id": r.scheme_id, "candidates": r.candidates, "decision": r.decision, "open_delimiter": r.open_delimiter, "close_delimiter": r.close_delimiter, "enclosing": r.enclosing})).collect::<Vec<_>>(), "total": list.len(), "schemes": schemes.schemes().iter().map(|s| json!({"scheme_id": s.scheme_id, "priority": s.priority})).collect::<Vec<_>>()}))
             }
             "web.validate" => {
                 let doc = self.doc()?;
@@ -371,11 +422,14 @@ impl WebHost {
                     return no("rule_set_not_for_type", t.type_id);
                 }
                 let scope = p.opt_text("key")?.map(|k| node_of(doc, k)).transpose()?;
-                let report = validation::validate(doc, &TagRegistry::shipped(), t.type_id, &validation::html_all(), scope);
-                let mut out = diagnostics_json(&report);
-                out["rule_set_id"] = json!("html_all");
-                out["type_id"] = json!(t.type_id);
-                Ok(out)
+                self.admitted(web_site::REPORT_ACTION, JobOn::Open, ctx, cancel, |host| {
+                    let doc = host.doc()?;
+                    let report = validation::validate(doc, &TagRegistry::shipped(), t.type_id, &validation::html_all(), scope, &mut Work::new(cancel)).map_err(|e| code(&e))?;
+                    let mut out = diagnostics_json(&report);
+                    out["rule_set_id"] = json!("html_all");
+                    out["type_id"] = json!(t.type_id);
+                    Ok(out)
+                })
             }
             "web.lint" => {
                 let doc = self.doc()?;
@@ -385,40 +439,52 @@ impl WebHost {
                     Some(Value::Object(m)) => m.iter().map(|(k, v)| v.as_bool().map(|b| (k.clone(), b)).ok_or(No("parameter_invalid", bounded(k), None))).collect::<R<_>>()?,
                     Some(_) => return no("parameter_invalid", "rules"),
                 };
+                let enabled = validation::enabled_rules(language, &overrides).map_err(|e| code(&e))?;
                 let scope = p.opt_text("key")?.map(|k| node_of(doc, k)).transpose()?;
-                let report = validation::lint(doc, language, &overrides, scope).map_err(|e| code(&e))?;
-                let mut out = diagnostics_json(&report);
-                out["language"] = json!(language.token());
-                out["enabled"] = json!(validation::enabled_rules(language, &overrides).unwrap_or_default());
-                Ok(out)
+                let t = self.code_type(p)?;
+                self.admitted(web_site::REPORT_ACTION, JobOn::Open, ctx, cancel, |host| {
+                    let doc = host.doc()?;
+                    let report = validation::lint(doc, t.type_id, language, &overrides, scope, &mut Work::new(cancel)).map_err(|e| code(&e))?;
+                    let mut out = diagnostics_json(&report);
+                    out["language"] = json!(language.token());
+                    out["enabled"] = json!(enabled);
+                    Ok(out)
+                })
             }
             "web.format_source" => {
                 let doc = self.doc()?;
                 let opts = format_options(p)?;
                 let scope = p.opt_text("key")?.map(|k| node_of(doc, k)).transpose()?;
+                let dry = p.flag("dry_run")?;
                 let t = self.code_type(p)?;
-                let edits = formatting::format_edits(doc, &TagRegistry::shipped(), t.type_id, scope, opts).map_err(|e| code(&e))?;
-                let count = edits.len();
-                if edits.is_empty() {
-                    return Ok(json!({"changed": false, "edits": 0, "dry_run": p.flag("dry_run")?, "web": self.state_json()}));
-                }
-                if p.flag("dry_run")? {
-                    // The diff is checked against the engine (applies and parses) without being kept.
-                    let (next, _, _) = patched(doc, &SourcePatch::new(doc, edits.clone()), cancel)?;
-                    return Ok(json!({"changed": true, "dry_run": true, "edits": count, "diff": edits_json(&edits), "sha256_after": next.sha256_hex(), "web": self.state_json()}));
-                }
-                self.code_edit(row, edits, ctx, cancel, json!({"changed": true, "dry_run": false, "edits": count}))
+                self.admitted(Action::Edit, JobOn::Open, ctx, cancel, |host| {
+                    let doc = host.doc()?;
+                    let edits = formatting::format_edits(doc, &TagRegistry::shipped(), t.type_id, scope, opts, &mut Work::new(cancel)).map_err(|e| code(&e))?;
+                    let count = edits.len();
+                    if edits.is_empty() {
+                        return Ok(json!({"changed": false, "edits": 0, "dry_run": dry, "truncated": false, "web": host.state_json()}));
+                    }
+                    if dry {
+                        // The diff is checked against the engine (applies and parses) without being kept.
+                        let (next, _, _) = patched(doc, &SourcePatch::new(doc, edits.clone()), cancel)?;
+                        let (diff, truncated, left) = diff_json(&edits);
+                        return Ok(json!({"changed": true, "dry_run": true, "edits": count, "diff": diff, "truncated": truncated, "left_out": left, "sha256_after": next.sha256_hex(), "web": host.state_json()}));
+                    }
+                    host.code_edit(row, edits, ctx, cancel, json!({"changed": true, "dry_run": false, "edits": count}))
+                })
             }
             "web.apply_comment" => {
                 let doc = self.doc()?;
                 let range = selection(doc, p)?;
-                let (edit, scheme) = formatting::comment_edit(doc, range).map_err(|e| code(&e))?;
+                let t = self.code_type(p)?;
+                let (edit, scheme) = formatting::comment_edit(doc, &schemes, t.type_id, range, &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 self.code_edit(row, vec![edit], ctx, cancel, json!({"scheme_id": scheme}))
             }
             "web.remove_comment" => {
                 let doc = self.doc()?;
                 let at = offset(doc, p, "offset")?;
-                let (edit, scheme) = formatting::uncomment_edit(doc, at).map_err(|e| code(&e))?;
+                let t = self.code_type(p)?;
+                let (edit, scheme) = formatting::uncomment_edit(doc, &schemes, t.type_id, at, &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 self.code_edit(row, vec![edit], ctx, cancel, json!({"scheme_id": scheme}))
             }
             "web.balance_braces" => {
@@ -428,7 +494,8 @@ impl WebHost {
                 if end < start {
                     return no("range_invalid", "start..end");
                 }
-                let r = hints::balance(doc, start..end).map_err(|e| code(&e))?;
+                let t = self.code_type(p)?;
+                let r = hints::balance(doc, &schemes, t.type_id, start..end, &mut Work::new(cancel)).map_err(|e| code(&e))?;
                 Ok(json!({"range": span(&r)}))
             }
             "web.select_parent_tag" => {
@@ -448,11 +515,17 @@ impl WebHost {
             }
             "web.indent" | "web.outdent" => {
                 let doc = self.doc()?;
-                let range = selection(doc, p)?;
+                let range = optional_selection(doc, p)?;
                 let unit = indent_unit(p)?;
-                let edits = formatting::indent_edits(doc, range, row.command_id == "web.outdent", &unit).map_err(|e| code(&e))?;
-                let lines = edits.len();
-                self.code_edit(row, edits, ctx, cancel, json!({"lines": lines}))
+                let outdent = row.command_id == "web.outdent";
+                let run = |host: &mut WebHost| {
+                    let doc = host.doc()?;
+                    let edits = formatting::indent_edits(doc, range.clone(), outdent, &unit, &mut Work::new(cancel)).map_err(|e| code(&e))?;
+                    let lines = edits.len();
+                    host.code_edit(row, edits, ctx, cancel, json!({"lines": lines, "whole_document": range.is_none()}))
+                };
+                // The whole document is a job; a selection stays synchronous under the work budget.
+                if range.is_none() { self.admitted(Action::Edit, JobOn::Open, ctx, cancel, run) } else { run(self) }
             }
             _ => no("unknown_command", row.command_id),
         }

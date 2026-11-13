@@ -5,6 +5,7 @@ use hsk_studio_web_core::css_properties::{
     self as css, ANIMATABLE_PROPERTIES, BoundSource, CURATED, Category, ControlType, DeclarationChange, ItemKind, LENGTH_UNITS, OPACITY_CONTRACT, RESOLUTION_UNITS, TIMING_FUNCTIONS, TRANSITION_PSEUDO_CLASSES,
     TRANSITION_VENDOR_PREFIXES, compose_number, numeric_contract, parse_media_query_list, property, rule_edit, scan_css, shipped_prefix_rules,
 };
+use hsk_studio_web_core::doc_types::Work;
 use hsk_studio_web_core::{Limits, SourcePatch, WebDoc, apply, parse};
 
 fn doc(src: &str) -> WebDoc {
@@ -20,7 +21,8 @@ fn set(p: &str, v: &str) -> DeclarationChange {
 }
 
 fn edited(d: &WebDoc, media: Option<&str>, selector: &str, changes: &[DeclarationChange]) -> String {
-    let outcome = rule_edit(d, style_of(d), media, selector, changes, &shipped_prefix_rules()).unwrap();
+    let cancel = CancellationToken::default();
+    let outcome = rule_edit(d, style_of(d), media, selector, None, changes, &shipped_prefix_rules(), &mut Work::new(&cancel)).unwrap();
     let out = apply(d, &SourcePatch::new(d, vec![outcome.edit])).unwrap().source;
     parse(&out, 2, &Limits::default(), &CancellationToken::default()).expect("the edited document still parses");
     out
@@ -147,7 +149,8 @@ fn an_existing_rule_is_changed_in_place_and_removal_takes_the_emitted_prefixes()
     let out = edited(&d, None, ".a", &[set("color", "blue"), set("transition", "top 2s")]);
     assert!(out.starts_with("<style>\n  .a {\n    color: blue;\n    margin: 0;\n    -webkit-transition: top 2s;\n    -o-transition: top 2s;\n    transition: top 2s;\n  }\n</style>"), "{out}");
     let d2 = doc(&out);
-    let outcome = rule_edit(&d2, style_of(&d2), None, ".a", &[DeclarationChange { property: "transition".into(), value: None }], &shipped_prefix_rules()).unwrap();
+    let cancel = CancellationToken::default();
+    let outcome = rule_edit(&d2, style_of(&d2), None, ".a", None, &[DeclarationChange { property: "transition".into(), value: None }], &shipped_prefix_rules(), &mut Work::new(&cancel)).unwrap();
     assert_eq!(outcome.removed, ["-webkit-transition", "-o-transition", "transition"]);
     let out2 = apply(&d2, &SourcePatch::new(&d2, vec![outcome.edit])).unwrap().source;
     assert_eq!(out2, "<style>\n  .a {\n    color: blue;\n    margin: 0;\n  }\n</style><p class=a>x</p>", "removing the base removes its prefixes in the same edit");
@@ -159,7 +162,8 @@ fn an_existing_rule_is_changed_in_place_and_removal_takes_the_emitted_prefixes()
 #[test]
 fn rule_edits_refuse_text_that_would_escape_the_sheet() {
     let d = doc("<style>p { color: red }</style><div></div>");
-    let code = |media: Option<&str>, sel: &str, p: &str, v: Option<&str>| rule_edit(&d, style_of(&d), media, sel, &[DeclarationChange { property: p.into(), value: v.map(str::to_string) }], &[]).unwrap_err().code;
+    let cancel = CancellationToken::default();
+    let code = |media: Option<&str>, sel: &str, p: &str, v: Option<&str>| rule_edit(&d, style_of(&d), media, sel, None, &[DeclarationChange { property: p.into(), value: v.map(str::to_string) }], &[], &mut Work::new(&cancel)).unwrap_err().code;
     assert_eq!(code(None, "p", "color", Some("red</style><script>x()</script>")), "css_text_unsafe");
     assert_eq!(code(None, "p", "color", Some("red; background: url(x)")), "css_value_invalid");
     assert_eq!(code(None, "p { } q", "color", Some("red")), "css_selector_invalid");
@@ -170,7 +174,7 @@ fn rule_edits_refuse_text_that_would_escape_the_sheet() {
     assert_eq!(code(Some("speech"), "p", "margin", Some("0")), "media_type_unknown");
     assert_eq!(code(None, "p", "color", Some("red")), "nothing_to_change");
     let div = (0..d.len()).find(|&i| d.local_name(i).as_deref() == Some("div")).unwrap();
-    assert_eq!(rule_edit(&d, div, None, "p", &[set("top", "0")], &[]).unwrap_err().code, "not_a_style_element");
+    assert_eq!(rule_edit(&d, div, None, "p", None, &[set("top", "0")], &[], &mut Work::new(&cancel)).unwrap_err().code, "not_a_style_element");
 }
 
 #[test]
@@ -184,18 +188,143 @@ fn crlf_documents_get_crlf_rules() {
 fn the_code_navigator_lists_the_rules_matching_an_element() {
     let d = doc("<style>p { top: 0 } .x { left: 0 } #y p { right: 0 } @media print { p.x { color: red } }</style><p class=x id=z>t</p>");
     let p = (0..d.len()).find(|&i| d.local_name(i).as_deref() == Some("p")).unwrap();
-    let (rules, unsupported) = css::affecting_rules(&d, p).unwrap();
-    let selectors: Vec<(&str, Option<&str>, u32)> = rules.iter().map(|r| (r.selector.as_str(), r.media.as_deref(), r.specificity)).collect();
-    assert_eq!(selectors, [("p", None, 1), (".x", None, 10), ("p.x", Some("print"), 11)]);
+    let cancel = CancellationToken::default();
+    let (rules, unsupported) = css::affecting_rules(&d, p, &mut Work::new(&cancel)).unwrap();
+    let selectors: Vec<(&str, Option<&str>, [u32; 3])> = rules.iter().map(|r| (r.selector.as_str(), r.media.as_deref(), r.specificity)).collect();
+    assert_eq!(selectors, [("p", None, [0, 0, 1]), (".x", None, [0, 1, 0]), ("p.x", Some("print"), [0, 1, 1])]);
     assert_eq!(unsupported, 1, "the descendant selector is listed as unsupported, not guessed");
 }
 
 #[test]
 fn media_records_come_from_the_document() {
     let d = doc("<style>@media screen and (max-width: 30em) { .a {top:0} .b {top:1px} } @media (hover: hover) { p {} }</style>");
-    let blocks = css::document_media_records(&d);
+    let cancel = CancellationToken::default();
+    let blocks = css::document_media_records(&d, &mut Work::new(&cancel)).unwrap();
     assert_eq!(blocks.len(), 2);
     let r = blocks[0].records.as_ref().unwrap();
     assert_eq!((r[0].media_type, r[0].rules.clone()), (Some("screen"), vec![".a".to_string(), ".b".to_string()]));
     assert_eq!(blocks[1].records.as_ref().unwrap_err().code, "media_feature_unknown");
+}
+
+fn edit_with(d: &WebDoc, media: Option<&str>, selector: &str, index: Option<usize>, changes: &[DeclarationChange]) -> Result<String, &'static str> {
+    let cancel = CancellationToken::default();
+    let outcome = rule_edit(d, style_of(d), media, selector, index, changes, &shipped_prefix_rules(), &mut Work::new(&cancel)).map_err(|e| e.code)?;
+    Ok(apply(d, &SourcePatch::new(d, vec![outcome.edit])).unwrap().source)
+}
+
+fn remove(p: &str) -> DeclarationChange {
+    DeclarationChange { property: p.into(), value: None }
+}
+
+/// Review F4 to F6: a trailing backslash is refused; a hand-written transition is removed alone; rules are found by
+/// their raw selector; duplicates are ambiguous unless indexed; a new top-level rule goes before @media; !important is
+/// kept.
+#[test]
+fn rule_edits_keep_neighbours_identity_and_cascade() {
+    let d = doc("<style>.a { color: red; margin: 0; }</style>");
+    assert_eq!(edit_with(&d, None, ".a", None, &[set("color", "blue\\")]), Err("css_value_invalid"));
+    assert_eq!(edit_with(&d, None, ".a", None, &[set("color", "blue\\\\")]).map(|s| s.contains("color: blue\\\\;")), Ok(true), "an escaped backslash is a value");
+    let hand = doc("<style>nav a { transition: color .2s; top: 0 }</style>");
+    assert_eq!(edit_with(&hand, None, "nav a", None, &[remove("transition")]).unwrap(), "<style>nav a { top: 0 }</style>");
+    let partial = doc("<style>a { -webkit-transition: x 1s; transition: x 1s }</style>");
+    assert_eq!(edit_with(&partial, None, "a", None, &[remove("transition")]).unwrap(), "<style>a { }</style>");
+    let escaped = doc("<style>.a\\,b { top: 0 } .a , b { top: 1px }</style>");
+    assert_eq!(edit_with(&escaped, None, ".a,b", None, &[set("top", "2px")]).unwrap(), "<style>.a\\,b { top: 0 } .a , b { top: 2px }</style>");
+    assert_eq!(css::selector_key("a  >  b /* c */ ,  .x\\ y").unwrap(), "a>b,.x\\ y");
+    let dup = doc("<style>.a { top: 0 } .a { top: 1px }</style>");
+    let cancel = CancellationToken::default();
+    let err = rule_edit(&dup, style_of(&dup), None, ".a", None, &[set("top", "2px")], &[], &mut Work::new(&cancel)).unwrap_err();
+    assert_eq!((err.code, err.list.len()), ("css_rule_ambiguous", 2));
+    assert_eq!(edit_with(&dup, None, ".a", Some(0), &[set("top", "2px")]).unwrap(), "<style>.a { top: 2px } .a { top: 1px }</style>");
+    assert_eq!(edit_with(&dup, None, ".a", Some(2), &[set("top", "2px")]), Err("rule_index_invalid"));
+    let media = doc("<style>\n  .x { top: 0 }\n  @media (max-width: 600px) { .card { padding: 0 } }\n</style>");
+    let out = edit_with(&media, None, ".card", None, &[set("padding", "24px")]).unwrap();
+    assert_eq!(out, "<style>\n  .x { top: 0 }\n  .card {\n    padding: 24px;\n  }\n  @media (max-width: 600px) { .card { padding: 0 } }\n</style>");
+    let imp = doc("<style>.a { color: red !important; top: 0 !IMPORTANT }</style>");
+    assert_eq!(edit_with(&imp, None, ".a", None, &[set("color", "blue"), set("top", "1px !important")]).unwrap(), "<style>.a { color: blue !important; top: 1px !important }</style>");
+}
+
+/// Review F14: the curated entries against a literal copy of the spec rows (STU-WEB-065, -068 to -070): control type,
+/// default, negatives and the option count the row states.
+#[test]
+fn the_curated_entries_match_the_spec_rows() {
+    let spec: [(&str, &str, &str, Option<bool>, usize); 54] = [
+        ("width", "MenuAndHotText", "auto", Some(false), 16),
+        ("height", "MenuAndHotText", "auto", Some(false), 16),
+        ("min-width", "MenuAndHotText", "0px", Some(false), 15),
+        ("min-height", "MenuAndHotText", "0px", Some(false), 15),
+        ("max-width", "MenuAndHotText", "none", Some(false), 16),
+        ("max-height", "MenuAndHotText", "none", Some(false), 16),
+        ("display", "Menu", "inline", None, 19),
+        ("box-sizing", "Menu", "content-box", Some(false), 3),
+        ("visibility", "Menu", "visible", None, 4),
+        ("float", "GroupedPictureButton", "unset", None, 3),
+        ("clear", "GroupedPictureButton", "unset", None, 4),
+        ("overflow-x", "Menu", "visible", None, 6),
+        ("overflow-y", "Menu", "visible", None, 6),
+        ("position", "Menu", "static", None, 4),
+        ("z-index", "HotTextValue", "auto", None, 1),
+        ("opacity", "RangeHotText", "1", None, 0),
+        ("margin", "GroupedBoxControls", "unset", Some(true), 16),
+        ("padding", "GroupedBoxControls", "unset", Some(false), 16),
+        ("top", "GroupedBoxControls", "unset", Some(true), 16),
+        ("right", "GroupedBoxControls", "unset", Some(true), 16),
+        ("bottom", "GroupedBoxControls", "unset", Some(true), 16),
+        ("left", "GroupedBoxControls", "unset", Some(true), 16),
+        ("color", "ColorWellWithTextEdit", "undefined", None, 0),
+        ("font-family", "FontMenu", "default font", None, 1),
+        ("font-style", "Menu", "normal", None, 3),
+        ("font-variant", "Menu", "normal", None, 2),
+        ("font-weight", "Menu", "normal", None, 13),
+        ("font-size", "MenuAndHotText", "medium", Some(false), 20),
+        ("line-height", "MenuAndHotText", "normal", None, 12),
+        ("letter-spacing", "MenuAndHotText", "normal", None, 12),
+        ("word-spacing", "MenuAndHotText", "normal", None, 12),
+        ("text-indent", "MenuAndHotText", "0px", None, 7),
+        ("white-space", "Menu", "normal", None, 5),
+        ("vertical-align", "MenuAndHotText", "baseline", None, 19),
+        ("text-align", "GroupedPictureButton", "unset", None, 4),
+        ("text-decoration", "GroupedPictureButton", "unset", None, 4),
+        ("text-transform", "GroupedPictureButton", "unset", None, 4),
+        ("list-style-type", "Menu", "undefined", None, 21),
+        ("list-style-position", "GroupedPictureButton", "unset", None, 2),
+        ("list-style-image", "MenuAndUrl", "none", None, 2),
+        ("text-shadow", "MultiControlLayout", "unset", None, 0),
+        ("border", "GroupedBorderControls", "unset", Some(false), 24),
+        ("border-radius", "GroupedBoxControls", "unset", Some(false), 15),
+        ("border-collapse", "GroupedPictureButton", "unset", None, 2),
+        ("border-spacing", "DoubleMenuAndHotText", "0px", Some(false), 15),
+        ("background-color", "ColorWellWithTextEdit", "unset", None, 0),
+        ("background-image", "MultiControlLayout", "url", None, 2),
+        ("background-position", "DoubleMenuAndHotText", "0% 0%", None, 28),
+        ("background-size", "DoubleMenuAndHotText", "auto auto", None, 14),
+        ("background-clip", "Menu", "border-box", None, 3),
+        ("background-origin", "Menu", "padding-box", None, 3),
+        ("background-repeat", "GroupedPictureButton", "repeat", None, 4),
+        ("background-attachment", "Menu", "scroll", None, 2),
+        ("box-shadow", "MultiControlLayout", "unset", None, 0),
+    ];
+    for (entry, (property, control, default, negative, options)) in CURATED.iter().zip(spec) {
+        assert_eq!(entry.property, property);
+        assert_eq!((entry.control_type.token(), entry.default_value.token(), entry.supports_negative_values, entry.option_count()), (control, default, negative, options), "{property}");
+    }
+}
+
+/// Review F2: hostile style text under the parse limit finishes within a bound or refuses typed.
+#[test]
+fn hostile_sheets_finish_within_a_bound() {
+    let at_rules = format!("<style>{}</style>", format!("@{}{{}}", "\\g".repeat(33)).repeat(60_000));
+    let d = doc(&at_rules);
+    let cancel = CancellationToken::default();
+    let start = std::time::Instant::now();
+    let blocks = css::document_media_records(&d, &mut Work::new(&cancel)).unwrap();
+    assert_eq!(blocks.first().and_then(|b| b.records.as_ref().err()).map(|e| e.code), Some("css_too_many_items"), "refused typed, not scanned forever");
+    let selector = format!("<style>{} {{ top: 0 }}</style><p>x</p>", "\\g".repeat(1 << 20));
+    let d = doc(&selector);
+    let p = d.find_by_tag("p")[0];
+    let (rules, unsupported) = css::affecting_rules(&d, p, &mut Work::new(&cancel)).unwrap();
+    assert_eq!((rules.len(), unsupported), (0, 1), "an escaped selector is read raw, never decoded into a match");
+    assert!(start.elapsed().as_secs() < 20, "linear: {:?}", start.elapsed());
+    cancel.cancel();
+    assert_eq!(css::document_media_records(&d, &mut Work::new(&cancel)).unwrap_err().code, "canceled");
 }

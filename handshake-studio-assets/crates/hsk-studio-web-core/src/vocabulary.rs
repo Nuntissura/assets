@@ -4,14 +4,17 @@
 //!
 //! Shipped data. The ten library records of [STU-WEB-018] are the spec's table (`display_name` is the `library_id`:
 //! the table names no display name; `tag_chooser_id` is null). Loaded tag definitions exist for the `html` library
-//! only: the HTML elements of the WHATWG HTML Living Standard element index (CC BY 4.0, recorded in
-//! `builders/dep-requests.jsonl`) with their void/non-void shape, a Studio-declared formatting class per element and
-//! the attributes and enumerated values that standard defines, plus two cross-tag groups (global attributes, event
-//! handlers). The vendor's 470 definitions, 9,741 attribute definitions and 14,733 enumerated values are not in the
+//! only: the HTML elements of the HTML Standard (WHATWG, https://html.spec.whatwg.org/, "Copyright WHATWG (Apple,
+//! Google, Mozilla, Microsoft)", CC BY 4.0; portions in source code BSD 3-Clause: the crate's NOTICE) with their
+//! void/non-void shape, a Studio-declared formatting class per element and a subset of the attributes and enumerated
+//! values that standard defines, plus two cross-tag groups (global attributes, event handlers). The `referrerpolicy`
+//! tokens are the W3C Referrer Policy's (NOTICE). Changes: a subset, Studio formatting classes, value types mapped by
+//! Studio. The vendor's 470 definitions, 9,741 attribute definitions and 14,733 enumerated values are not in the
 //! spec and are not reproduced: every library's declared-versus-loaded delta is a load diagnostic
-//! ([`TagRegistry::load_diagnostics`]), never silently dropped. Formatting classes are Studio declarations; the
-//! vendor's per-tag values are UNVERIFIED (D5). No shipped definition declares a property inspector, so every tag
-//! resolves to the generic attribute-table inspector ([STU-WEB-026]).
+//! ([`TagRegistry::load_diagnostics`]), never silently dropped. Formatting classes are Studio declarations, chosen so a
+//! format is rendering-neutral (inline-level and replaced elements are `Inline`); the vendor's per-tag values are
+//! UNVERIFIED (D5). No shipped definition declares a property inspector, so every tag resolves to the generic
+//! attribute-table inspector ([STU-WEB-026]).
 //!
 //! Spec reading: [STU-WEB-018] says the `html` and `templates` libraries apply to "all seven template types" while
 //! [STU-WEB-013] has eight TEMPLATE rows (23 and 33 to 39). Both libraries apply to all eight here (a template whose
@@ -410,8 +413,9 @@ impl TagRegistry {
     /// HTML-family types, exact in the XML family; libraries in registry order, the first definition wins.
     pub fn tag(&self, type_id: &str, name: &str) -> Option<&TagDefinition> {
         let xml = document_type(type_id).is_some_and(|t| t.xml_family());
-        let libs = self.libraries_for(type_id);
-        self.tags.iter().find(|t| libs.iter().any(|l| l.library_id == t.library_id) && if xml { t.tag_name == name } else { t.tag_name.eq_ignore_ascii_case(name) })
+        // No allocation per lookup (the formatter and validator ask once per element).
+        let active = |lib: &str| self.libraries.iter().any(|l| l.library_id == lib && l.applies_to_document_types.iter().any(|t| t == type_id));
+        self.tags.iter().find(|t| (if xml { t.tag_name == name } else { t.tag_name.eq_ignore_ascii_case(name) }) && active(&t.library_id))
     }
 
     /// Every tag definition a document type resolves, in registry order.
@@ -437,7 +441,13 @@ impl TagRegistry {
     /// The attribute definition of `name` on `tag` ([STU-WEB-025]: the definition's `case_sensitive`, overridden by the
     /// tag's `preserveattrcase`).
     pub fn attribute(&self, tag: &TagDefinition, name: &str) -> Option<AttributeDefinition> {
-        self.attributes_of(tag).into_iter().find(|a| same_attribute(tag, a, name))
+        self.attribute_ref(tag, name).cloned()
+    }
+
+    /// [`Self::attribute`] without a copy: the tag's own definitions first, then its groups' (review F2: no merged list
+    /// per attribute).
+    pub fn attribute_ref<'a>(&'a self, tag: &'a TagDefinition, name: &str) -> Option<&'a AttributeDefinition> {
+        tag.attributes.iter().find(|a| same_attribute(tag, a, name)).or_else(|| tag.groups.iter().filter_map(|g| self.groups.iter().find(|x| &x.group_id == g)).flat_map(|g| g.attributes.iter()).find(|a| same_attribute(tag, a, name)))
     }
 
     /// [STU-WEB-026].
@@ -635,7 +645,7 @@ const FORM: AttrSeed = ("form", CssId, &[]);
 const NAME: AttrSeed = ("name", T, &[]);
 const DISABLED: AttrSeed = ("disabled", Flag, &[]);
 const AUTOCOMPLETE: AttrSeed = ("autocomplete", T, &[]);
-const MEDIA_FLAGS: [AttrSeed; 8] = [("src", RelativePath, &[]), ("controls", Flag, &[]), ("autoplay", Flag, &[]), ("loop", Flag, &[]), ("muted", Flag, &[]), ("preload", E, &["none", "metadata", "auto"]), CROSSORIGIN, ("controlslist", T, &[])];
+const MEDIA_FLAGS: [AttrSeed; 7] = [("src", RelativePath, &[]), ("controls", Flag, &[]), ("autoplay", Flag, &[]), ("loop", Flag, &[]), ("muted", Flag, &[]), ("preload", E, &["none", "metadata", "auto"]), CROSSORIGIN];
 
 /// The global attributes of the HTML standard (cross-tag group `html_global`).
 const GLOBAL_ATTRIBUTES: &[AttrSeed] = &[
@@ -684,7 +694,7 @@ const HTML_TAGS: &[TagSeed] = &[
     TagSeed("area", Fmt::Block, true, &[("alt", T, &[]), ("coords", T, &[]), ("shape", E, &["rect", "circle", "poly", "default"]), ("href", RelativePath, &[]), TARGET, ("download", T, &[]), ("ping", T, &[]), ("rel", T, &[]), REFERRERPOLICY]),
     TagSeed("article", Fmt::Container, false, &[]),
     TagSeed("aside", Fmt::Container, false, &[]),
-    TagSeed("audio", Fmt::Container, false, &MEDIA_FLAGS),
+    TagSeed("audio", Fmt::Inline, false, &MEDIA_FLAGS),
     TagSeed("b", Fmt::Inline, false, &[]),
     TagSeed("base", Fmt::Block, true, &[("href", RelativePath, &[]), TARGET]),
     TagSeed("bdi", Fmt::Inline, false, &[]),
@@ -698,7 +708,7 @@ const HTML_TAGS: &[TagSeed] = &[
         false,
         &[DISABLED, FORM, ("formaction", RelativePath, &[]), ("formenctype", E, &["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"]), ("formmethod", E, &["get", "post", "dialog"]), ("formnovalidate", Flag, &[]), ("formtarget", T, &[]), NAME, ("popovertarget", CssId, &[]), ("popovertargetaction", E, &["toggle", "show", "hide"]), ("type", E, &["submit", "reset", "button"]), ("value", T, &[])],
     ),
-    TagSeed("canvas", Fmt::Block, false, &[("width", T, &[]), ("height", T, &[])]),
+    TagSeed("canvas", Fmt::Inline, false, &[("width", T, &[]), ("height", T, &[])]),
     TagSeed("caption", Fmt::Block, false, &[]),
     TagSeed("cite", Fmt::Inline, false, &[]),
     TagSeed("code", Fmt::Inline, false, &[]),
@@ -738,7 +748,7 @@ const HTML_TAGS: &[TagSeed] = &[
     TagSeed("hr", Fmt::Block, true, &[]),
     TagSeed("html", Fmt::Root, false, &[]),
     TagSeed("i", Fmt::Inline, false, &[]),
-    TagSeed("iframe", Fmt::Verbatim, false, &[("src", RelativePath, &[]), ("srcdoc", T, &[]), NAME, ("sandbox", T, &[]), ("allow", T, &[]), ("allowfullscreen", Flag, &[]), ("width", T, &[]), ("height", T, &[]), REFERRERPOLICY, LOADING]),
+    TagSeed("iframe", Fmt::VerbatimInline, false, &[("src", RelativePath, &[]), ("srcdoc", T, &[]), NAME, ("sandbox", T, &[]), ("allow", T, &[]), ("allowfullscreen", Flag, &[]), ("width", T, &[]), ("height", T, &[]), REFERRERPOLICY, LOADING]),
     TagSeed(
         "img",
         Fmt::Inline,
@@ -793,20 +803,20 @@ const HTML_TAGS: &[TagSeed] = &[
         &[("href", RelativePath, &[]), CROSSORIGIN, ("rel", T, &[]), ("as", T, &[]), ("media", T, &[]), ("integrity", T, &[]), ("hreflang", T, &[]), ("type", T, &[]), REFERRERPOLICY, ("sizes", T, &[]), ("imagesrcset", T, &[]), ("imagesizes", T, &[]), ("blocking", T, &[]), ("color", ValueType::Color, &[]), ("fetchpriority", E, &["high", "low", "auto"])],
     ),
     TagSeed("main", Fmt::Container, false, &[]),
-    TagSeed("map", Fmt::Container, false, &[NAME]),
+    TagSeed("map", Fmt::Inline, false, &[NAME]),
     TagSeed("mark", Fmt::Inline, false, &[]),
     TagSeed("menu", Fmt::Container, false, &[]),
     TagSeed("meta", Fmt::Block, true, &[NAME, ("http-equiv", E, &["content-language", "content-type", "default-style", "refresh", "set-cookie", "x-ua-compatible", "content-security-policy"]), ("content", T, &[]), ("charset", T, &[]), ("media", T, &[])]),
     TagSeed("meter", Fmt::Inline, false, &[("value", T, &[]), ("min", T, &[]), ("max", T, &[]), ("low", T, &[]), ("high", T, &[]), ("optimum", T, &[])]),
     TagSeed("nav", Fmt::Container, false, &[]),
     TagSeed("noscript", Fmt::Verbatim, false, &[]),
-    TagSeed("object", Fmt::Container, false, &[("data", RelativePath, &[]), ("type", T, &[]), NAME, FORM, ("width", WidthData, &[]), ("height", HeightData, &[])]),
+    TagSeed("object", Fmt::Inline, false, &[("data", RelativePath, &[]), ("type", T, &[]), NAME, FORM, ("width", WidthData, &[]), ("height", HeightData, &[])]),
     TagSeed("ol", Fmt::Container, false, &[("reversed", Flag, &[]), ("start", T, &[]), ("type", E, &["1", "a", "A", "i", "I"])]),
     TagSeed("optgroup", Fmt::Container, false, &[DISABLED, ("label", T, &[])]),
     TagSeed("option", Fmt::Block, false, &[DISABLED, ("label", T, &[]), ("selected", Flag, &[]), ("value", T, &[])]),
     TagSeed("output", Fmt::Inline, false, &[("for", T, &[]), FORM, NAME]),
     TagSeed("p", Fmt::Block, false, &[]),
-    TagSeed("picture", Fmt::Container, false, &[]),
+    TagSeed("picture", Fmt::Inline, false, &[]),
     TagSeed("pre", Fmt::Verbatim, false, &[]),
     TagSeed("progress", Fmt::Inline, false, &[("value", T, &[]), ("max", T, &[])]),
     TagSeed("q", Fmt::Inline, false, &[("cite", T, &[])]),
@@ -823,7 +833,7 @@ const HTML_TAGS: &[TagSeed] = &[
     ),
     TagSeed("search", Fmt::Container, false, &[]),
     TagSeed("section", Fmt::Container, false, &[]),
-    TagSeed("select", Fmt::Container, false, &[AUTOCOMPLETE, DISABLED, FORM, ("multiple", Flag, &[]), NAME, ("required", Flag, &[]), ("size", T, &[])]),
+    TagSeed("select", Fmt::Inline, false, &[AUTOCOMPLETE, DISABLED, FORM, ("multiple", Flag, &[]), NAME, ("required", Flag, &[]), ("size", T, &[])]),
     TagSeed("slot", Fmt::Inline, false, &[NAME]),
     TagSeed("small", Fmt::Inline, false, &[]),
     TagSeed("source", Fmt::Block, true, &[("type", T, &[]), ("media", T, &[]), ("src", RelativePath, &[]), ("srcset", T, &[]), ("sizes", T, &[]), ("width", WidthSrc, &[]), ("height", HeightSrc, &[])]),
@@ -853,6 +863,6 @@ const HTML_TAGS: &[TagSeed] = &[
     TagSeed("u", Fmt::Inline, false, &[]),
     TagSeed("ul", Fmt::Container, false, &[]),
     TagSeed("var", Fmt::Inline, false, &[]),
-    TagSeed("video", Fmt::Container, false, &[("src", RelativePath, &[]), ("controls", Flag, &[]), ("autoplay", Flag, &[]), ("loop", Flag, &[]), ("muted", Flag, &[]), ("preload", E, &["none", "metadata", "auto"]), CROSSORIGIN, ("poster", RelativePath, &[]), ("playsinline", Flag, &[]), ("width", T, &[]), ("height", T, &[])]),
+    TagSeed("video", Fmt::Inline, false, &[("src", RelativePath, &[]), ("controls", Flag, &[]), ("autoplay", Flag, &[]), ("loop", Flag, &[]), ("muted", Flag, &[]), ("preload", E, &["none", "metadata", "auto"]), CROSSORIGIN, ("poster", RelativePath, &[]), ("playsinline", Flag, &[]), ("width", T, &[]), ("height", T, &[])]),
     TagSeed("wbr", Fmt::Inline, true, &[]),
 ];

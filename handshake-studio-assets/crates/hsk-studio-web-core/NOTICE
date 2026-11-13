@@ -1,0 +1,64 @@
+hsk-studio-web-core third-party notices
+
+The code-intelligence modules (lane SMB-WEB-CODE-1) carry DATA read from the documents below, written by hand as Rust
+tables; no code was copied and no GPL, LGPL or MPL source was read. The texts were read on 2026-11-13 (UTC).
+
+1. HTML Standard (WHATWG, Living Standard), https://html.spec.whatwg.org/
+   Used in src/vocabulary.rs (the element names and their void/non-void shape, a subset of their attributes and
+   enumerated attribute values, the global attributes, a subset of the event handler content attributes) and in
+   src/validation.rs (the content-model contexts and attribute requirements of the html_all rule set).
+   Notice of the work: Copyright (c) WHATWG (Apple, Google, Mozilla, Microsoft). This work is licensed under a Creative
+   Commons Attribution 4.0 International License (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/). To the
+   extent portions of it are incorporated into source code, such portions in the source code are licensed under the
+   BSD 3-Clause License instead (text below).
+   Changes: a subset of the elements and attributes; formatting classes, value types and the rule set's structure are
+   Studio's; the tables are reorganised as Rust records.
+
+2. MIME Sniffing Standard (WHATWG, Living Standard, Last Updated 19 October 2026), https://mimesniff.spec.whatwg.org/
+   Used in src/hints.rs (the sixteen JavaScript MIME type essences).
+   Notice of the work: Copyright (c) WHATWG (Apple, Google, Mozilla, Microsoft). This work is licensed under a Creative
+   Commons Attribution 4.0 International License (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/); portions
+   incorporated into source code are licensed under the BSD 3-Clause License (text below).
+   Changes: none to the list; written as a Rust array.
+
+3. Referrer Policy (W3C Editor's Draft, 20 March 2026), https://w3c.github.io/webappsec-referrer-policy/
+   Used in src/vocabulary.rs (the eight referrer policy tokens offered for the referrerpolicy attribute).
+   Notice of the document: Copyright (c) 2026 World Wide Web Consortium. W3C(R) liability, trademark and permissive
+   document license rules apply.
+   Licence: W3C Software and Document License, https://www.w3.org/copyright/software-license/
+   Changes: the empty-string member is not offered as a picker value.
+
+4. ECMAScript Language Specification (ECMA-262, Ecma International), https://tc39.es/ecma262/
+   Used in src/hints.rs (the 38 reserved words of the javascript keyword list).
+   Notice of the document: (c) 2026 Ecma International. The specification's Copyright Notice permits copying,
+   modifying, preparing derivative works of and distributing it, in whole or in part, provided its copyright notice,
+   disclaimers and a statement of changes are included; its Software License is the BSD License. Full text:
+   https://tc39.es/ecma262/multipage/copyright-and-software-license.html
+   Changes: the reserved words only, as a Rust array.
+
+(c) and (R) stand for the copyright and registered-trademark signs of the documents' notices.
+
+------------------------------------------------------------------------------
+BSD 3-Clause License (for the WHATWG portions incorporated into source code)
+
+Copyright (c) WHATWG (Apple, Google, Mozilla, Microsoft).
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+   disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following
+   disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
+   products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

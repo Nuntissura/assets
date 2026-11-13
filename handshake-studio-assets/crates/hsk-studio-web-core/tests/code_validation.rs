@@ -6,7 +6,18 @@ use hsk_studio_web_core::validation::{
     self, CSS_LINT_RULES, ContextRule, Language, MARKUP_LINT_RULES, Pattern, QuoteRule, Requirement, RuleSet, SCRIPT_LEVELS, SCRIPT_LINT_DEFAULTS, ScriptDefault, Severity, TagRule, ValueMapEntry,
 };
 use hsk_studio_web_core::vocabulary::TagRegistry;
+use hsk_studio_web_core::doc_types::Work;
 use hsk_studio_web_core::{Limits, WebDoc, parse};
+
+fn check(d: &WebDoc, rules: &RuleSet, scope: Option<usize>) -> validation::Report {
+    let cancel = CancellationToken::default();
+    validation::validate(d, &TagRegistry::shipped(), "html", rules, scope, &mut Work::new(&cancel)).unwrap()
+}
+
+fn lint(d: &WebDoc, language: Language, rules: &BTreeMap<String, bool>) -> Result<validation::Report, &'static str> {
+    let cancel = CancellationToken::default();
+    validation::lint(d, "html", language, rules, None, &mut Work::new(&cancel)).map_err(|e| e.code)
+}
 use std::collections::BTreeMap;
 
 fn doc(src: &str) -> WebDoc {
@@ -58,22 +69,22 @@ fn the_value_map_keeps_its_four_quote_rules() {
 fn validation_reports_typed_diagnostics_and_never_rewrites() {
     let src = "<!doctype html><html><head><title>t</title><meta charset=utf-8 content=x></head><body><li>x</li><img alt=a><input type=slider data-x=1 aria-label=y onclick=f()><blink>z</blink><table><tr><td colspan=two>c</td></tr></table><my-el>c</my-el><p bogus=1>q</p></body></html>";
     let d = doc(src);
-    let report = validation::validate(&d, &TagRegistry::shipped(), "html", &validation::html_all(), None);
+    let report = check(&d, &validation::html_all(), None);
     assert_eq!(d.source(), src, "never a rewrite");
     let got = codes(&report);
     for want in [
         ("attribute_combination_invalid", "meta.invalid"),
         ("tag_context_violation", "li.context"),
         ("attribute_required_set_unsatisfied", "img.requires.all"),
-        ("attribute_value_not_allowed", "input.type.values"),
-        ("tag_unknown", "blink.known"),
+        ("attribute_value_outside_enumeration", "input.type.values"),
+        ("tag_unknown_in_active_libraries", "blink.known"),
         ("attribute_value_shape", "td.colspan.shape"),
         ("attribute_unknown", "p.bogus.known"),
     ] {
         assert!(got.contains(&want), "{want:?} in {got:?}");
     }
     assert_eq!(got.len(), 7, "data-*, aria-*, event handlers and custom elements are not findings: {got:?}");
-    let value = report.diagnostics.iter().find(|x| x.code == "attribute_value_not_allowed").unwrap();
+    let value = report.diagnostics.iter().find(|x| x.code == "attribute_value_outside_enumeration").unwrap();
     assert_eq!(value.severity, Severity::Warning);
     assert!(value.message.contains("type=\"slider\"") && value.message.contains("checkbox"), "names the attribute, value and set: {}", value.message);
     assert_eq!(&src[value.byte_range.clone()], "slider");
@@ -81,7 +92,7 @@ fn validation_reports_typed_diagnostics_and_never_rewrites() {
     assert_eq!((li.severity, li.rule_set_id.as_str(), li.element_path.as_deref().map(|p| p.ends_with("li"))), (Severity::Error, "html_all", Some(true)));
     // A subtree scope.
     let table = d.find_by_tag("table")[0];
-    let scoped = validation::validate(&d, &TagRegistry::shipped(), "html", &validation::html_all(), Some(table));
+    let scoped = check(&d, &validation::html_all(), Some(table));
     assert_eq!(codes(&scoped), [("attribute_value_shape", "td.colspan.shape")]);
 }
 
@@ -103,9 +114,9 @@ fn a_registered_rule_set_drives_quotes_requirements_and_context() {
         value_map: vec![ValueMapEntry::new("word", "letters", QuoteRule::MustBeDouble, true, "[a-z]+").unwrap()],
     };
     let d = doc("<section><div><span id=a title='ok'>x</span></div></section><span id=b class=c title=\"OK\">y</span>");
-    let report = validation::validate(&d, &TagRegistry::shipped(), "html", &set, None);
+    let report = check(&d, &set, None);
     let got = codes(&report);
-    assert_eq!(got, [("attribute_quote_rule", "span.title.quote"), ("attribute_value_shape", "span.title.shape"), ("tag_context_violation", "span.context"), ("attribute_required_set_unsatisfied", "span.requires.exactly_one")]);
+    assert_eq!(got, [("doctype_missing", "document.doctype"), ("attribute_quote_rule", "span.title.quote"), ("attribute_value_shape", "span.title.shape"), ("tag_context_violation", "span.context"), ("attribute_required_set_unsatisfied", "span.requires.exactly_one")]);
 }
 
 #[test]
@@ -124,7 +135,7 @@ fn the_linter_configurations_are_the_spec_lists() {
 fn markup_lint_runs_the_nine_default_rules() {
     let src = "<HTML><head><title>t</title></head><body><img src=\"\" id=a><p id='a'>1 > 0</p><area href=x></body></HTML>";
     let d = doc(src);
-    let report = validation::lint(&d, Language::Markup, &BTreeMap::new(), None).unwrap();
+    let report = lint(&d, Language::Markup, &BTreeMap::new()).unwrap();
     let rules: Vec<&str> = report.diagnostics.iter().map(|x| x.rule_id.as_str()).collect();
     for want in ["doctype-first", "tagname-lowercase", "attr-value-double-quotes", "id-unique", "src-not-empty", "alt-require", "spec-char-escape"] {
         assert!(rules.contains(&want), "{want} in {rules:?}");
@@ -137,12 +148,12 @@ fn markup_lint_runs_the_nine_default_rules() {
     o.insert("inline-style-disabled".to_string(), true);
     o.insert("href-abs-or-rel".to_string(), true);
     let d2 = doc("<!doctype html><p style=\"top:0\">x</p>");
-    let r2 = validation::lint(&d2, Language::Markup, &o, None).unwrap();
+    let r2 = lint(&d2, Language::Markup, &o).unwrap();
     assert!(r2.diagnostics.iter().any(|x| x.rule_id == "inline-style-disabled"));
     assert_eq!(r2.not_run, ["href-abs-or-rel"]);
     o.insert("no-such-rule".to_string(), true);
-    assert_eq!(validation::lint(&d2, Language::Markup, &o, None).unwrap_err().code, "lint_rule_unknown");
-    assert_eq!(validation::lint(&d2, Language::Script, &BTreeMap::new(), None).unwrap_err().code, "script_lint_provider_unselected");
+    assert_eq!(lint(&d2, Language::Markup, &o).unwrap_err(), "lint_rule_unknown");
+    assert_eq!(lint(&d2, Language::Script, &BTreeMap::new()).unwrap_err(), "script_lint_provider_unselected");
 }
 
 #[test]
@@ -150,12 +161,49 @@ fn css_lint_runs_its_three_default_rules() {
     let floats: String = (0..10).map(|i| format!(".f{i} {{ float: left }} ")).collect();
     let src = format!("<style>.a {{ color: red; color: red }} .b {{ -webkit-box-sizing: border-box }} .c {{ color: #fff; color: rgba(0,0,0,.5) }} {floats}</style>");
     let d = doc(&src);
-    let report = validation::lint(&d, Language::Css, &BTreeMap::new(), None).unwrap();
+    let report = lint(&d, Language::Css, &BTreeMap::new()).unwrap();
     let rules: Vec<&str> = report.diagnostics.iter().map(|x| x.rule_id.as_str()).collect();
     assert_eq!(rules.iter().filter(|r| **r == "duplicate-properties").count(), 1, "a fallback directly after is no finding: {rules:?}");
     assert!(rules.contains(&"vendor-prefix") && rules.contains(&"floats"), "{rules:?}");
     assert_eq!(report.diagnostics.iter().find(|x| x.rule_id == "duplicate-properties").map(|x| &src[x.byte_range.clone()]), Some("color: red"));
     let broken = doc("<style>p { color: red</style>");
-    let r = validation::lint(&broken, Language::Css, &BTreeMap::new(), None).unwrap();
-    assert_eq!(r.diagnostics.iter().map(|x| x.rule_id.as_str()).collect::<Vec<_>>(), ["errors"], "a sheet that does not scan is reported, never skipped");
+    let r = lint(&broken, Language::Css, &BTreeMap::new()).unwrap();
+    assert_eq!((r.diagnostics.len(), r.unread_sheets), (0, 1), "with errors off a sheet that does not scan is counted, never silent");
+    let mut on = BTreeMap::new();
+    on.insert("errors".to_string(), true);
+    let r = lint(&broken, Language::Css, &on).unwrap();
+    assert_eq!((r.diagnostics.iter().map(|x| x.rule_id.as_str()).collect::<Vec<_>>(), r.unread_sheets), (vec!["errors"], 0));
+}
+
+/// Review F7, lead Q6: the implied skeleton is valid; misplaced head content and a missing doctype are still found.
+#[test]
+fn the_implied_skeleton_is_valid() {
+    let codes_of = |src: &str| check(&doc(src), &validation::html_all(), None).diagnostics.iter().map(|d| d.code).collect::<Vec<_>>();
+    assert!(codes_of("<!doctype html><title>t</title><base href=a><p>x</p>").is_empty());
+    assert!(codes_of("<!doctype html><html><title>t</title><body><p>x</p></body></html>").is_empty());
+    assert_eq!(codes_of("<!doctype html><p>x</p><title>t</title>"), ["tag_context_violation"], "head content after body content");
+    assert_eq!(codes_of("<!doctype html><html><body><title>t</title></body></html>"), ["tag_context_violation"]);
+    assert_eq!(codes_of("<p>x</p>"), ["doctype_missing"]);
+}
+
+/// Review F2: validation and lint of hostile documents finish within a bound; a cancel stops them typed.
+#[test]
+fn hostile_documents_validate_within_a_bound() {
+    let attrs: String = (0..200).map(|i| format!(" data-a{i}=x")).collect();
+    let src = format!("<!doctype html>{}", format!("<p{attrs} bogus=1>x</p>").repeat(2000));
+    let d = doc(&src);
+    let start = std::time::Instant::now();
+    let r = check(&d, &validation::html_all(), None);
+    assert_eq!(r.diagnostics.len() + r.truncated, 2000, "one unknown attribute per element");
+    let sheet = format!("<style>{}</style>", format!("a {{ {} }}", "-webkit-x: 1; ".repeat(2000)).repeat(64));
+    let d2 = doc(&sheet);
+    lint(&d2, Language::Css, &BTreeMap::new()).unwrap();
+    assert!(start.elapsed().as_secs() < 20, "linear: {:?}", start.elapsed());
+    let cancel = CancellationToken::default();
+    cancel.cancel();
+    assert_eq!(validation::validate(&d, &TagRegistry::shipped(), "html", &validation::html_all(), None, &mut Work::new(&cancel)).unwrap_err().code, "canceled");
+    assert_eq!(validation::lint(&d2, "html", Language::Css, &BTreeMap::new(), None, &mut Work::new(&cancel)).unwrap_err().code, "canceled");
+    let fresh = CancellationToken::default();
+    let mut small = Work::with_budget(&fresh, 10);
+    assert_eq!(validation::validate(&d, &TagRegistry::shipped(), "html", &validation::html_all(), None, &mut small).unwrap_err().code, "work_budget_exceeded");
 }

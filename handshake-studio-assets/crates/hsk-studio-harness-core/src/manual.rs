@@ -370,7 +370,7 @@ pub const DRIVE_REFUSALS: &[&str] = &[
 pub const DRIVE_LIMITS: &[&str] = &[
     "--owner and --access-space default to the actor, which records a model as its own owner; attribution strings are transport identifiers, not proof of a grant",
     "undo works only inside one --stdin process; the history is not in the package",
-    "no dry_run, no input or output schema, no capability grant and no promotion gate on any command yet; command ids are RUN_COMMANDS ids, not studio.<domain>.<command>.v<N>",
+    "dry_run only on web.format_source (its dry_run parameter); no input or output schema, no capability grant and no promotion gate on any command yet; command ids are RUN_COMMANDS ids, not studio.<domain>.<command>.v<N>",
     "--diag-dir is not available until the observe diagnostics sink lands",
     "every reply carries the whole state and renders a changed document on the CPU path; a long session's reply grows with its ops",
     "not driveable yet: layer.restructure and the staged-payload rows of RUN_COMMANDS; the develop operations with a mask-source or tone-family record, VectorNetwork whole-record writes, path-text options beyond the defaults, and a hosted plugin on a waveform selection (it needs Viewer::register_waveform_plugin)",

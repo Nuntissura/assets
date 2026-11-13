@@ -3,7 +3,7 @@
 //! diagnostics (never a rewrite), the three linters' exact shipped default configurations and the markup and CSS
 //! rules this module runs.
 //!
-//! Shipped rule set: `html_all`, Studio-authored from the WHATWG HTML content models (CC BY 4.0) for the HTML elements
+//! Shipped rule set: `html_all`, Studio-authored from the HTML Standard's content models (WHATWG; the crate's NOTICE) for the HTML elements
 //! of the shipped vocabulary: tag-context rules, attribute-requirement sets, one invalid combination and a small value
 //! map. The vendor's rule sets (the union `validator`, the three XHTML 1.0 sets, `cfml`, `wml`, `smil`, the 433-key value
 //! map and the 20 version keys) are not in the spec and are not reproduced; their counts are not reached. The record
@@ -11,7 +11,8 @@
 //!
 //! Linters: the configurations are the spec's exact lists ([`CSS_LINT_RULES`], [`MARKUP_LINT_RULES`],
 //! [`SCRIPT_LINT_DEFAULTS`], [`SCRIPT_LEVELS`]). The markup linter runs all nine rules enabled by default and eight of
-//! the disabled ones; the CSS linter runs its three enabled rules and eight disabled ones; a rule that does not run is
+//! the disabled ones; the CSS linter runs its three enabled rules and eight disabled ones (`errors` reports a sheet that does
+//! not scan; with it off the sheet is counted in `unread_sheets`); a rule that does not run is
 //! listed in `not_run`, never reported as clean. Rule semantics are Studio's reading of each rule name (thresholds
 //! labelled Studio-declared); the vendor's linter behaviour is UNVERIFIED (D5). The script linter needs a pinned Rust
 //! lint provider, which [STU-WEB-057] leaves unselected: a script lint run is refused `script_lint_provider_unselected`.
@@ -19,10 +20,10 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::css_properties::{self, ItemKind};
-use crate::doc_types::{CodeError, DtdContext};
+use crate::doc_types::{CodeError, DtdContext, Work};
 use crate::dom::{ContentModel, Namespace, NodeId, NodeKind, Quote, WebDoc};
 use crate::vocabulary::{TagRegistry, ValueType};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -552,6 +553,8 @@ pub struct Report {
     pub truncated: usize,
     /// Rules enabled for the run that this module does not run (never reported as clean).
     pub not_run: Vec<String>,
+    /// Style sheets that could not be read (a lint run with `errors` off counts them here, never silently).
+    pub unread_sheets: usize,
 }
 
 impl Report {
@@ -666,34 +669,79 @@ fn open_family(name: &str) -> bool {
     name.starts_with("data-") || name.starts_with("aria-") || name == "role" || (name.len() > 2 && name.starts_with("on") && name.bytes().skip(2).all(|c| c.is_ascii_lowercase()))
 }
 
-/// [STU-WEB-052] to [STU-WEB-055]: validates the HTML elements of `doc` (or of element `scope`'s subtree) against the
-/// vocabulary for `type_id` and `rules`. Diagnostics only; the document is never changed.
-pub fn validate(doc: &WebDoc, vocabulary: &TagRegistry, type_id: &str, rules: &RuleSet, scope: Option<NodeId>) -> Report {
+/// Head content: what the HTML parser puts in an implied `head` when it comes before any body content.
+const HEAD_CONTENT: [&str; 8] = ["base", "link", "meta", "noscript", "script", "style", "template", "title"];
+
+/// Whether element `id`'s context rule holds, with the HTML parser's implied skeleton (review F7, lead Q6): a parent
+/// that is the document root satisfies `html`, and the root or an authored `html` satisfies `head` for head content
+/// that no body content precedes (the parser would open the implied `head` there).
+fn context_holds(doc: &WebDoc, id: NodeId, rule: &ContextRule) -> bool {
+    let Some(node) = doc.node(id) else { return true };
+    let parent = node.parent.and_then(|p| doc.node(p).map(|n| (p, n)));
+    let parent_name = node.parent.and_then(|p| doc.local_name(p));
+    if parent_name.as_ref().is_some_and(|p| rule.parents.contains(p)) {
+        return true;
+    }
+    let mut at = node.parent;
+    while let Some(p) = at {
+        if doc.local_name(p).is_some_and(|n| rule.ancestors.contains(&n)) {
+            return true;
+        }
+        at = doc.node(p).and_then(|n| n.parent);
+    }
+    let Some((pid, pnode)) = parent else { return false };
+    let at_root = pnode.kind == NodeKind::Document;
+    let in_html = parent_name.as_deref() == Some("html");
+    let wants = |name: &str| rule.parents.iter().any(|p| p == name);
+    if at_root && wants("html") {
+        return true;
+    }
+    if (at_root || in_html) && wants("head") {
+        // Every earlier sibling is head content, whitespace, a comment or the doctype.
+        let siblings = doc.node(pid).map_or(&[][..], |n| n.children.as_slice());
+        return siblings.iter().take_while(|&&c| c != id).all(|&c| match doc.node(c) {
+            Some(n) if n.kind == NodeKind::Element => doc.local_name(c).is_some_and(|t| HEAD_CONTENT.contains(&t.as_str()) || t == "head"),
+            Some(n) if n.kind == NodeKind::Text => doc.slice(&n.span).bytes().all(|b| b.is_ascii_whitespace()),
+            _ => true,
+        });
+    }
+    false
+}
+
+/// [STU-WEB-052] to [STU-WEB-055], [STU-WEB-147] to [STU-WEB-151]: validates the HTML elements of `doc` (or of element
+/// `scope`'s subtree) against the vocabulary for `type_id` and `rules`. Diagnostics only; the document is never changed.
+/// Every element is charged to `work` (cancellation and budget).
+pub fn validate(doc: &WebDoc, vocabulary: &TagRegistry, type_id: &str, rules: &RuleSet, scope: Option<NodeId>, work: &mut Work<'_>) -> Result<Report, CodeError> {
     let mut report = Report::default();
     let set = rules.rule_set_id.clone();
     let diag = |report: &mut Report, severity: Severity, rule_id: String, range: Range<usize>, id: NodeId, code: &'static str, message: String| {
         report.push(Diagnostic { severity, rule_set_id: set.clone(), rule_id, byte_range: range, element_path: path(doc, id), message, code });
     };
+    let libraries: Vec<&str> = vocabulary.libraries_for(type_id).iter().map(|l| l.library_id.as_str()).collect();
+    if scope.is_none() && !(0..doc.len()).any(|i| doc.node(i).is_some_and(|n| n.kind == NodeKind::Doctype)) {
+        report.push(Diagnostic { severity: Severity::Warning, rule_set_id: set.clone(), rule_id: "document.doctype".into(), byte_range: 0..0, element_path: None, message: format!("the {type_id} document carries no doctype declaration"), code: "doctype_missing" });
+    }
     for id in elements(doc, scope) {
         let Some(node) = doc.node(id) else { continue };
+        work.tick(node.attrs.len().saturating_add(1))?;
         let tag = doc.local_name(id).unwrap_or_default();
         let open = node.open_span.clone().unwrap_or_else(|| node.span.clone());
         let def = vocabulary.tag(type_id, &tag);
         if def.is_none() && !tag.contains('-') {
-            diag(&mut report, Severity::Warning, format!("{tag}.known"), open.clone(), id, "tag_unknown", format!("<{tag}> is not in the tag libraries of document type {type_id}"));
+            diag(&mut report, Severity::Warning, format!("{tag}.known"), open.clone(), id, "tag_unknown_in_active_libraries", format!("<{tag}> resolves in none of the libraries of document type {type_id} (searched: {})", libraries.join(", ")));
         }
-        let present: Vec<String> = node.attrs.iter().map(|a| doc.attr_local_name(a)).collect();
+        let present: HashSet<String> = node.attrs.iter().map(|a| doc.attr_local_name(a)).collect();
         let tag_rule = rules.tags.iter().find(|t| t.tag == tag);
         for a in &node.attrs {
             let name = doc.attr_local_name(a);
             let value = doc.attr_value(a);
             if let Some(def) = def {
-                match vocabulary.attribute(def, &name) {
+                match vocabulary.attribute_ref(def, &name) {
                     None if !open_family(&name) => diag(&mut report, Severity::Warning, format!("{tag}.{name}.known"), a.span.clone(), id, "attribute_unknown", format!("{name} is not an attribute of <{tag}>")),
                     Some(attr) if attr.value_type == ValueType::Enumerated => {
                         if let Some(v) = value.as_deref().filter(|v| !attr.allows(v)) {
                             let allowed: Vec<&str> = attr.allowed_values.iter().map(|x| x.value.as_str()).collect();
-                            diag(&mut report, Severity::Warning, format!("{tag}.{name}.values"), a.value_span.clone().unwrap_or_else(|| a.span.clone()), id, "attribute_value_not_allowed", format!("{name}=\"{v}\" is not one of {}", allowed.join(", ")));
+                            diag(&mut report, Severity::Warning, format!("{tag}.{name}.values"), a.value_span.clone().unwrap_or_else(|| a.span.clone()), id, "attribute_value_outside_enumeration", format!("{name}=\"{v}\" is not one of {}", allowed.join(", ")));
                         }
                     }
                     _ => {}
@@ -702,42 +750,31 @@ pub fn validate(doc: &WebDoc, vocabulary: &TagRegistry, type_id: &str, rules: &R
             if let Some((_, key)) = tag_rule.and_then(|t| t.attributes.iter().find(|(n, _)| *n == name))
                 && let Some(entry) = rules.value_map.iter().find(|e| &e.key_id == key)
             {
-                {
-                    if let Some(v) = value.as_deref().filter(|v| !entry.accepts(v)) {
-                        diag(&mut report, Severity::Warning, format!("{tag}.{name}.shape"), a.value_span.clone().unwrap_or_else(|| a.span.clone()), id, "attribute_value_shape", format!("{name}=\"{v}\" does not have the shape {} ({})", entry.key_id, entry.note));
-                    }
-                    if !entry.quote_rule.allows(a.quote) {
-                        diag(&mut report, Severity::Warning, format!("{tag}.{name}.quote"), a.span.clone(), id, "attribute_quote_rule", format!("{name} breaks the quote rule {}", entry.quote_rule.token()));
-                    }
+                if let Some(v) = value.as_deref().filter(|v| !entry.accepts(v)) {
+                    diag(&mut report, Severity::Warning, format!("{tag}.{name}.shape"), a.value_span.clone().unwrap_or_else(|| a.span.clone()), id, "attribute_value_shape", format!("{name}=\"{v}\" does not have the shape {} ({})", entry.key_id, entry.note));
+                }
+                if !entry.quote_rule.allows(a.quote) {
+                    diag(&mut report, Severity::Warning, format!("{tag}.{name}.quote"), a.span.clone(), id, "attribute_quote_rule", format!("{name} breaks the quote rule {}", entry.quote_rule.token()));
                 }
             }
         }
         let Some(t) = tag_rule else { continue };
-        if let Some(c) = &t.context {
-            let parent = node.parent.and_then(|p| doc.local_name(p));
-            let mut ancestors = Vec::new();
-            let mut at = node.parent;
-            while let Some(p) = at {
-                if let Some(n) = doc.local_name(p) {
-                    ancestors.push(n);
-                }
-                at = doc.node(p).and_then(|n| n.parent);
-            }
-            let ok = parent.as_ref().is_some_and(|p| c.parents.contains(p)) || ancestors.iter().any(|a| c.ancestors.contains(a));
-            if !ok {
-                let legal: Vec<&str> = c.parents.iter().chain(&c.ancestors).map(String::as_str).collect();
-                diag(&mut report, Severity::Error, format!("{tag}.context"), open.clone(), id, "tag_context_violation", format!("<{tag}> is not legal inside <{}>; legal in {}", parent.unwrap_or_default(), legal.join(", ")));
-            }
+        if let Some(c) = &t.context
+            && !context_holds(doc, id, c)
+        {
+            let parent = node.parent.and_then(|p| doc.local_name(p)).unwrap_or_else(|| "#document".into());
+            let legal: Vec<&str> = c.parents.iter().chain(&c.ancestors).map(String::as_str).collect();
+            diag(&mut report, Severity::Error, format!("{tag}.context"), open.clone(), id, "tag_context_violation", format!("<{tag}> is not legal inside <{parent}>; rule {tag}.context allows {}", legal.join(", ")));
         }
         for (kind, names) in &t.requirements {
-            let n = names.iter().filter(|x| present.contains(x)).count();
+            let have: Vec<&str> = names.iter().filter(|x| present.contains(*x)).map(String::as_str).collect();
             let ok = match kind {
-                Requirement::AtLeastOne => n >= 1,
-                Requirement::ExactlyOne => n == 1,
-                Requirement::All => n == names.len(),
+                Requirement::AtLeastOne => !have.is_empty(),
+                Requirement::ExactlyOne => have.len() == 1,
+                Requirement::All => have.len() == names.len(),
             };
             if !ok {
-                diag(&mut report, Severity::Error, format!("{tag}.requires.{}", kind.token()), open.clone(), id, "attribute_required_set_unsatisfied", format!("<{tag}> needs {} of {}", kind.token(), names.join(", ")));
+                diag(&mut report, Severity::Error, format!("{tag}.requires.{}", kind.token()), open.clone(), id, "attribute_required_set_unsatisfied", format!("<{tag}> needs {} of {} (present: {})", kind.token(), names.join(", "), if have.is_empty() { "none".to_string() } else { have.join(", ") }));
             }
         }
         for combo in &t.invalid {
@@ -746,7 +783,7 @@ pub fn validate(doc: &WebDoc, vocabulary: &TagRegistry, type_id: &str, rules: &R
             }
         }
     }
-    report
+    Ok(report)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -990,15 +1027,15 @@ pub fn enabled_rules(language: Language, overrides: &BTreeMap<String, bool>) -> 
 }
 
 /// [STU-WEB-056], [STU-WEB-058]: lints the document (or element `scope`'s subtree) in `language`.
-pub fn lint(doc: &WebDoc, language: Language, overrides: &BTreeMap<String, bool>, scope: Option<NodeId>) -> Result<Report, CodeError> {
+pub fn lint(doc: &WebDoc, type_id: &str, language: Language, overrides: &BTreeMap<String, bool>, scope: Option<NodeId>, work: &mut Work<'_>) -> Result<Report, CodeError> {
     let enabled = enabled_rules(language, overrides)?;
     let mut report = Report::default();
     let run: &[&str] = if language == Language::Markup { &MARKUP_RUN } else { &CSS_RUN };
     report.not_run = enabled.iter().filter(|r| !run.contains(r)).map(|r| (*r).to_string()).collect();
     let on = |r: &str| enabled.contains(&r);
     match language {
-        Language::Markup => lint_markup(doc, &on, scope, &mut report),
-        Language::Css => lint_css(doc, &on, scope, &mut report),
+        Language::Markup => lint_markup(doc, &on, scope, &mut report, work)?,
+        Language::Css => lint_css(doc, type_id, &on, scope, &mut report, work)?,
         Language::Script => {}
     }
     Ok(report)
@@ -1008,7 +1045,7 @@ fn lint_diag(report: &mut Report, language: Language, rule: &str, severity: Seve
     report.push(Diagnostic { severity, rule_set_id: language.token().into(), rule_id: rule.into(), byte_range: range, element_path: path, message, code: "lint" });
 }
 
-fn lint_markup(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, report: &mut Report) {
+fn lint_markup(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, report: &mut Report, work: &mut Work<'_>) -> Result<(), CodeError> {
     let m = Language::Markup;
     let els = elements(doc, scope);
     if scope.is_none() {
@@ -1033,6 +1070,7 @@ fn lint_markup(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, r
     let mut ids: HashMap<String, Range<usize>> = HashMap::new();
     for id in els {
         let Some(node) = doc.node(id) else { continue };
+        work.tick(node.attrs.len().saturating_add(1))?;
         let tag = doc.local_name(id).unwrap_or_default();
         let p = path(doc, id);
         if on("tagname-lowercase") && let Some(ns) = &node.name_span && doc.slice(ns).bytes().any(|c| c.is_ascii_uppercase()) {
@@ -1047,7 +1085,7 @@ fn lint_markup(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, r
         if on("style-disabled") && tag == "style" {
             lint_diag(report, m, "style-disabled", Severity::Warning, node.span.clone(), p.clone(), "<style> is used".into());
         }
-        let mut seen: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for a in &node.attrs {
             let name = doc.attr_local_name(a);
             let written = doc.slice(&a.name_span);
@@ -1061,7 +1099,7 @@ fn lint_markup(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, r
             if on("attr-no-duplication") && seen.contains(&name) {
                 lint_diag(report, m, "attr-no-duplication", Severity::Error, a.span.clone(), p.clone(), format!("{name} is given twice"));
             }
-            seen.push(name.clone());
+            seen.insert(name.clone());
             if on("attr-value-not-empty") && value.as_deref().is_none_or(str::is_empty) {
                 lint_diag(report, m, "attr-value-not-empty", Severity::Warning, a.span.clone(), p.clone(), format!("{name} has no value"));
             }
@@ -1095,6 +1133,7 @@ fn lint_markup(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, r
     if on("spec-char-escape") {
         let scope_range = scope.and_then(|s| doc.node(s)).map(|n| n.span.clone());
         for id in 0..doc.len() {
+            work.tick(1)?;
             let Some(n) = doc.node(id) else { continue };
             if n.kind != NodeKind::Text || scope_range.as_ref().is_some_and(|r| n.span.start < r.start || r.end < n.span.end) {
                 continue;
@@ -1106,22 +1145,34 @@ fn lint_markup(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, r
             }
         }
     }
+    Ok(())
 }
 
-fn lint_css(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, report: &mut Report) {
+/// The style sheets a CSS lint reads: the whole document for a CSS-family type, else the HTML `style` elements (of
+/// `scope`'s subtree): (source range, element path).
+fn sheets(doc: &WebDoc, type_id: &str, scope: Option<NodeId>) -> Vec<(Range<usize>, Option<String>)> {
+    if matches!(type_id, "css" | "less" | "scss" | "sass") {
+        return vec![(0..doc.source().len(), None)];
+    }
+    let within = |style: NodeId| scope.is_none_or(|s| doc.node(s).zip(doc.node(style)).is_some_and(|(a, b)| a.span.start <= b.span.start && b.span.end <= a.span.end));
+    css_properties::style_elements(doc).into_iter().filter(|&st| within(st)).filter_map(|st| css_properties::style_content(doc, st).ok().map(|r| (r, path(doc, st)))).collect()
+}
+
+fn lint_css(doc: &WebDoc, type_id: &str, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, report: &mut Report, work: &mut Work<'_>) -> Result<(), CodeError> {
     let src = doc.source();
     let c = Language::Css;
     let mut floats: Vec<Range<usize>> = Vec::new();
-    for style in css_properties::style_elements(doc) {
-        if scope.is_some_and(|s| doc.node(s).zip(doc.node(style)).is_none_or(|(a, b)| b.span.start < a.span.start || a.span.end < b.span.end)) {
-            continue;
-        }
-        let p = path(doc, style);
-        let Ok(content) = css_properties::style_content(doc, style) else { continue };
+    for (content, p) in sheets(doc, type_id, scope) {
+        work.tick(content.len())?;
         let items = match css_properties::scan_css(src, content) {
             Ok(items) => items,
             Err(e) => {
-                lint_diag(report, c, "errors", Severity::Error, e.at.clone().unwrap_or(0..0), p.clone(), format!("the style sheet does not scan: {}", e.code));
+                // A sheet that does not scan: the `errors` rule reports it; with the rule off it is counted, never silent.
+                if on("errors") {
+                    lint_diag(report, c, "errors", Severity::Error, e.at.clone().unwrap_or(0..0), p.clone(), format!("the style sheet does not scan: {}", e.code));
+                } else {
+                    report.unread_sheets = report.unread_sheets.saturating_add(1);
+                }
                 continue;
             }
         };
@@ -1139,6 +1190,7 @@ fn lint_css(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, repo
         for rule in rules {
             let selector = src.get(rule.prelude.clone()).unwrap_or("");
             let Ok(decls) = css_properties::declarations(src, rule.block.clone()) else { continue };
+            work.tick(decls.len())?;
             if on("empty-rules") && decls.is_empty() {
                 lint_diag(report, c, "empty-rules", Severity::Warning, rule.whole.clone(), p.clone(), format!("{selector} has no declarations"));
             }
@@ -1148,24 +1200,30 @@ fn lint_css(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, repo
             if on("universal-selector") && selector.split(',').any(|part| part.trim().rsplit(|ch: char| ch.is_whitespace() || ch == '>' || ch == '+' || ch == '~').next() == Some("*")) {
                 lint_diag(report, c, "universal-selector", Severity::Warning, rule.prelude.clone(), p.clone(), format!("{selector} ends in the universal selector"));
             }
+            // One pass with maps (review F2): the previous index of each property and the last index of each property.
+            let mut previous: HashMap<&str, usize> = HashMap::new();
+            let mut last: HashMap<&str, usize> = HashMap::new();
+            for (i, d) in decls.iter().enumerate() {
+                last.insert(d.property.as_str(), i);
+            }
             for (i, d) in decls.iter().enumerate() {
                 let value = src.get(d.value_range.clone()).unwrap_or("").trim();
-                if on("duplicate-properties") {
+                if on("duplicate-properties")
+                    && let Some(&pi) = previous.get(d.property.as_str())
+                {
                     // A repeat is a fallback when it directly follows the same property with another value.
-                    let previous = decls[..i].iter().rposition(|x| x.property == d.property);
-                    if let Some(pi) = previous {
-                        let same_value = src.get(decls[pi].value_range.clone()).unwrap_or("").trim() == value;
-                        if same_value || pi.saturating_add(1) != i {
-                            lint_diag(report, c, "duplicate-properties", Severity::Warning, d.whole.clone(), p.clone(), format!("{} is declared twice in {selector}", d.property));
-                        }
+                    let same_value = src.get(decls[pi].value_range.clone()).unwrap_or("").trim() == value;
+                    if same_value || pi.saturating_add(1) != i {
+                        lint_diag(report, c, "duplicate-properties", Severity::Warning, d.whole.clone(), p.clone(), format!("{} is declared twice in {selector}", d.property));
                     }
                 }
+                previous.insert(d.property.as_str(), i);
                 if d.property == "float" && !value.eq_ignore_ascii_case("none") {
                     floats.push(d.whole.clone());
                 }
                 if on("vendor-prefix") && d.property.starts_with('-') {
                     let standard = d.property.splitn(3, '-').nth(2).unwrap_or("");
-                    if !standard.is_empty() && !decls.iter().skip(i).any(|x| x.property == standard) {
+                    if !standard.is_empty() && last.get(standard).is_none_or(|&li| li < i) {
                         lint_diag(report, c, "vendor-prefix", Severity::Warning, d.whole.clone(), p.clone(), format!("{} has no standard {standard} after it", d.property));
                     }
                 }
@@ -1185,4 +1243,5 @@ fn lint_css(doc: &WebDoc, on: &dyn Fn(&str) -> bool, scope: Option<NodeId>, repo
         let range = floats.first().cloned().unwrap_or(0..0);
         lint_diag(report, c, "floats", Severity::Warning, range, None, format!("{} float declarations (threshold {FLOATS_THRESHOLD}, Studio-declared)", floats.len()));
     }
+    Ok(())
 }

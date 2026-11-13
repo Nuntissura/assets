@@ -21,7 +21,7 @@
 //! external sheet file (the web host holds one document) and nested `@media` levels below one are refused typed.
 #![deny(clippy::arithmetic_side_effects)]
 
-use crate::doc_types::CodeError;
+use crate::doc_types::{CodeError, Work};
 use crate::dom::{ContentModel, Namespace, NodeId, NodeKind, WebDoc};
 use crate::source_dom_patch::TextEdit;
 use std::ops::Range;
@@ -843,9 +843,17 @@ fn decode_escape(b: &[u8], i: usize) -> (char, usize) {
         let ch = char::from_u32(value).filter(|c| *c != '\0').unwrap_or('\u{fffd}');
         return (ch, j);
     }
-    match std::str::from_utf8(b.get(j..).unwrap_or(&[])).ok().and_then(|s| s.chars().next()) {
+    // One character, read from at most its own four bytes (review F2: never the rest of the buffer).
+    let width = match b.get(j) {
+        Some(&c) if c < 0x80 => 1,
+        Some(&c) if c >= 0xf0 => 4,
+        Some(&c) if c >= 0xe0 => 3,
+        Some(_) => 2,
+        None => return ('\u{fffd}', j),
+    };
+    match b.get(j..j.saturating_add(width)).and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| s.chars().next()) {
         Some(ch) => (ch, j.saturating_add(ch.len_utf8())),
-        None => ('\u{fffd}', j),
+        None => ('\u{fffd}', j.saturating_add(1)),
     }
 }
 
@@ -1146,11 +1154,12 @@ pub struct MediaBlockRecord {
 
 /// [STU-WEB-076]: every `@media` block of the document's HTML style elements as records (a sheet that does not scan
 /// is one refusal row with the style's whole content as its range).
-pub fn document_media_records(doc: &WebDoc) -> Vec<MediaBlockRecord> {
+pub fn document_media_records(doc: &WebDoc, work: &mut Work<'_>) -> Result<Vec<MediaBlockRecord>, CodeError> {
     let src = doc.source();
     let mut out = Vec::new();
     for style in style_elements(doc) {
         let Ok(content) = style_content(doc, style) else { continue };
+        work.tick(content.len())?;
         let items = match scan_css(src, content.clone()) {
             Ok(items) => items,
             Err(e) => {
@@ -1160,7 +1169,7 @@ pub fn document_media_records(doc: &WebDoc) -> Vec<MediaBlockRecord> {
         };
         for item in items.iter().filter(|i| i.kind == ItemKind::Media) {
             let query_text = media_query_text(src, item);
-            let rules: Vec<String> = item.children.iter().filter(|c| c.kind == ItemKind::Rule).filter_map(|c| normalised(src.get(c.prelude.clone()).unwrap_or(""), false).ok()).collect();
+            let rules: Vec<String> = item.children.iter().filter(|c| c.kind == ItemKind::Rule).filter_map(|c| selector_key(src.get(c.prelude.clone()).unwrap_or("")).ok()).collect();
             let records = parse_media_query_list(query_text).map(|mut list| {
                 for r in &mut list {
                     r.rules.clone_from(&rules);
@@ -1170,7 +1179,7 @@ pub fn document_media_records(doc: &WebDoc) -> Vec<MediaBlockRecord> {
             out.push(MediaBlockRecord { style, query_range: item.prelude.clone(), query: normalised(query_text, true).unwrap_or_default(), records });
         }
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1186,6 +1195,11 @@ pub struct DeclarationChange {
 /// Text an edit writes must not end the `style` element, open a comment or block, or break the declaration.
 fn checked_css_text(text: &str, what: &'static str, block_chars: bool) -> Result<(), CodeError> {
     if text.len() > MAX_CSS_TEXT || text.trim().is_empty() || text.chars().any(|c| c.is_control() && c != '\t') {
+        return Err(CodeError::new(what));
+    }
+    // Review F4: a trailing backslash would escape the byte written after the text (`;`, `}`), and a backslash before a
+    // newline is no escape at all (CSS Syntax 3, 4.3.8): either way a neighbour would be swallowed.
+    if !text.trim_end().bytes().rev().take_while(|c| *c == b'\\').count().is_multiple_of(2) {
         return Err(CodeError::new(what));
     }
     let lower = text.to_ascii_lowercase();
@@ -1265,19 +1279,84 @@ pub struct RuleEditOutcome {
     pub edit: TextEdit,
     pub created_media: bool,
     pub created_rule: bool,
-    /// Properties set or removed, emitted prefixes included, in order.
+    /// Properties set, emitted prefixes included, in order.
     pub set: Vec<String>,
+    /// Properties removed (an emission that was not there is not listed).
     pub removed: Vec<String>,
 }
 
-/// [STU-WEB-060]: in the HTML `style` element `style`, inside the `@media` block whose normalised query equals
-/// `media` (created at the end of the sheet when absent; `None` = the sheet's top level), the rule whose normalised
-/// selector equals `selector` (created at the end of that level when absent) gets `changes` applied in order: a value
-/// replaces the property's last declaration or appends one, `None` removes every declaration of the property. A
-/// change on a property with a prefix rule ([STU-WEB-072]) applies to its emissions too, in the same edit. The result
-/// is ONE text edit: the new rule or media block inserted, or the rule's block rewritten from its own bytes with only
-/// the changed declarations touched.
-pub fn rule_edit(doc: &WebDoc, style: NodeId, media: Option<&str>, selector: &str, changes: &[DeclarationChange], rules: &[PrefixRule]) -> Result<RuleEditOutcome, CodeError> {
+/// A selector's identity (review F6): the RAW text, escapes kept escaped (`.a\,b` is one class, never the list
+/// `.a,b`), comments removed, whitespace runs one space, no space around the combinators `>`, `+`, `~` and the list
+/// comma. Case is kept.
+pub fn selector_key(text: &str) -> Result<String, CodeError> {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut space = false;
+    let mut i = 0usize;
+    let joins = |c: char| matches!(c, '>' | '+' | '~' | ',');
+    while i < b.len() {
+        let c = b[i];
+        if c == b'/' && b.get(i.saturating_add(1)) == Some(&b'*') {
+            i = comment_end(b, i)?;
+            space = true;
+            continue;
+        }
+        if is_ws(c) {
+            space = true;
+            i = i.saturating_add(1);
+            continue;
+        }
+        let (piece, next) = if c == b'"' || c == b'\'' {
+            let end = string_end(b, i)?;
+            (text.get(i..end).unwrap_or(""), end)
+        } else if c == b'\\' {
+            // The escape stays as written: a backslash and the one character it escapes.
+            let after = i.saturating_add(1);
+            let width = text.get(after..).and_then(|s| s.chars().next()).map_or(0, char::len_utf8);
+            (text.get(i..after.saturating_add(width)).unwrap_or("\\"), after.saturating_add(width))
+        } else {
+            let ch = text.get(i..).and_then(|s| s.chars().next()).unwrap_or('\u{fffd}');
+            (text.get(i..i.saturating_add(ch.len_utf8())).unwrap_or(""), i.saturating_add(ch.len_utf8().max(1)))
+        };
+        let first = piece.chars().next().unwrap_or(' ');
+        if space && !out.is_empty() && !joins(first) && !out.ends_with(joins) {
+            out.push(' ');
+        }
+        space = false;
+        out.push_str(piece);
+        i = next;
+    }
+    Ok(out)
+}
+
+/// One expanded change: its property, value (`None` removes) and whether it must be present to be removed.
+struct Change {
+    property: String,
+    value: Option<String>,
+    required: bool,
+}
+
+/// [STU-WEB-060]: in the HTML `style` element `style`, inside the `@media` block whose query is `media` (compared as
+/// records; created at the end of the sheet when absent; `None` = the sheet's top level), the rule whose raw selector
+/// ([`selector_key`]) is `selector` gets `changes`: a value replaces the property's last declaration (its
+/// `!important` kept unless the value says otherwise) or appends one, `None` removes every declaration of the
+/// property. With several rules of that selector at that level the edit needs `rule_index` (0-based, document order),
+/// else it refuses `css_rule_ambiguous` listing them (review F6, lead Q5). A missing rule is created; at the sheet's
+/// top level it goes before the first `@media` block, so it never overrides a media rule. A prefix rule
+/// ([STU-WEB-072]) writes its emissions with the base; removing the base removes the emissions that are there (an
+/// absent emission is no refusal, review F5). The result is ONE text edit: the new rule or media block inserted, or the
+/// rule's block rewritten from its own bytes with only the changed declarations touched, in one pass.
+#[allow(clippy::too_many_arguments)]
+pub fn rule_edit(
+    doc: &WebDoc,
+    style: NodeId,
+    media: Option<&str>,
+    selector: &str,
+    rule_index: Option<usize>,
+    changes: &[DeclarationChange],
+    rules: &[PrefixRule],
+    work: &mut Work<'_>,
+) -> Result<RuleEditOutcome, CodeError> {
     if changes.is_empty() || changes.len() > MAX_EDIT_DECLARATIONS {
         return Err(CodeError::new(if changes.is_empty() { "nothing_to_change" } else { "too_many_declarations" }));
     }
@@ -1286,23 +1365,11 @@ pub fn rule_edit(doc: &WebDoc, style: NodeId, media: Option<&str>, selector: &st
         checked_css_text(m, "media_query_invalid", true)?;
         parse_media_query_list(m)?;
     }
-    let mut expanded: Vec<DeclarationChange> = Vec::new();
-    for c in changes {
-        let property = checked_property(&c.property)?;
-        if let Some(v) = &c.value {
-            checked_css_text(v, "css_value_invalid", true)?;
-        }
-        if let Some(rule) = rules.iter().find(|r| r.property == property && r.value.as_deref().is_none_or(|rv| c.value.as_deref() == Some(rv))) {
-            for em in &rule.emissions {
-                expanded.push(DeclarationChange { property: em.emitted_property.clone(), value: c.value.as_ref().map(|v| em.emitted_value.clone().unwrap_or_else(|| v.clone())) });
-            }
-        }
-        expanded.push(DeclarationChange { property, value: c.value.clone() });
-    }
     let src = doc.source();
     let content = style_content(doc, style)?;
+    work.tick(content.len())?;
     let items = scan_css(src, content.clone())?;
-    let want_selector = normalised(selector, false)?;
+    let want_selector = selector_key(selector)?;
     // A media block is the same query when its records are (type and conditions; spacing, case and comments do not
     // count), or, for a query outside the record grammar, when its normalised text is.
     let want_media = media.map(|m| Ok::<_, CodeError>((normalised(m, true)?, media_shape(m)))).transpose()?;
@@ -1326,69 +1393,137 @@ pub fn rule_edit(doc: &WebDoc, style: NodeId, media: Option<&str>, selector: &st
             None => (&items, content.clone(), base.clone(), None),
         },
     };
-    let rule = if want_media.is_some() && media_item.is_none() { None } else { level_items.iter().find(|i| i.kind == ItemKind::Rule && src.get(i.prelude.clone()).and_then(|p| normalised(p, false).ok()).as_ref() == Some(&want_selector)) };
+    let new_media = want_media.is_some() && media_item.is_none();
+    let candidates: Vec<&CssItem> = if new_media {
+        Vec::new()
+    } else {
+        level_items.iter().filter(|i| i.kind == ItemKind::Rule && src.get(i.prelude.clone()).and_then(|p| selector_key(p).ok()).as_ref() == Some(&want_selector)).collect()
+    };
+    let rule = match (candidates.len(), rule_index) {
+        (0, None) => None,
+        (0, Some(_)) => return Err(CodeError::new("rule_index_invalid")),
+        (1, None | Some(0)) => candidates.first().copied(),
+        (_, None) => return Err(CodeError::listing("css_rule_ambiguous", candidates.iter().map(|c| c.whole.clone()).collect())),
+        (_, Some(n)) => Some(*candidates.get(n).ok_or(CodeError::new("rule_index_invalid"))?),
+    };
+    let block_text = rule.map(|r| src.get(r.block.clone()).unwrap_or("")).unwrap_or("");
+    let block_decls = if rule.is_some() { declarations(block_text, 0..block_text.len())? } else { Vec::new() };
+    // Expand the prefix rules; a later change of one property replaces an earlier one.
+    let mut expanded: Vec<Change> = Vec::new();
+    let mut push = |c: Change| {
+        expanded.retain(|x| x.property != c.property);
+        expanded.push(c);
+    };
+    for c in changes {
+        let property = checked_property(&c.property)?;
+        if let Some(v) = &c.value {
+            checked_css_text(v, "css_value_invalid", true)?;
+        }
+        // For a removal, a per-value rule matches the value the base has now.
+        let current = block_decls.iter().rev().find(|d| d.property == property).and_then(|d| block_text.get(d.value_range.clone())).map(str::to_string);
+        let match_value = c.value.clone().or(current);
+        for rule in rules.iter().filter(|r| r.property == property && r.value.as_deref().is_none_or(|rv| match_value.as_deref() == Some(rv))) {
+            for em in &rule.emissions {
+                push(Change { property: em.emitted_property.clone(), value: c.value.as_ref().map(|v| em.emitted_value.clone().unwrap_or_else(|| v.clone())), required: false });
+            }
+        }
+        push(Change { property, value: c.value.clone(), required: true });
+    }
     let mut set = Vec::new();
     let mut removed = Vec::new();
     if let Some(rule) = rule {
-        let block_text = src.get(rule.block.clone()).unwrap_or("").to_string();
-        let mut text = block_text.clone();
+        let text = block_text;
         let multi_line = text.contains('\n') || text.trim().is_empty();
-        let decl_indent = declarations(&text, 0..text.len())?.first().filter(|_| multi_line).map(|d| line_indent(&text, d.property_range.start).to_string()).filter(|i| !i.is_empty()).unwrap_or_else(|| format!("{level_indent}{unit}"));
+        let decl_indent = block_decls.first().filter(|_| multi_line).map(|d| line_indent(text, d.property_range.start).to_string()).filter(|i| !i.is_empty()).unwrap_or_else(|| format!("{level_indent}{unit}"));
+        let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+        let mut gone = vec![false; block_decls.len()];
+        let mut appends: Vec<String> = Vec::new();
         for c in &expanded {
-            let decls = declarations(&text, 0..text.len())?;
             match &c.value {
                 Some(v) => {
-                    if let Some(d) = decls.iter().rev().find(|d| d.property == c.property) {
-                        text.replace_range(d.value_range.clone(), v);
-                    } else if let Some(last) = decls.last() {
-                        let semi = if text.as_bytes().get(last.end.saturating_sub(1)) == Some(&b';') { "" } else { ";" };
-                        let insert = if multi_line { format!("{semi}{nl}{decl_indent}{}: {v};", c.property) } else { format!("{semi} {}: {v};", c.property) };
-                        text.insert_str(last.end, &insert);
+                    if let Some(d) = block_decls.iter().rev().find(|d| d.property == c.property) {
+                        let keep_important = d.important && !v.to_ascii_lowercase().contains("!important");
+                        edits.push((d.value_range.clone(), if keep_important { format!("{v} !important") } else { v.clone() }));
                     } else {
-                        // An empty block: the declaration on its own line, the brace back at the rule's indent.
-                        let kept = text.trim_end().len();
-                        text.truncate(kept);
-                        text.push_str(&format!("{nl}{decl_indent}{}: {v};{nl}{level_indent}", c.property));
+                        appends.push(format!("{}: {v};", c.property));
                     }
                     set.push(c.property.clone());
                 }
                 None => {
-                    let mut decls = decls;
-                    if !decls.iter().any(|d| d.property == c.property) {
-                        return Err(CodeError::new("css_property_absent"));
-                    }
-                    // Each declaration goes with the whitespace run right before it (a comment before it stays).
-                    while let Some(pos) = decls.iter().rposition(|d| d.property == c.property) {
-                        let d = &decls[pos];
+                    let mut any = false;
+                    for (i, d) in block_decls.iter().enumerate().filter(|(_, d)| d.property == c.property) {
                         let mut from = d.property_range.start;
                         while from > 0 && is_ws(text.as_bytes()[from.saturating_sub(1)]) {
                             from = from.saturating_sub(1);
                         }
-                        text.replace_range(from..d.end.max(d.whole.end), "");
-                        decls = declarations(&text, 0..text.len())?;
+                        edits.push((from..d.end.max(d.whole.end), String::new()));
+                        if let Some(g) = gone.get_mut(i) {
+                            *g = true;
+                        }
+                        any = true;
                     }
-                    removed.push(c.property.clone());
+                    match (any, c.required) {
+                        (true, _) => removed.push(c.property.clone()),
+                        (false, true) => return Err(CodeError::new("css_property_absent")),
+                        (false, false) => {}
+                    }
                 }
             }
         }
-        if text == block_text {
+        if !appends.is_empty() {
+            let last = block_decls.iter().zip(&gone).filter(|(_, g)| !**g).map(|(d, _)| d).next_back();
+            let insert = match last {
+                Some(d) => {
+                    let semi = if text.as_bytes().get(d.end.saturating_sub(1)) == Some(&b';') { "" } else { ";" };
+                    let sep = if multi_line { format!("{nl}{decl_indent}") } else { " ".to_string() };
+                    let body = appends.iter().map(|a| format!("{sep}{a}")).collect::<String>();
+                    (d.end..d.end, format!("{semi}{body}"))
+                }
+                // No declaration stays: the new ones on their own lines, the brace back at the rule's indent.
+                None => {
+                    let tail = trim(text.as_bytes(), 0..text.len()).end;
+                    let body = appends.iter().map(|a| format!("{nl}{decl_indent}{a}")).collect::<String>();
+                    (tail..text.len(), format!("{body}{nl}{level_indent}"))
+                }
+            };
+            edits.push(insert);
+        }
+        edits.sort_by_key(|(r, _)| (r.start, r.end));
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0usize;
+        for (r, rep) in &edits {
+            if r.start < cursor {
+                return Err(CodeError::new("css_edit_overlap"));
+            }
+            out.push_str(text.get(cursor..r.start).unwrap_or(""));
+            out.push_str(rep);
+            cursor = r.end;
+        }
+        out.push_str(text.get(cursor..).unwrap_or(""));
+        if out == text {
             return Err(CodeError::new("nothing_to_change"));
         }
-        return Ok(RuleEditOutcome { edit: TextEdit { span: rule.block.clone(), replacement: text }, created_media: false, created_rule: false, set, removed });
+        return Ok(RuleEditOutcome { edit: TextEdit { span: rule.block.clone(), replacement: out }, created_media: false, created_rule: false, set, removed });
     }
     // A new rule (and media block): only additions make sense.
-    if expanded.iter().any(|c| c.value.is_none()) {
+    if expanded.iter().any(|c| c.value.is_none() && c.required) {
         return Err(CodeError::new("css_rule_absent"));
     }
-    let new_media = want_media.is_some() && media_item.is_none();
+    let adds: Vec<&Change> = expanded.iter().filter(|c| c.value.is_some()).collect();
     let rule_indent = if new_media { format!("{base}{unit}") } else { level_indent.clone() };
-    let mut rule_text = format!("{rule_indent}{} {{{nl}", selector.trim());
-    for c in &expanded {
+    let mut rule_text = format!("{} {{{nl}", selector.trim());
+    for c in &adds {
         rule_text.push_str(&format!("{rule_indent}{unit}{}: {};{nl}", c.property, c.value.as_deref().unwrap_or("")));
         set.push(c.property.clone());
     }
     rule_text.push_str(&format!("{rule_indent}}}"));
-    let text = if new_media { format!("{base}@media {} {{{nl}{rule_text}{nl}{base}}}", media.unwrap_or("").trim()) } else { rule_text };
+    // At the sheet's top level a new rule goes before the first @media block (lead Q5).
+    let first_media = if want_media.is_none() { items.iter().find(|i| i.kind == ItemKind::Media) } else { None };
+    if let Some(m) = first_media {
+        let indent = line_indent(src, m.whole.start);
+        return Ok(RuleEditOutcome { edit: TextEdit { span: m.whole.start..m.whole.start, replacement: format!("{rule_text}{nl}{indent}") }, created_media: false, created_rule: true, set, removed });
+    }
+    let text = if new_media { format!("{base}@media {} {{{nl}{rule_indent}{rule_text}{nl}{base}}}", media.unwrap_or("").trim()) } else { format!("{rule_indent}{rule_text}") };
     // Inserted after the level's last token; the whitespace before the closing `</style>` or `}` is rewritten so the
     // close sits on its own line at its opener's indent.
     let close_indent = media_item.map_or_else(|| line_indent(src, style_open).to_string(), |m| line_indent(src, m.whole.start).to_string());
@@ -1406,15 +1541,17 @@ pub struct AffectingRule {
     pub style: NodeId,
     pub media: Option<String>,
     pub selector: String,
-    pub specificity: u32,
+    /// `[ids, classes, types]` of the most specific matching compound (review F6: a tuple, compared in order).
+    pub specificity: [u32; 3],
     pub whole: Range<usize>,
     pub declarations: usize,
 }
 
 /// The rules of the document's HTML style sheets whose selector matches element `id` (simple selectors: tag, `*`,
-/// `.class`, `#id`, compounds and lists; `@media` conditions are listed, not evaluated), and the count of rules whose
-/// selector is outside that subset (not matched, never guessed).
-pub fn affecting_rules(doc: &WebDoc, id: NodeId) -> Result<(Vec<AffectingRule>, usize), CodeError> {
+/// `.class`, `#id`, compounds and lists, read from the raw selector text, so an escaped selector is never split or
+/// decoded into another; `@media` conditions are listed, not evaluated), and the count of rules whose selector is
+/// outside that subset (not matched, never guessed).
+pub fn affecting_rules(doc: &WebDoc, id: NodeId, work: &mut Work<'_>) -> Result<(Vec<AffectingRule>, usize), CodeError> {
     let node = doc.node(id).ok_or(CodeError::new("no_such_node"))?;
     if node.kind != NodeKind::Element {
         return Err(CodeError::new("not_an_element"));
@@ -1429,15 +1566,17 @@ pub fn affecting_rules(doc: &WebDoc, id: NodeId) -> Result<(Vec<AffectingRule>, 
     let mut unsupported = 0usize;
     for style in style_elements(doc) {
         let Ok(content) = style_content(doc, style) else { continue };
+        work.tick(content.len())?;
         let Ok(items) = scan_css(src, content) else {
             unsupported = unsupported.saturating_add(1);
             continue;
         };
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         let mut visit = |item: &CssItem, media: Option<String>| {
-            let selector = src.get(item.prelude.clone()).and_then(|p| normalised(p, false).ok()).unwrap_or_default();
+            let selector = src.get(item.prelude.clone()).and_then(|p| selector_key(p).ok()).unwrap_or_default();
             match crate::css::parse_selectors(&selector) {
                 Some(list) => {
-                    if let Some(spec) = list.iter().filter(|c| c.matches(&info)).map(crate::css::Compound::specificity).max() {
+                    if let Some(spec) = list.iter().filter(|c| c.matches(&info)).map(|c| [count(c.ids.len()), count(c.classes.len()), u32::from(c.tag.is_some())]).max() {
                         let declarations = declarations(src, item.block.clone()).map_or(0, |d| d.len());
                         out.push(AffectingRule { style, media, selector, specificity: spec, whole: item.whole.clone(), declarations });
                     }

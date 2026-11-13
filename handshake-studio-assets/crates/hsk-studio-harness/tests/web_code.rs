@@ -112,7 +112,11 @@ fn code_edits_are_undoable_steps_that_survive_save_and_reopen() {
     with_run(|run| {
         cmd(run, "web.open", json!({"path": s(&path)}));
         assert_eq!(source(run), saved, "reopen gives back the saved bytes");
-        assert_eq!(cmd(run, "web.format_source", json!({})), json!({"changed": false, "edits": 0, "dry_run": false, "web": run.web_state()}), "already formatted: no step");
+        // A whole-document format is a job (review F2): its settlement rides along; the rest is the no-step answer.
+        let mut r = cmd(run, "web.format_source", json!({}));
+        let job = r.as_object_mut().and_then(|o| o.remove("job")).expect("the reply carries the job settlement");
+        assert_eq!(job["outcome"], "completed", "{job}");
+        assert_eq!(r, json!({"changed": false, "edits": 0, "dry_run": false, "truncated": false, "web": run.web_state()}), "already formatted: no step");
     });
 }
 
@@ -130,7 +134,7 @@ fn with_saved(path: &Path) -> String {
         assert_eq!((r["created_media"].as_bool(), r["created_rule"].as_bool()), (Some(true), Some(true)));
         assert_eq!(r["set"], json!(["padding", "-webkit-transition", "-o-transition", "transition"]));
         // Indent the paragraph's line ([STU-WEB-059]); the format below puts it back in place.
-        let lines = cmd(run, "web.indent", json!({"key": "#lead"}));
+        let lines = cmd(run, "web.indent", json!({"start": 0, "end": 5}));
         assert_eq!(lines["lines"], 1);
         // Format: the dry run returns the diff and changes nothing, then one step ([STU-WEB-028]).
         let before = source(run);
@@ -186,7 +190,7 @@ fn read_rows_answer_headlessly() {
         let r = cmd(run, "web.regions", json!({"offset": off}));
         assert_eq!(r["regions"][0]["scheme_id"], "css");
         let val = cmd(run, "web.validate", json!({}));
-        assert!(val["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "attribute_value_not_allowed" && d["rule_set_id"] == "html_all"), "{val}");
+        assert!(val["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "attribute_value_outside_enumeration" && d["rule_set_id"] == "html_all"), "{val}");
         let lint = cmd(run, "web.lint", json!({"language": "markup", "rules": {"title-require": true}}));
         assert!(lint["enabled"].as_array().unwrap().iter().any(|r| r == "title-require"));
         let b = cmd(run, "web.balance_braces", json!({"start": PAGE.find("there").unwrap()}));
@@ -215,7 +219,7 @@ fn refusals_are_typed_and_change_nothing() {
         assert_eq!(refused(run, "web.format_source", json!({"indent_width": 0})), "format_option_invalid");
         assert_eq!(refused(run, "web.code_hints", json!({"offset": 1_000_000})), "offset_invalid");
         assert_eq!(refused(run, "web.code_hints", json!({"offset": -1})), "parameter_invalid");
-        assert_eq!(refused(run, "web.tag_vocabulary", json!({"tag": "blink"})), "tag_unknown");
+        assert_eq!(refused(run, "web.tag_vocabulary", json!({"tag": "blink"})), "tag_unknown_in_active_libraries");
         assert_eq!(refused(run, "web.validate", json!({"type_id": "css"})), "rule_set_not_for_type");
         assert_eq!(refused(run, "web.apply_comment", json!({"start": 3})), "parameter_missing");
         assert_eq!(refused(run, "web.remove_comment", json!({"offset": 0})), "no_comment_here");
@@ -272,7 +276,7 @@ fn code_commands_run_in_the_drive_session() {
     }
     assert_eq!(out[2]["detail"]["web"]["undo"][0]["actor"]["account_id"], "lane-web-code", "{}", out[2]);
     assert_eq!(out[3]["detail"]["web"]["undo"][1]["label"], "Format Source", "{}", out[3]);
-    assert!(out[4]["detail"]["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "attribute_value_not_allowed"), "{}", out[4]);
+    assert!(out[4]["detail"]["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "attribute_value_outside_enumeration"), "{}", out[4]);
     let reread = out[8]["detail"]["source"].as_str().unwrap();
     assert!(reread.contains("\n    <div>\n        <p id=\"lead\"") && reread.contains("h1 {\n    margin: 0;\n  }"), "the saved edits come back on reopen: {reread}");
     assert_eq!(out[9]["error"], "script_lint_provider_unselected", "{}", out[9]);

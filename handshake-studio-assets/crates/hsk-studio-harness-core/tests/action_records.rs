@@ -356,7 +356,9 @@ fn corpus_lists_every_run_operation_with_recordability() {
     assert_eq!(action::corpus_json().as_array().unwrap().len(), RUN_COMMANDS.len());
     println!("NOT_PROVEN: schemars input_schema/output_schema per corpus command (STU-AUT-147; schemars is not an approved harness-core dependency)");
     println!("NOT_PROVEN: SACT identity prefix in hsk-studio-accord (action_id is checked as text)");
-    println!("NOT_PROVEN: dry_runnable commands (Run has no dry-run mode; every corpus entry declares dry_runnable false)");
+    let dry: Vec<&str> = RUN_COMMANDS.iter().filter(|c| c.dry_runnable).map(|c| c.command_id).collect();
+    assert_eq!(dry, ["web.format_source"], "the one row with its own dry run (lane SMB-WEB-CODE-1)");
+    println!("NOT_PROVEN: a general dry-run mode of Run (only web.format_source takes dry_run)");
     println!("NOT_PROVEN: STU-AUT-111 step kinds (message_stop, path_literal, tool_stroke, conditional_branch, conditional_mode_change)");
     println!("NOT_PROVEN: event-bound actions (STU-AUT-112) and conditional predicates (STU-AUT-113)");
     println!("NOT_PROVEN: Folio persistence of action sets as authority records and CKC registration (STU-AUT-114)");

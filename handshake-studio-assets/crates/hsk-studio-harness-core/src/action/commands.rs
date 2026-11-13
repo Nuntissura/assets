@@ -69,7 +69,8 @@ pub enum Surface {
 
 /// One [STU-AUT-147] corpus entry (subset: no `input_schema`/`output_schema`, schemars is not an
 /// approved harness-core dependency; no capability, enabler, receipt shape, argus targets or
-/// manual anchor). `dry_runnable` is false for every entry: `Run` has no dry-run mode (gap).
+/// manual anchor). `dry_runnable` is true only where the row itself takes a dry run (`web.format_source`'s `dry_run`);
+/// `Run` has no general dry-run mode (gap).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandEntry {
     pub command_id: &'static str,

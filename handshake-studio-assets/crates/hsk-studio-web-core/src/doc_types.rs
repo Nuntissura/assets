@@ -10,22 +10,70 @@
 //! not keep yet) and the publish receipt's unlisted-extension report (the publish path's).
 #![deny(clippy::arithmetic_side_effects)]
 
+use hsk_studio_accord::CancellationToken;
 use std::ops::Range;
 
-/// A typed refusal of the code-intelligence modules: a stable code and, where one exists, the byte range it names.
+/// A typed refusal of the code-intelligence modules: a stable code, where one exists the byte range it names, and
+/// for a refusal about several places (`css_rule_ambiguous`) their ranges.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeError {
     pub code: &'static str,
     pub at: Option<Range<usize>>,
+    pub list: Vec<Range<usize>>,
 }
 
 impl CodeError {
     pub const fn new(code: &'static str) -> Self {
-        Self { code, at: None }
+        Self { code, at: None, list: Vec::new() }
     }
 
     pub const fn at(code: &'static str, at: Range<usize>) -> Self {
-        Self { code, at: Some(at) }
+        Self { code, at: Some(at), list: Vec::new() }
+    }
+
+    pub fn listing(code: &'static str, list: Vec<Range<usize>>) -> Self {
+        Self { code, at: list.first().cloned(), list }
+    }
+}
+
+/// Work units one code-intelligence call may spend (bytes scanned, nodes visited, items compared): linear passes over
+/// an 8 MiB document fit with room; a quadratic pattern on hostile input refuses `work_budget_exceeded`.
+pub const WORK_BUDGET: u64 = 256 << 20;
+/// Units between two cancellation checks.
+const CHECK_EVERY: u64 = 4096;
+
+/// The cancellation token and work budget of one call: every loop over input charges it, so a call either finishes
+/// within the budget, refuses `work_budget_exceeded`, or stops at the next check after a cancel (`canceled`).
+pub struct Work<'a> {
+    cancel: &'a CancellationToken,
+    left: u64,
+    since_check: u64,
+}
+
+impl<'a> Work<'a> {
+    pub fn new(cancel: &'a CancellationToken) -> Self {
+        Self::with_budget(cancel, WORK_BUDGET)
+    }
+
+    pub fn with_budget(cancel: &'a CancellationToken, budget: u64) -> Self {
+        Self { cancel, left: budget, since_check: 0 }
+    }
+
+    /// Charges `n` units; checks the token every [`CHECK_EVERY`] units (and on the first charge).
+    pub fn tick(&mut self, n: usize) -> Result<(), CodeError> {
+        let n = u64::try_from(n).unwrap_or(u64::MAX).max(1);
+        self.left = self.left.checked_sub(n).ok_or(CodeError::new("work_budget_exceeded"))?;
+        if self.since_check == 0 || self.since_check >= CHECK_EVERY {
+            self.cancel.check().map_err(|_| CodeError::new("canceled"))?;
+            self.since_check = 0;
+        }
+        self.since_check = self.since_check.saturating_add(n);
+        Ok(())
+    }
+
+    /// The units left.
+    pub fn left(&self) -> u64 {
+        self.left
     }
 }
 

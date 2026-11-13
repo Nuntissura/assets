@@ -241,6 +241,9 @@ pub struct WebHost {
     job_head: u64,
     /// The file the run's package was opened from: `web.move_file` never moves it or anything onto or into it.
     package: Option<PathBuf>,
+    /// The open file began with a UTF-8 byte-order mark (lane SMB-WEB-CODE-1, review F10): kept out of the source, written
+    /// back on save, as is the mark of a type that writes one ([STU-WEB-013]).
+    bom: bool,
 }
 
 impl WebHost {
@@ -423,10 +426,15 @@ impl WebHost {
             return no("doctype_unsupported", doctype);
         }
         let limits = Limits::default();
+        let mut bom = false;
         let (source, path) = match (p.opt_text("path")?, p.opt_text("source")?) {
             (Some(path), None) => {
                 let path = PathBuf::from(checked_path(path)?);
-                let bytes = read_bounded(&path, u64::try_from(limits.max_bytes).unwrap_or(u64::MAX))?;
+                let mut bytes = read_bounded(&path, u64::try_from(limits.max_bytes).unwrap_or(u64::MAX))?;
+                if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+                    bytes.drain(..3);
+                    bom = true;
+                }
                 (String::from_utf8(bytes).map_err(|_| No("source_not_utf8", bounded(&path.to_string_lossy()), None))?, Some(path))
             }
             (None, Some(source)) => (source.to_string(), None),
@@ -444,6 +452,7 @@ impl WebHost {
         self.path = path;
         self.site = site;
         self.recipe = recipe;
+        self.bom = bom;
         self.undo.clear();
         self.redo.clear();
         self.published_root = None;
@@ -579,7 +588,10 @@ impl WebHost {
             Some(site) if Path::new(&site.local_root).is_dir() && resolved(&path).starts_with(resolved(Path::new(&site.local_root))) => Some(web_site::site_lock(&site.local_root, ctx)?),
             _ => None,
         };
-        let source = doc.source().as_bytes().to_vec();
+        // The byte-order mark the file had, or that its type writes (lane SMB-WEB-CODE-1, review F10).
+        let type_bom = path.file_name().and_then(|n| hsk_studio_web::doc_types::types_for_file_name(&n.to_string_lossy()).first().map(|t| t.writes_byte_order_mark)).unwrap_or(false);
+        let mut source = if self.bom || type_bom { vec![0xef, 0xbb, 0xbf] } else { Vec::new() };
+        source.extend_from_slice(doc.source().as_bytes());
         let sha = doc.sha256_hex().to_string();
         // A record that existed is rewritten even when site and recipe are now unset (an undone site must not come
         // back on reopen); a null record reads back as none.

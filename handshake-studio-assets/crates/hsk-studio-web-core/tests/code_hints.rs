@@ -3,7 +3,18 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_web_core::hints::{self, BlockDelimiter, ColouringScheme, SchemeRegistry};
 use hsk_studio_web_core::vocabulary::TagRegistry;
+use hsk_studio_web_core::doc_types::Work;
 use hsk_studio_web_core::{Limits, WebDoc, parse};
+
+fn work_regions(d: &WebDoc, type_id: &str) -> Vec<hints::Region> {
+    let cancel = CancellationToken::default();
+    hints::regions(d, &SchemeRegistry::shipped(), type_id, &mut Work::new(&cancel)).unwrap()
+}
+
+fn balance(d: &WebDoc, r: std::ops::Range<usize>) -> Result<std::ops::Range<usize>, hsk_studio_web_core::doc_types::CodeError> {
+    let cancel = CancellationToken::default();
+    hints::balance(d, &SchemeRegistry::shipped(), "html", r, &mut Work::new(&cancel))
+}
 
 fn doc(src: &str) -> WebDoc {
     parse(src, 1, &Limits::default(), &CancellationToken::default()).unwrap()
@@ -18,7 +29,7 @@ const PAGE: &str = "<!doctype html><html><head><style>p { color: red; } .a { mar
 #[test]
 fn regions_come_from_the_tokenizer_spans_and_name_their_owner() {
     let d = doc(PAGE);
-    let regions = hints::regions(&d, &SchemeRegistry::shipped());
+    let regions = work_regions(&d, "html");
     let owners: Vec<(&str, &str)> = regions.iter().map(|r| (r.scheme_id.as_str(), &PAGE[r.range.clone()])).filter(|(s, _)| *s != "html").collect();
     assert_eq!(owners, [("css", "p { color: red; } .a { margin: 0 }"), ("javascript", "if (a) { b(\"}\"); }"), ("text", "{\"a\": 1}"), ("html_comment", "<!-- note -->")]);
     let css = regions.iter().find(|r| r.scheme_id == "css").unwrap();
@@ -72,7 +83,9 @@ fn hint_groups_are_built_from_the_vocabulary_and_flag_missing_descriptions() {
 fn the_hint_at_an_offset_follows_the_language_there() {
     let d = doc(PAGE);
     let v = TagRegistry::shipped();
-    let hint = |offset: usize| hints::hints_at(&d, &v, "html", offset).unwrap();
+    let schemes = SchemeRegistry::shipped();
+    let cancel = CancellationToken::default();
+    let hint = |offset: usize| hints::hints_at(&d, &v, &schemes, "html", offset, &mut Work::new(&cancel)).unwrap();
     // In a CSS value after `color: r`.
     let h = hint(at(PAGE, "red").saturating_add(1)).unwrap();
     assert_eq!((h.group_id, h.prefix.as_str()), ("css_values", "r"));
@@ -91,22 +104,22 @@ fn the_hint_at_an_offset_follows_the_language_there() {
     assert_eq!(h.items.first().map(|i| i.value.as_str()), Some("class"));
     assert!(hint(at(PAGE, "Hi")).is_none(), "plain text: no hint");
     assert!(hint(at(PAGE, "b(")).is_none(), "script: no hint group here");
-    assert_eq!(hints::hints_at(&d, &v, "html", PAGE.len().saturating_add(1)).unwrap_err().code, "offset_invalid");
+    assert_eq!(hints::hints_at(&d, &v, &schemes, "html", PAGE.len().saturating_add(1), &mut Work::new(&cancel)).unwrap_err().code, "offset_invalid");
 }
 
 #[test]
 fn navigation_balances_brackets_by_language_and_walks_tags() {
     let d = doc(PAGE);
     // In the script, `}` inside the string is no bracket.
-    let inner = hints::balance(&d, at(PAGE, "b(")..at(PAGE, "b(")).unwrap();
+    let inner = balance(&d, at(PAGE, "b(")..at(PAGE, "b(")).unwrap();
     assert_eq!(&PAGE[inner], "{ b(\"}\"); }");
-    let css = hints::balance(&d, at(PAGE, "color")..at(PAGE, "color")).unwrap();
+    let css = balance(&d, at(PAGE, "color")..at(PAGE, "color")).unwrap();
     assert_eq!(&PAGE[css], "{ color: red; }");
     // In markup: the enclosing element, then outward.
     let b = at(PAGE, "there");
-    let first = hints::balance(&d, b..b).unwrap();
+    let first = balance(&d, b..b).unwrap();
     assert_eq!(&PAGE[first.clone()], "<b>there</b>");
-    let second = hints::balance(&d, first).unwrap();
+    let second = balance(&d, first).unwrap();
     assert_eq!(&PAGE[second], "<p id=\"q\">Hi <b>there</b></p>");
     let q = d.find_by_html_id("q").unwrap();
     let parent = hints::parent_tag(&d, q).unwrap();
@@ -114,5 +127,68 @@ fn navigation_balances_brackets_by_language_and_walks_tags() {
     assert_eq!(&PAGE[hints::full_tag_range(&d, q).unwrap()], "<p id=\"q\">Hi <b>there</b></p>");
     assert_eq!(hints::parent_tag(&d, d.find_by_tag("html")[0]).unwrap_err().code, "no_parent_tag");
     assert_eq!(hints::selection_range(&d, 5..5).unwrap_err().code, "range_invalid");
-    assert_eq!(hints::balance(&d, 0..PAGE.len()).unwrap_err().code, "nothing_encloses");
+    assert_eq!(balance(&d, 0..PAGE.len()).unwrap_err().code, "nothing_encloses");
+}
+
+/// Review F8: regions follow the document type; the offset before `</style>` is the style's; registered delimiters
+/// own their nodes and cross-scheme duplicates are refused; the JavaScript MIME essences all run as script.
+#[test]
+fn regions_follow_the_type_and_the_registered_schemes() {
+    let css = doc("p{color:red}");
+    let r = work_regions(&css, "css");
+    assert_eq!((r.len(), r[0].scheme_id.as_str(), r[0].range.clone()), (1, "css", 0..12));
+    assert_eq!(work_regions(&doc("let a = 1;"), "javascript")[0].scheme_id, "javascript");
+    assert_eq!(work_regions(&doc("<a>b</a>"), "xml")[0].scheme_id, "text", "no language applies: plain text");
+    let page = "<style>p{col</style>";
+    let r = work_regions(&doc(page), "html");
+    assert_eq!(hints::region_at(&r, page.find("</style>").unwrap()).unwrap().scheme_id, "css");
+    for ty in ["text/x-javascript", "application/x-ecmascript", "text/livescript", "text/javascript1.5", "module", "TEXT/JAVASCRIPT; charset=utf-8"] {
+        let src = format!("<script type=\"{ty}\">a()</script>");
+        let r = work_regions(&doc(&src), "html");
+        assert_eq!(r.iter().find(|x| x.decision == "embedded_block").unwrap().scheme_id, "javascript", "{ty}");
+    }
+    let mut schemes = SchemeRegistry::shipped();
+    let scheme = |id: &str, open: &str| ColouringScheme {
+        scheme_id: id.into(),
+        display_name: id.into(),
+        applies_to_document_types: vec!["php".into()],
+        priority: hints::BAND_DOCUMENT,
+        ignore_case: true,
+        ignore_tags: false,
+        keyword_lists: Vec::new(),
+        delimiters: Vec::new(),
+        embedded_block_delimiters: vec![BlockDelimiter { open: open.into(), close: "?>".into(), scheme_id: "javascript".into() }],
+        tag_specs: Vec::new(),
+        sample_text: String::new(),
+    };
+    schemes.register(scheme("php_a", "<?php")).unwrap();
+    assert_eq!(schemes.register(scheme("php_b", "<?PHP")).unwrap_err().code, "delimiter_ambiguous", "two schemes for one type on one opener");
+    let src = "<p>x</p><?php echo 1; ?><p>y</p>";
+    let cancel = CancellationToken::default();
+    let r = hints::regions(&doc(src), &schemes, "php", &mut Work::new(&cancel)).unwrap();
+    let owned = r.iter().find(|x| x.decision == "embedded_block").expect("the registered delimiter owns the node");
+    assert_eq!((owned.scheme_id.as_str(), &src[owned.range.clone()]), ("javascript", " echo 1; "));
+}
+
+/// Review F1: the lexer knows line comments, strings, template literals with expressions and regular expressions.
+#[test]
+fn the_lexer_reads_script_tokens() {
+    use hints::TokenKind::{BlockComment, LineComment, Regex, String as Str, Template};
+    let js = "a = 1 / 2; // don't\nb = /x[/]y/g.test(s) ? `t ${ {k: '}'}.k } u` : \"q\"; /* c */";
+    let cancel = CancellationToken::default();
+    let tokens = hints::lex(js, 0..js.len(), true, &mut Work::new(&cancel)).unwrap();
+    let kinds: Vec<(hints::TokenKind, &str)> = tokens.iter().map(|t| (t.kind, &js[t.range.clone()])).collect();
+    assert_eq!(kinds, [(LineComment, "// don't"), (Regex, "/x[/]y/g"), (Template, "`t ${ {k: '}'}.k } u`"), (Str, "\"q\""), (BlockComment, "/* c */")]);
+    let css = "a { content: \"/*\" } /* x */ .b\\{ {}";
+    let tokens = hints::lex(css, 0..css.len(), false, &mut Work::new(&cancel)).unwrap();
+    assert_eq!(tokens.iter().map(|t| &css[t.range.clone()]).collect::<Vec<_>>(), ["\"/*\"", "/* x */"]);
+    assert!(hints::token_around(&tokens, css.find("x */").unwrap()).is_some());
+    assert!(hints::token_around(&tokens, css.find("/* x").unwrap()).is_none(), "a token's start is outside it");
+    // Unmatched closers cost O(1) each: a million of them balance in linear time.
+    let hostile = format!("<script>{}{}</script>", "(".repeat(1 << 20), "}".repeat(1 << 20));
+    let d = doc(&hostile);
+    let start = std::time::Instant::now();
+    let at = 8 + (1 << 19);
+    assert_eq!(balance(&d, at..at).map(|r| r.len()), Ok(hostile.len()), "only the script element encloses it");
+    assert!(start.elapsed().as_secs() < 20, "linear: {:?}", start.elapsed());
 }
