@@ -317,8 +317,9 @@ pub fn text_fit(shape: &StudioShapeType) -> f64 {
     }
 }
 
-/// The outline of shape `shape` in `rect` ([STU-WB-105]); `corner_radius` applies to the rounded
-/// rectangle (default a sixth of the short side).
+/// The outline of shape `shape` in `rect` ([STU-WB-105]), closed contours only (the node's text
+/// container; interior lines are [`shape_details`]); `corner_radius` applies to the rounded rectangle
+/// (default a sixth of the short side).
 pub fn shape_outline(shape: &StudioShapeType, rect: &BoardRect, corner_radius: Option<f64>) -> Result<OwnedPath, BoardGeometryError> {
     if !rect.valid() || corner_radius.is_some_and(|r| !r.is_finite() || r < 0.0) {
         return Err(BoardGeometryError::Invalid);
@@ -339,22 +340,8 @@ pub fn shape_outline(shape: &StudioShapeType, rect: &BoardRect, corner_radius: O
         Native::ParallelogramLeft => polygon(&mut p, &[b.at(0.0, 0.0), b.at(0.8, 0.0), b.at(1.0, 1.0), b.at(0.2, 1.0)]),
         Native::Hexagon => polygon(&mut p, &[b.at(0.2, 0.0), b.at(0.8, 0.0), b.at(1.0, 0.5), b.at(0.8, 1.0), b.at(0.2, 1.0), b.at(0.0, 0.5)]),
         Native::Polygon(fractions) => polygon(&mut p, &fractions.iter().map(|(u, v)| b.at(*u, *v)).collect::<Vec<_>>()),
-        Native::PredefinedProcess | Native::InternalStorage => {
-            rounded(&mut p, b, 0.0);
-            if kind == Native::PredefinedProcess {
-                line(&mut p, b.at(0.1, 0.0), b.at(0.1, 1.0));
-                line(&mut p, b.at(0.9, 0.0), b.at(0.9, 1.0));
-            } else {
-                line(&mut p, b.at(0.15, 0.0), b.at(0.15, 1.0));
-                line(&mut p, b.at(0.0, 0.15), b.at(1.0, 0.15));
-            }
-        }
-        Native::CircleCross => {
-            ellipse(&mut p, [cx, cy], b.w / 2.0, b.h / 2.0);
-            let (dx, dy) = (b.w * 0.3536, b.h * 0.3536);
-            line(&mut p, PathPoint::new(cx - dx, cy - dy), PathPoint::new(cx + dx, cy + dy));
-            line(&mut p, PathPoint::new(cx - dx, cy + dy), PathPoint::new(cx + dx, cy - dy));
-        }
+        Native::PredefinedProcess | Native::InternalStorage => rounded(&mut p, b, 0.0),
+        Native::CircleCross => ellipse(&mut p, [cx, cy], b.w / 2.0, b.h / 2.0),
         Native::Cylinder => {
             let rx = b.w / 2.0;
             let ry = (b.h * 0.15).min(rx);
@@ -369,10 +356,6 @@ pub fn shape_outline(shape: &StudioShapeType, rect: &BoardRect, corner_radius: O
             p.elements.push(PathElement::CubicTo(q(x1, top - ky), q(cx + kx, top - ry), q(cx, top - ry)));
             p.elements.push(PathElement::CubicTo(q(cx - kx, top - ry), q(x0, top - ky), q(x0, top)));
             p.elements.push(PathElement::Close);
-            // The front rim of the top: an open arc (inside the filled body, so it adds no area).
-            p.elements.push(PathElement::MoveTo(q(x0, top)));
-            p.elements.push(PathElement::CubicTo(q(x0, top + ky), q(cx - kx, top + ry), q(cx, top + ry)));
-            p.elements.push(PathElement::CubicTo(q(cx + kx, top + ry), q(x1, top + ky), q(x1, top)));
         }
         Native::Cloud => {
             // Eight scallops around an inset ellipse, each bulging outward.
@@ -406,6 +389,47 @@ pub fn shape_outline(shape: &StudioShapeType, rect: &BoardRect, corner_radius: O
         }
     }
     Ok(p)
+}
+
+/// The interior lines of shape `shape` in `rect` that are not part of its outline (the cylinder's front
+/// rim, the predefined process's bars, the internal storage's rules, the summing junction's cross):
+/// open contours drawn in the node's colours over its outline. `None` for a shape without any. The
+/// outline alone is the node's text container (area text needs closed contours only).
+pub fn shape_details(shape: &StudioShapeType, rect: &BoardRect) -> Option<OwnedPath> {
+    if !rect.valid() {
+        return None;
+    }
+    let b = rect;
+    let [cx, cy] = b.center();
+    let mut p = OwnedPath::new(FillRule::NonZero);
+    match native(shape)? {
+        Native::PredefinedProcess => {
+            line(&mut p, b.at(0.1, 0.0), b.at(0.1, 1.0));
+            line(&mut p, b.at(0.9, 0.0), b.at(0.9, 1.0));
+        }
+        Native::InternalStorage => {
+            line(&mut p, b.at(0.15, 0.0), b.at(0.15, 1.0));
+            line(&mut p, b.at(0.0, 0.15), b.at(1.0, 0.15));
+        }
+        Native::CircleCross => {
+            let (dx, dy) = (b.w * 0.3536, b.h * 0.3536);
+            line(&mut p, PathPoint::new(cx - dx, cy - dy), PathPoint::new(cx + dx, cy + dy));
+            line(&mut p, PathPoint::new(cx - dx, cy + dy), PathPoint::new(cx + dx, cy - dy));
+        }
+        Native::Cylinder => {
+            // The front rim of the top: an open arc inside the filled body (its implied fill adds no area).
+            let rx = b.w / 2.0;
+            let ry = (b.h * 0.15).min(rx);
+            let (kx, ky) = (rx * KAPPA, ry * KAPPA);
+            let (x0, x1, top) = (b.x, b.x + b.w, b.y + ry);
+            let q = PathPoint::new;
+            p.elements.push(PathElement::MoveTo(q(x0, top)));
+            p.elements.push(PathElement::CubicTo(q(x0, top + ky), q(cx - kx, top + ry), q(cx, top + ry)));
+            p.elements.push(PathElement::CubicTo(q(cx + kx, top + ry), q(x1, top + ky), q(x1, top)));
+        }
+        _ => return None,
+    }
+    Some(p)
 }
 
 /// The card of a sticky or the frame of a section: a rectangle with corner radius `r`.
@@ -540,9 +564,17 @@ mod tests {
     #[test]
     fn every_studio_shape_and_every_cap_draws_a_valid_path() {
         for token in hsk_studio_folio::STUDIO_SHAPE_TOKENS {
-            let p = shape_outline(&StudioShapeType::studio(token), &rect(), None).unwrap();
-            hsk_studio_nib::anchor_path::AnchorPath::from_owned_path(&p).unwrap_or_else(|e| panic!("{token}: {e:?}"));
+            let shape = StudioShapeType::studio(token);
+            let p = shape_outline(&shape, &rect(), None).unwrap();
+            let outline = hsk_studio_nib::anchor_path::AnchorPath::from_owned_path(&p).unwrap_or_else(|e| panic!("{token}: {e:?}"));
+            // The outline is an area-text container: closed contours only.
+            assert!(!outline.contours.is_empty() && outline.contours.iter().all(|c| c.closed), "{token}");
+            if let Some(d) = shape_details(&shape, &rect()) {
+                hsk_studio_nib::anchor_path::AnchorPath::from_owned_path(&d).unwrap_or_else(|e| panic!("{token} details: {e:?}"));
+            }
         }
+        assert!(shape_details(&StudioShapeType::studio("cylinder"), &rect()).is_some());
+        assert!(shape_details(&StudioShapeType::studio("rectangle"), &rect()).is_none());
         let unmapped = StudioShapeType { vocabulary: StudioShapeVocabulary::FigmaPluginApi, vocabulary_version: Some("1.141.0".into()), token: "SHIELD".into() };
         assert_eq!(shape_outline(&unmapped, &rect(), None), Err(BoardGeometryError::ShapeGeometryNotAvailable));
         assert_eq!(shape_outline(&StudioShapeType::studio("rectangle"), &BoardRect { w: f64::NAN, ..rect() }, None), Err(BoardGeometryError::Invalid));

@@ -372,6 +372,14 @@ fn outline(fields: &StudioBoardNodeFields, rect: &BoardRect) -> Result<OwnedPath
     .map_err(geo_refusal)
 }
 
+/// The interior lines a node of `fields` draws over its outline (a shape's details), if any.
+fn details(fields: &StudioBoardNodeFields, rect: &BoardRect) -> Result<Option<AnchorPath>, String> {
+    match fields {
+        StudioBoardNodeFields::ShapeWithText { shape_type, .. } => geo::shape_details(shape_type, rect).as_ref().map(anchor_path).transpose(),
+        _ => Ok(None),
+    }
+}
+
 impl Viewer {
     /// Runs one board command (module docs). Returns the command's result.
     pub fn board_command(&mut self, command: BoardCommand) -> Result<Value, String> {

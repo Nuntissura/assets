@@ -7,7 +7,7 @@ use super::super::render::Prefer;
 use super::super::text::{self, TextEntry};
 use super::super::vector::{self, PathRecord, VectorEntry, VectorStyle};
 use super::{
-    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, finite_coordinate, fitted_size, geo_refusal, mint_path,
+    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, fitted_size, geo_refusal, mint_path,
     outline, project, rect_json, refused, route_points, text_ok, translated, uuid_parts,
 };
 use crate::PlacementWrite;
@@ -152,9 +152,15 @@ impl Viewer {
         };
         let rect = BoardRect { x: at[0], y: at[1], w: size[0], h: size[1] };
         let path = anchor_path(&outline(&fields, &rect)?)?;
+        let lines = details(&fields, &rect)?;
         let Ctx { doc, mut entry } = c;
         let id = self.board_layer_id(&doc, &entry)?;
         let path_id = Self::board_path(&doc, &mut entry, path, style)?;
+        // The outline is the text container; a shape's interior lines are a second path of the layer.
+        let mut path_ids = vec![path_id.clone()];
+        if let Some(lines) = lines {
+            path_ids.push(Self::board_path(&doc, &mut entry, lines, style)?);
+        }
         let mut text_entry = self.text_entry()?;
         let story = self.board_story(&doc, &mut text_entry, t, size_pt, align)?;
         entry.records.area_texts.push(StudioAreaText {
@@ -171,7 +177,7 @@ impl Viewer {
         entry.records.board_nodes.push(StudioBoardNode { layer_id: id.clone(), board_id: board.clone(), node: fields });
         let name: String = t.chars().take(32).collect();
         let (parent, place) = self.insertion_point()?;
-        let layer = super::super::layers::new_layer(&id, &name, &parent, kind, json!({"payload_kind": "vector", "path_ids": [path_id]}))?;
+        let layer = super::super::layers::new_layer(&id, &name, &parent, kind, json!({"payload_kind": "vector", "path_ids": path_ids}))?;
         let operation = super::super::layers::operation_for(&id, false)?;
         let writes = [PlacementWrite { layer_id: id.clone(), to: Some(place), create: Some((layer, operation)) }];
         let revision = self.board_commit(op, &doc, &entry, Some(&text_entry), &writes, &[], &id)?;
@@ -260,12 +266,17 @@ impl Viewer {
     /// path and moves its area-text binding to it: the path change.
     pub(super) fn board_redraw(c: &mut Ctx, node: &str, fields: &StudioBoardNodeFields, rect: &BoardRect, style: Option<VectorStyle>) -> Result<(String, Vec<String>), String> {
         let path = anchor_path(&outline(fields, rect)?)?;
+        let lines = details(fields, rect)?;
         let style = style.or_else(|| c.style(node)).ok_or_else(|| refused("board_node_unknown", node))?;
         let id = Self::board_path(&c.doc, &mut c.entry, path, style)?;
         for a in c.entry.records.area_texts.iter_mut().filter(|a| a.container_layer_id == node) {
             a.container_id.clone_from(&id);
         }
-        Ok((node.to_owned(), vec![id]))
+        let mut ids = vec![id];
+        if let Some(lines) = lines {
+            ids.push(Self::board_path(&c.doc, &mut c.entry, lines, style)?);
+        }
+        Ok((node.to_owned(), ids))
     }
 
     pub(super) fn set_record(c: &mut Ctx, node: &str, fields: StudioBoardNodeFields) {
