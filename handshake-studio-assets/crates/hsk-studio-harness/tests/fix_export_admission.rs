@@ -436,3 +436,63 @@ fn f3_a_cancel_after_the_targets_ask_settles_the_target_canceled() {
     assert_eq!(port.counts(), (2, 2), "the runner's ask and the target's, each released once");
     assert!(!out.exists(), "nothing is left: {:?}", listing(&s.0));
 }
+
+/// Writes a file into `into` when asked, then refuses.
+struct Intruding {
+    into: PathBuf,
+}
+impl JobPort for Intruding {
+    fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
+        std::fs::write(self.into.join("late.txt"), b"late").unwrap();
+        Err(JobRefused { retry_after_ms: 5 })
+    }
+    fn release(&self, _ticket: JobTicket) {}
+}
+
+/// F5 (data-loss guard): after a refusal, a pre-existing folder holding a file and a pre-existing empty folder stay
+/// with their content, a folder the run made that gained a file during the ask stays with that file, and only the
+/// run's empty folder below it is removed (`remove_dir`, never a recursive removal).
+#[test]
+fn f5_a_refusal_never_removes_a_folder_with_content_or_one_that_existed() {
+    let s = Scratch::new("f5-guard");
+    let input = s.input();
+    let kept = s.0.join("kept");
+    let empty = kept.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(kept.join("keep.txt"), b"keep").unwrap();
+    let made = empty.join("made");
+    let deeper = made.join("deeper");
+    let port = Arc::new(Intruding { into: made.clone() });
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let report = run(&job(&input, vec![target("png", &deeper)]), &mut targets, None);
+    let t = &report.receipts[0].targets[0];
+    assert_eq!((t.outcome, t.code.as_deref()), ("failed", Some("overloaded")), "{}", report.to_json());
+    assert_eq!(std::fs::read(kept.join("keep.txt")).unwrap(), b"keep", "a pre-existing folder keeps its file");
+    assert!(empty.is_dir(), "a pre-existing empty folder stays");
+    assert_eq!(listing(&made), ["late.txt"], "a made folder that gained content stays with it; its empty child is removed");
+}
+
+/// F5 (settlement): a target failing after its ask settles explicitly `failed` with its code, recorded in
+/// `RecipeTargets::failed`; a job dropped unsettled would read `abandoned` and never reach that list.
+#[test]
+fn f5_a_failed_target_settles_explicitly_failed_not_abandoned() {
+    let s = Scratch::new("f5-settle");
+    let input = s.input();
+    let out = s.0.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(asset_local_test_context(), &cancel);
+    assert!(run.open_path(&input));
+    let port = Arc::new(OneSlot::default());
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let path = out.join("x.png");
+    targets.write(&mut run, &target("png", &out), &path, false).unwrap();
+    assert!(targets.failed.is_empty());
+    assert_eq!(targets.write(&mut run, &target("png", &out), &path, false), Err("destination_exists".to_string()));
+    assert_eq!(targets.failed.len(), 1, "{:?}", targets.failed);
+    let (failed_path, failure) = &targets.failed[0];
+    assert_eq!(failed_path, &path);
+    assert_eq!((failure["code"].as_str(), failure["job"]["outcome"].as_str(), failure["job"]["code"].as_str()), (Some("destination_exists"), Some("failed"), Some("destination_exists")), "{failure}");
+    assert_eq!(port.counts(), (2, 0, 2));
+}
