@@ -1,15 +1,18 @@
 //! `prototype.*` (lane SMB-DRIVE-TYPED-2, STU-PRO-138/139): the in-editor player over a Figma `.fig`: the
 //! spec's start_session, dispatch_trigger (a named trigger on a named node: no hit test, no pointer),
-//! read_runtime_variables, capture_frame (an RGB PNG when a path is given, its size and channel means
-//! always) and end_session, plus the play panel's frame-local click and hover, the virtual clock and
+//! read_runtime_variables, capture_frame (an RGB PNG when a path is given, admitted through the viewer's
+//! JobPort before the first byte, lane SMB-FIX-CAPTURE-ADMISSION-1; its size and channel means always)
+//! and end_session, plus the play panel's frame-local click and hover, the virtual clock and
 //! restart. Every reply carries the player's state and the events since the last row. Play mode changes
 //! no document authority; one session per viewer (no session id yet).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
+use super::super::develop::Refusal;
 use super::super::prototype::{PlayFail, PrototypePlay, Screen};
 use super::decode::{Fields, invalid};
 use super::{CommandRefusal, read_bounded};
+use hsk_studio_accord::DomainId;
 use hsk_studio_components::PlayerInput;
 use serde_json::{Value, json};
 
@@ -18,6 +21,10 @@ pub const MAX_ADVANCE_MS: u64 = 3_600_000;
 
 fn refusal(e: PlayFail) -> CommandRefusal {
     CommandRefusal::new(e.code, json!({"message": e.detail}))
+}
+
+fn refused(r: Refusal) -> CommandRefusal {
+    CommandRefusal::new(r.code, json!({"message": r.detail}))
 }
 
 fn state(play: &mut PrototypePlay) -> Value {
@@ -37,11 +44,72 @@ fn screen_json(screen: &Screen) -> Value {
     json!({"width": screen.width, "height": screen.height, "mean_rgb": sums.map(|s| s.checked_div(pixels).unwrap_or(0))})
 }
 
-/// The frame as an 8-bit RGB PNG at `path`, never over a file without `overwrite`.
-fn write_png(screen: &Screen, path: &std::path::Path, overwrite: bool) -> Result<(), CommandRefusal> {
+/// The job resource of a capture when no document is open (lead ruling 2026-11-12: never resource-less; as
+/// `audio_import`'s audio file resource and SMB-WEB-SITE-1's site resource): an `SDOC` id in the UUIDv7 shape whose
+/// digits are the SHA-256 of the play session's `.fig` source digest, so every capture of one prototype file
+/// addresses one resource in every viewer and process. `None` when the session has no source digest (a decoded
+/// tree; a viewer opens play sessions from bytes only) or the id does not parse.
+fn prototype_resource(play: &PrototypePlay) -> Option<DomainId> {
+    let digest = play.document().source_sha256?;
+    let hex = hsk_studio_package::sha256_hex_of(&[b"hsk.studio.prototype.fig\0".as_slice(), digest.as_slice()].concat());
+    let g = |r: std::ops::Range<usize>| hex.get(r).unwrap_or("0");
+    let variant = match g(16..17) {
+        "0" | "4" | "8" | "c" => "8",
+        "1" | "5" | "9" | "d" => "9",
+        "2" | "6" | "a" | "e" => "a",
+        _ => "b",
+    };
+    DomainId::parse(&format!("SDOC-{}-{}-7{}-{variant}{}-{}", g(0..8), g(8..12), g(13..16), g(17..20), g(20..32))).ok()
+}
+
+/// `prototype.capture_frame` (module docs). With a path (lane SMB-FIX-CAPTURE-ADMISSION-1; R60 attempt 3 probe j2,
+/// common lead ruling 2; STU-ARC-008, STU-ARC-013): the cheap checks first (`parameter_conflict`, a path with a file
+/// name, `overwrite_required`), then one export job admitted through the viewer's bound JobPort before anything is
+/// rendered or written (typed `overloaded`, `canceled`, `stale_revision`), then the render and the PNG write, settled
+/// once (`completed`, else `canceled` or `failed` with the refusal's code); the reply carries the settlement as `job`.
+/// The job names the open document, else the play session's resource ([`prototype_resource`]). Without a path
+/// nothing is written and nothing is admitted: the frame is the reply's size and means. Test
+/// `hsk-studio-harness` `tests/fix_capture_admission.rs`.
+fn capture_frame(v: &mut Viewer, f: &Fields<'_>) -> Result<Value, CommandRefusal> {
+    // `overwrite` applies to a written file only: refused without a path (review F7 on 2bbe2207).
+    if f.has("overwrite") && !f.has("path") {
+        return Err(CommandRefusal::new("parameter_conflict", json!({"keys": ["overwrite", "path"]})));
+    }
+    let closed = || CommandRefusal::new("prototype_closed", Value::Null);
+    if !f.has("path") {
+        let play = v.prototype().ok_or_else(closed)?;
+        let screen = play.render().map_err(refusal)?;
+        let mut r = state(play);
+        r["screen"] = screen_json(&screen);
+        return Ok(r);
+    }
+    let path = f.path("path")?;
+    let overwrite = f.flag_or("overwrite", false)?;
+    if path.file_name().is_none() {
+        return Err(CommandRefusal::new("export_path", json!({"path": path.to_string_lossy()})));
+    }
     if path.exists() && !overwrite {
         return Err(CommandRefusal::new("overwrite_required", json!({"path": path.to_string_lossy()})));
     }
+    let admitted = if v.run.snapshot().is_some() {
+        v.admit_export_job()
+    } else {
+        let play = v.prototype.as_ref().map(|p| &p.0).ok_or_else(closed)?;
+        let resource = prototype_resource(play).ok_or_else(|| CommandRefusal::new("job_resource_invalid", json!({"message": "the play session has no source digest"})))?;
+        v.admit_export_job_with(&v.job_admission_of(resource))
+    };
+    let job = admitted.map_err(refused)?;
+    let result = match v.prototype() {
+        Some(play) => render_and_write(play, &path),
+        None => Err(Refusal { code: "prototype_closed", detail: String::new() }),
+    };
+    v.settle_export_job(job, result).map_err(refused)
+}
+
+/// The frame rendered and written as an 8-bit RGB PNG at `path` (the cheap checks passed, the job admitted); the
+/// reply.
+fn render_and_write(play: &mut PrototypePlay, path: &std::path::Path) -> Result<Value, Refusal> {
+    let screen = play.render().map_err(|e| Refusal { code: e.code, detail: e.detail })?;
     let samples = hsk_studio_interop_raster::Samples::U8(screen.rgb.clone());
     let request = hsk_studio_interop_raster::PngEncodeRequest {
         width: screen.width,
@@ -51,8 +119,11 @@ fn write_png(screen: &Screen, path: &std::path::Path, overwrite: bool) -> Result
         icc: None,
         compression: hsk_studio_interop_raster::PngCompression::Balanced,
     };
-    let png = hsk_studio_interop_raster::encode_png(&request).map_err(|e| CommandRefusal::new(e.code(), json!({"stage": "png"})))?;
-    super::super::export::write_atomic(path, &png).map_err(|code| CommandRefusal::new(code, json!({"path": path.to_string_lossy()})))
+    let png = hsk_studio_interop_raster::encode_png(&request).map_err(|e| Refusal { code: e.code(), detail: "png".to_string() })?;
+    super::super::export::write_atomic(path, &png).map_err(|code| Refusal { code, detail: path.to_string_lossy().into_owned() })?;
+    let mut r = state(play);
+    r["screen"] = screen_json(&screen);
+    Ok(r)
 }
 
 fn trigger(f: &Fields<'_>) -> Result<PlayerInput, CommandRefusal> {
@@ -80,6 +151,12 @@ pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, Comm
     if id == "prototype.end_session" {
         v.prototype = None;
         return Ok(json!({"open": false}));
+    }
+    if id == "prototype.capture_frame" {
+        return capture_frame(v, &f).map(|mut reply| {
+            reply["open"] = json!(true);
+            reply
+        });
     }
     let play = v.prototype().ok_or_else(|| CommandRefusal::new("prototype_closed", Value::Null))?;
     let mut reply = match id {
@@ -116,19 +193,6 @@ pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, Comm
             let mut r = state(play);
             r["variables"] = serde_json::to_value(&s.variables).unwrap_or(Value::Null);
             r["variants"] = json!(s.variants);
-            r
-        }
-        "prototype.capture_frame" => {
-            // `overwrite` applies to a written file only: refused without a path (review F7 on 2bbe2207).
-            if f.has("overwrite") && !f.has("path") {
-                return Err(CommandRefusal::new("parameter_conflict", json!({"keys": ["overwrite", "path"]})));
-            }
-            let screen = play.render().map_err(refusal)?;
-            if f.has("path") {
-                write_png(&screen, &f.path("path")?, f.flag_or("overwrite", false)?)?;
-            }
-            let mut r = state(play);
-            r["screen"] = screen_json(&screen);
             r
         }
         other => return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": other}))),
