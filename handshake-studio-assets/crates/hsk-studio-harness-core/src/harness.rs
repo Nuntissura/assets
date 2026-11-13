@@ -255,6 +255,7 @@ impl Harness {
             event_sequence: None,
             event_stats: BusinessEventStats::default(),
             ambient_causation: None,
+            in_catalog_step: false,
             web: web_commands::WebHost::default(),
             keyframes: motion_commands::KeyframeState::default(),
         }
@@ -458,6 +459,8 @@ pub struct Run<'a> {
     event_stats: BusinessEventStats,
     /// The causation of the inner commands of an action being played (its correlation).
     ambient_causation: Option<CausationId>,
+    /// Set while [`Run::catalog_step`] runs its steps (a nested one is refused).
+    in_catalog_step: bool,
     /// The web document host (lane SMB-WEB-HOST-1, [`Run::web_command`]).
     web: web_commands::WebHost,
     /// Keyframe selection and clipboard (lane SMB-MOTION-COMMANDS-2; view state, not saved).
@@ -1601,10 +1604,55 @@ impl Run<'_> {
         ok
     }
 
-    /// RED STUB (lane SMB-BOARD-1, review F3 of e4d033aa): runs `f` and nothing else; the group step named
-    /// `command_id`, its record, the rollback and the nesting rule follow in the fix commit.
-    pub fn catalog_step(&mut self, _command_id: &'static str, f: impl FnOnce(&mut Self) -> bool) -> bool {
-        f(self)
+    /// ONE history step of the RUN_COMMANDS row `command_id` whose edit takes several steps of the public step
+    /// APIs (lane SMB-BOARD-1, review F3 of e4d033aa, lead ruling 2026-11-13; common rule UNDO NAMES: an undo name
+    /// is the catalog id). Runs `f`; each command `f` runs is caused by this command's context.
+    ///
+    /// - `f` true: the steps it pushed become ONE group step labelled `command_id` (undo and redo replay them
+    ///   together, as a played action's steps), and one record closes the command: op and command id
+    ///   `command_id`, the run's actor. No step pushed: the record only, the redo history kept.
+    /// - `f` false: the steps it pushed are undone newest-first and leave no redo entry; the redo history found
+    ///   before stays; the record is `catalog_step_failed` (a refused rollback, `catalog_step_rollback_failed`,
+    ///   is the gap of the next-lane candidate "atomic multi-entry history step").
+    /// - Nested: refused `catalog_step_nested` (one group, one name); `f` does not run.
+    pub fn catalog_step(&mut self, command_id: &'static str, f: impl FnOnce(&mut Self) -> bool) -> bool {
+        if self.in_catalog_step {
+            let before = self.frames.count();
+            self.begin(command_id, None);
+            return self.own_op(command_id, before, Err("catalog_step_nested"));
+        }
+        self.note_unrecordable(command_id);
+        let depth = self.undo_stack.len();
+        let saved_redo = std::mem::take(&mut self.redo_stack);
+        let ctx = self.context.command(Some(command_id), self.revision().unwrap_or(0), self.ambient_causation);
+        let outer = self.ambient_causation.replace(CausationId::from(ctx.correlation()));
+        self.in_catalog_step = true;
+        let ok = f(self);
+        self.in_catalog_step = false;
+        self.ambient_causation = outer;
+        let before = self.frames.count();
+        if !ok {
+            let mut restored = true;
+            while self.undo_stack.len() > depth {
+                if !self.history_step(true) {
+                    restored = false;
+                    break;
+                }
+            }
+            self.redo_stack = saved_redo;
+            self.current = Some(ctx);
+            return self.own_op(command_id, before, Err(if restored { "catalog_step_failed" } else { "catalog_step_rollback_failed" }));
+        }
+        let inner: Vec<HistoryStep> = self.undo_stack.drain(depth..).collect();
+        let steps = inner.len();
+        if inner.is_empty() {
+            self.redo_stack = saved_redo;
+        } else {
+            let revision = self.revision().unwrap_or(0);
+            self.undo_stack.push(HistoryStep { label: command_id.to_string(), inverse: Value::Null, entry: None, timeline: None, group: Some(inner), sequences: None, containers: None, layout: None, ctx: ctx.clone(), revision });
+        }
+        self.current = Some(ctx);
+        self.own_op(command_id, before, Ok(json!({"steps": steps})))
     }
 
     /// ONE entry-only history step of the typed command `command_id` (a RUN_COMMANDS id; lane
