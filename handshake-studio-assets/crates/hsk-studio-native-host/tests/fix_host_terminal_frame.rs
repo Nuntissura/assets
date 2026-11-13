@@ -118,7 +118,7 @@ fn offscreen_clear_scene_sends_one_success_frame() {
 fn offscreen_vulkan_refusal_sends_one_failure_frame() {
     // A zero extent is refused before the owner opens: no device.
     let (result, frames, terminal) = as_caller(|host| offscreen::run(&clear_args(0, 48), host));
-    let err = result.err().expect("refused");
+    let err = result.expect_err("refused");
     assert_eq!(err, HostError::Vulkan(Refusal::InvalidExtent));
     assert_one_terminal(&frames, terminal, outcome(Err(err)));
     assert_eq!(outcome(Err(err)), VALIDATION_FAILURE);
