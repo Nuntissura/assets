@@ -21,7 +21,7 @@
 //! its drawing and never blocks a move, review F5) until its nodes separate.
 //!
 //! Generic layer operations (review F1, F6): a layer delete drops a node's record and text binding in its own
-//! step (`Viewer::board_records_after_delete`); pathfinder, Create Outlines and Outline Stroke refuse a board node
+//! step (`Viewer::structure_step`, lane SMB-FIX-LAYER-RECORD-PRUNE-1); pathfinder, Create Outlines and Outline Stroke refuse a board node
 //! `board_node_not_vector_editable`; align, distribute and transform keep the node's text on its outline and
 //! reroute its connectors.
 //!
