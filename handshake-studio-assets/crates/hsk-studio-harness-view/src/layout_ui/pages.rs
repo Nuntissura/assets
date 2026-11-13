@@ -254,29 +254,9 @@ pub(crate) fn transform(doc: &LayoutDoc, rec: &LayoutRecords, edit: &PageEdit) -
             }
         }
         PageEdit::DeletePage { page } => {
-            let loc = d.document.locate_page(page).ok_or_else(|| LayoutUiError::UnknownPage(page.clone()))?;
-            let total: usize = d.document.page_spreads.iter().map(|s| s.pages.len()).sum();
-            if total <= 1 {
-                return Err(LayoutUiError::LastPage);
-            }
-            let (si, pi) = (loc.spread_index, loc.page_index);
-            let doomed: BTreeSet<String> = d
-                .document
-                .layers
-                .iter()
-                .filter(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == *page))
-                .map(|l| l.layer_id.clone())
-                .collect();
-            delete_layers(&mut d, &doomed);
-            d.document.page_spreads[si].pages.remove(pi);
-            if d.document.page_spreads[si].pages.is_empty() {
-                let gone = d.document.page_spreads.remove(si).page_spread_id;
-                if d.document.layers.iter().any(|l| matches!(&l.parent, Parent::Node(n) if n.node_id == gone)) {
-                    return Err(LayoutUiError::Folio("folio_dangling_reference", gone));
-                }
-            }
-            refit_spreads(&mut d);
-            r.parents.page_bindings.retain(|b| b.page_id != *page);
+            // Lane SMB-LAYOUT-DELETE-CASCADE-1 (review F2 of acd73bc7): the page delete with content of
+            // `page.delete` (harness-core `Run::delete_page_with_content`), one record rule for both.
+            (d, r) = super::threads::delete_page_with_content(&d, &r, page, &CancellationToken::default())?;
         }
         PageEdit::MovePage { page, spread, index } => {
             let loc = d.document.locate_page(page).ok_or_else(|| LayoutUiError::UnknownPage(page.clone()))?;

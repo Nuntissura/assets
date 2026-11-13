@@ -236,8 +236,10 @@ impl Viewer {
     /// continues into the frame after it, [STU-LAY-122]), a story no frame shows any more goes with its records,
     /// the records naming a removed layer go (harness-core `cascade_layout_delete`), and, as for every delete, the
     /// component and instance records keyed to it (`Viewer::records_after_delete`). Undo restores the layers, the
-    /// thread and the records together. Refused typed, nothing changed: `layout_records_stale`, and
-    /// `layer_bound_by_layout_records` when records the cascade does not follow would still name a removed layer.
+    /// thread and the records together; the step runs under the row `layer.delete_layout_layers`. Refused typed,
+    /// nothing changed: `layout_records_unreadable`, `layout_records_stale`, `layout_records_missing` (component
+    /// records to drop in a document without layout records), and `layer_bound_by_layout_records` when records the
+    /// cascade does not follow would still name a removed layer.
     /// The raster records entry keeps a removed picture's placement record, inert until an undo brings the layer
     /// back (as for every deleted placement).
     pub fn delete_layer(&mut self, layer_id: &str) -> Result<u64, String> {
@@ -248,7 +250,7 @@ impl Viewer {
         let gone = Self::subtree(doc, layer_id);
         if self.layout_bound(doc, &gone) {
             let entry = self.records_after_delete(&gone).map(|bytes| (super::vector::ENTRY, bytes));
-            let ok = self.run.delete_layout_layers("delete_layer", "layer.delete", &[layer_id.to_string()], entry);
+            let ok = self.run.delete_layout_layers("delete_layer", "layer.delete_layout_layers", &[layer_id.to_string()], entry);
             let revision = self.after_edit(ok, format!("deleted {layer_id}"))?;
             if self.selected.as_ref().is_some_and(|s| gone.contains(s)) {
                 self.selected = None;

@@ -1,7 +1,7 @@
 //! Layout flow rows of the command corpus (lane SMB-LAYOUT-DELETE-CASCADE-1): autoflow of a loaded text cursor
 //! by flow mode and one smart text reflow pass ([STU-LAY-020], [STU-LAY-123]; harness-view
-//! `view/commands/layout_flow.rs`), and the `Run` commit of a layer delete that layout records follow
-//! (`Run::delete_layout_layers`, driven as `layer.delete_layer`).
+//! `view/commands/layout_flow.rs`; each commits under its own row id, so `layout.undo` takes it), and the `Run` commit of a layer delete that layout records follow
+//! (`Run::delete_layout_layers`, driven as `viewer.delete_layer`; the commit runs under this row's id).
 
 use super::{CommandEntry, entry, flag as b, one_of as o, text as t, typed};
 

@@ -159,6 +159,7 @@ impl Viewer {
             "design" if design::owns(id) => return design::run(self, id, f, before),
             // Lane SMB-DS-COMPONENTS-AUTHOR-1: component, variant set, property and instance authoring.
             "component" | "component_set" | "instance" => return component::run(self, id, f, before),
+            // Lane SMB-LAYOUT-DELETE-CASCADE-1: autoflow and smart text reflow (rows of action/commands/layout_flow.rs).
             "layout" if layout_flow::owns(id) => return layout_flow::run(self, id, f),
             "layout" => return layout::run(self, id, f),
             "panel" => return panel::run(self, id, f),

@@ -1,4 +1,4 @@
-//! `layout_flow.*` (lane SMB-LAYOUT-DELETE-CASCADE-1; [STU-LAY-020], [STU-LAY-123]): autoflow of a loaded text
+//! `layout.autoflow` and `layout.smart_reflow` (lane SMB-LAYOUT-DELETE-CASCADE-1; [STU-LAY-020], [STU-LAY-123]): autoflow of a loaded text
 //! cursor by flow mode and one smart text reflow pass, each committed to the open document as ONE undo step
 //! (`layout.autoflow`, `layout.smart_reflow`; `Viewer::layout_commit`), saved with the package; nothing placed
 //! or removed is no step. The editor rules are `LayoutEditor::autoflow` and `LayoutEditor::smart_reflow`.
@@ -13,15 +13,15 @@ use crate::layout_ui::threads::{FlowMode, FlowReport, ReflowControls};
 use serde_json::{Value, json};
 
 impl Viewer {
-    /// `layout_flow.autoflow`: [`crate::layout_ui::LayoutEditor::autoflow`] on the document's layout, one document
+    /// `layout.autoflow`: [`crate::layout_ui::LayoutEditor::autoflow`] on the document's layout, one document
     /// step `layout.autoflow`. Refusals change nothing: `not_open`, `layout_editor_unavailable`, the editor's codes
-    /// (`unknown_frame`, `unknown_page`, `already_threaded`, ...), the session's (`value_conflict`, `folio_rejected`, ...).
+    /// (`unknown_frame`, `unknown_page`, `already_threaded`, `canceled` by the Viewer's token, checked per frame, ...), the session's (`value_conflict`, `folio_rejected`, ...).
     pub fn layout_autoflow(&mut self, frame: &str, mode: FlowMode, page: Option<&str>) -> Result<FlowReport, String> {
         let cancel = self.cancel;
         self.layout_flow_step("layout.autoflow", |ed| ed.autoflow(frame, mode, page, cancel))
     }
 
-    /// `layout_flow.smart_reflow`: [`crate::layout_ui::LayoutEditor::smart_reflow`], one document step
+    /// `layout.smart_reflow`: [`crate::layout_ui::LayoutEditor::smart_reflow`], one document step
     /// `layout.smart_reflow`; refusals as [`Viewer::layout_autoflow`].
     pub fn layout_smart_reflow(&mut self, frame: &str, controls: ReflowControls) -> Result<FlowReport, String> {
         let cancel = self.cancel;
@@ -50,18 +50,24 @@ impl Viewer {
     }
 }
 
+/// The report and the history; a flow that changed nothing names no step of its own (`undo_name` null; review
+/// F8 of acd73bc7: the newest step is an earlier call's).
 fn reply(viewer: &Viewer, r: &FlowReport) -> Value {
+    let changed = !(r.frames.is_empty() && r.pages_added.is_empty() && r.pages_removed.is_empty());
     let mut out = json!({
         "frames": r.frames, "pages_added": r.pages_added, "pages_removed": r.pages_removed,
-        "cursor_loaded": r.cursor_loaded, "stopped": r.stopped,
-        "changed": !(r.frames.is_empty() && r.pages_added.is_empty() && r.pages_removed.is_empty()),
+        "cursor_loaded": r.cursor_loaded, "stopped": r.stopped, "changed": changed,
     });
     if let (Value::Object(o), Value::Object(h)) = (&mut out, viewer.layout_history()) {
         o.extend(h);
+        if !changed {
+            o.insert("undo_name".into(), Value::Null);
+        }
     }
     out
 }
 
+/// The rows this module runs (the `layout` domain's other rows are `commands/layout.rs`'s).
 pub(super) fn owns(id: &str) -> bool {
     matches!(id, "layout.autoflow" | "layout.smart_reflow")
 }

@@ -106,10 +106,16 @@ impl Viewer {
         self.after_edit(ok, format!("resize_page {page}"))
     }
 
-    /// `page.delete`.
+    /// `page.delete`. The page's content goes with it (lane SMB-LAYOUT-DELETE-CASCADE-1): the raster records and
+    /// an open layout editor are re-read after the step.
     pub fn delete_page(&mut self, page: &str) -> Result<u64, String> {
         let ok = self.run.delete_page(page);
-        self.after_edit(ok, format!("delete_page {page}"))
+        let revision = self.after_edit(ok, format!("delete_page {page}"))?;
+        self.place_sync();
+        if self.layout_editor().is_some() {
+            self.layout_sync();
+        }
+        Ok(revision)
     }
 
     /// [STU-SHL-026] Go to Artboard: the view, the tools and the exports frame `artboard`. View state:

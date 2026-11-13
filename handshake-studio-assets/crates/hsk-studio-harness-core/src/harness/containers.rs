@@ -15,18 +15,22 @@
 //! The layout delete cascade (lane SMB-LAYOUT-DELETE-CASCADE-1; [STU-LAY-003] delete, [STU-LAY-122]
 //! threads; [`cascade_layout_delete`]): the layers removed take every layer under them; a thread closes
 //! over a removed frame (the frame before the removed run links to the frame after it); a story no
-//! remaining layer shows goes with the records that annotate it; the records that name a removed layer
-//! go (graphic frames, frame options, vertical thresholds, applied object styles, anchored objects,
+//! remaining layer shows goes with the records keyed to it, and so do the cell and note stories of
+//! those records, closed over (review F3 of acd73bc7); the records that name a removed layer go
+//! (graphic frames, frame options, vertical thresholds, applied object styles, anchored objects,
 //! parent page items and the overrides of those items; a page-local replacement that goes becomes a
 //! suppress override; a running text keeps its other frames). Records the cascade does not follow and
 //! that would name something gone refuse typed (`page_bound_by_layout_records`,
-//! `layer_bound_by_layout_records`): a delete never leaves a stale entry. InDesign parity of the
-//! thread closing and of the replacement-to-suppress rule is UNVERIFIED (D5).
+//! `layer_bound_by_layout_records`), so a delete leaves no record Folio checks naming something gone
+//! (tests/layout_delete_cascade.rs). Not closed: Folio checks no longdoc story id against the stored
+//! stories, so a longdoc record keyed to a story the cascade does not reach would validate (next-lane
+//! candidate). InDesign parity of the thread closing and of the replacement-to-suppress rule is
+//! UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::{EntryRestore, HistoryStep, Run, StudioBusinessEventId, command_text};
 use crate::document_new::{self as rules, ArtboardOptions, ArtboardOptionsEdit, NewDocument};
-use hsk_studio_accord::CommandContext;
+use hsk_studio_accord::{CancellationToken, CommandContext};
 use hsk_studio_folio::{
     self as folio, Bounds, GeometryUnit, Length, PageSide, Parent, Payload, PortAddress, StudioArtboard, StudioItemOverride, StudioPage, StudioPageSpread, StudioXrefDestination,
 };
@@ -147,6 +151,16 @@ impl LayoutCascade {
     }
 }
 
+/// A page delete with content as [`Run::delete_page_with_content`] plans it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageDelete {
+    /// The document without the page and its content.
+    pub document: folio::StudioDocument,
+    /// The updated records; `None` for a document without layout records (none is written).
+    pub records: Option<LayoutRecords>,
+    pub cascade: LayoutCascade,
+}
+
 /// Removes the `items` that are `gone`, adding the number removed to `count`.
 fn drop_where<T>(items: &mut Vec<T>, count: &mut u64, mut gone: impl FnMut(&T) -> bool) {
     let before = items.len();
@@ -262,22 +276,30 @@ pub fn cascade_layout_delete(document: &mut folio::StudioDocument, records: &mut
             _ => None,
         })
         .collect();
+    // The removed stories, closed over the records keyed to them (review F3 of acd73bc7): a removed
+    // story's tables take their cell stories and its footnotes, endnotes and sidenotes their note
+    // stories, and a story so taken takes its own records' stories in turn. Bounded: each pass adds at
+    // least one story or stops, and every story added is named by a record.
     let mut stories: BTreeSet<String> = shown_by_gone.into_iter().filter(|s| !shown.contains(s.as_str())).collect();
+    loop {
+        let longdoc = &records.longdoc;
+        let cells = longdoc.tables.iter().filter(|t| stories.contains(&t.story_id)).filter_map(|t| t.cell_story_id.clone());
+        let notes = longdoc.footnotes.iter().filter(|x| stories.contains(&x.story_id)).map(|x| x.note_story_id.clone());
+        let more = longdoc.endnotes.iter().chain(&longdoc.sidenotes).filter(|x| stories.contains(&x.story_id)).map(|x| x.note_story_id.clone());
+        let next: Vec<String> = cells.chain(notes).chain(more).filter(|s| !shown.contains(s.as_str()) && !stories.contains(s)).collect();
+        if next.is_empty() {
+            break;
+        }
+        stories.extend(next);
+    }
     let n = &mut out.records;
     let story_gone = |s: &str, stories: &BTreeSet<String>| stories.contains(s);
-    // Long-document records: a removed graphic frame's record; the records anchored in a removed story,
-    // whose own note and cell stories go with them.
+    // Long-document records: a removed graphic frame's record; every record keyed to a removed story.
     let longdoc = &mut records.longdoc;
     drop_where(&mut longdoc.graphic_frames, n, |g| gone.contains(&g.layer_id));
-    let mut owned: Vec<String> = Vec::new();
-    for t in longdoc.tables.iter().filter(|t| story_gone(&t.story_id, &stories)) {
-        owned.extend(t.cell_story_id.clone());
-    }
     drop_where(&mut longdoc.tables, n, |t| story_gone(&t.story_id, &stories));
-    owned.extend(longdoc.footnotes.iter().filter(|x| story_gone(&x.story_id, &stories)).map(|x| x.note_story_id.clone()));
     drop_where(&mut longdoc.footnotes, n, |x| story_gone(&x.story_id, &stories));
     for notes in [&mut longdoc.endnotes, &mut longdoc.sidenotes] {
-        owned.extend(notes.iter().filter(|x| story_gone(&x.story_id, &stories)).map(|x| x.note_story_id.clone()));
         drop_where(notes, n, |x| story_gone(&x.story_id, &stories));
     }
     drop_where(&mut longdoc.index_marks, n, |m| story_gone(&m.story_id, &stories));
@@ -289,7 +311,6 @@ pub fn cascade_layout_delete(document: &mut folio::StudioDocument, records: &mut
         }
     }
     drop_where(&mut longdoc.running_texts, n, |r| r.frame_ids.is_empty());
-    stories.extend(owned.into_iter().filter(|s| !shown.contains(s.as_str())));
     // Layout-flow records of a removed frame, layer or story.
     let flow = &mut records.flow;
     drop_where(&mut flow.frame_options, n, |f| gone.contains(&f.layer_id));
@@ -733,29 +754,28 @@ impl Run<'_> {
     /// left with no page goes too, with every layer it holds. Refusals: `unknown_page`, `last_page` (module docs).
     ///
     /// Content and layout records (lane SMB-LAYOUT-DELETE-CASCADE-1, after lane SMB-R60-FOLLOWUPS-1 item 6): the
-    /// text frames and graphic frames on the page (and, when the spread goes, the layers the spread holds) go
-    /// through [`cascade_layout_delete`]; the page's parent-page binding is dropped; a section that starts on the
-    /// page starts on the next page instead, or is dropped when no page of its own is left (the next page starts
-    /// another section, or the page was the last). The page, its content and the updated records commit as ONE
-    /// layout step (`Run::submit_layout`, one revision, one undo step labelled `delete_page <page>`), so the entry
-    /// still validates after save and reopen and undo restores the page, its content and its records together.
-    /// Detail `page_id`, `layout_records: "updated"` and the cascade's counts ([`LayoutCascade::detail`]). A page
-    /// with content in a document without layout records stores empty records with the step. Refused typed,
-    /// changing nothing: `layout_records_stale` (a page with content while the stored entry does not validate:
-    /// the records could not follow), and `page_bound_by_layout_records`, a fail-closed guard, when the updated
-    /// set still would not validate against the document without the page, its op record detail naming the
-    /// failing record (`record`: the Folio diagnostic target with the record kind and id; `folio_code`): a
-    /// delete never leaves a stale entry. An empty page whose records need no update, or none stored, keeps the
-    /// plain container step (as an empty page under a stale entry: `submit_layout` refuses a stale entry and
-    /// the next layout edit reports it).
+    /// page goes through [`Run::delete_page_with_content`], and the page, its content and the updated records
+    /// commit as ONE layout step (`Run::submit_layout`, one revision, one undo step labelled `delete_page <page>`),
+    /// so the entry still validates after save and reopen and undo restores the page, its content and its records
+    /// together. Detail `page_id`, `layout_records` (`updated`, or `none` for a document without a layout records
+    /// entry, which gets none: review F7 of acd73bc7) and the cascade's counts ([`LayoutCascade::detail`]).
+    /// Refused typed, changing nothing: `canceled`, `layout_records_unreadable` and `layout_records_stale` (a page
+    /// with content while the stored entry does not decode, or no longer validates: the records could not
+    /// follow), and `page_bound_by_layout_records`, a fail-closed guard, when the updated set still would not
+    /// validate against the document without the page, its op record detail naming the failing record
+    /// (`record`: the Folio diagnostic target with the record kind and id; `folio_code`): a delete never leaves a
+    /// stale entry the cascade knows of (tests/layout_delete_cascade.rs). An empty page whose records need no
+    /// update, or none stored, keeps the plain container step (as an empty page under a stale entry:
+    /// `submit_layout` refuses a stale entry and the next layout edit reports it).
     pub fn delete_page(&mut self, page: &str) -> bool {
         const OP: &str = "delete_page";
         const COMMAND: &str = "page.delete";
         match self.page_delete_plan(page) {
             Ok(None) => self.container_edit(OP, COMMAND, |document, _, spreads| delete_page_edit(document, spreads, page)),
-            Ok(Some((document, records, cascade))) => {
+            Ok(Some(plan)) => {
                 let depth = self.undo_stack.len();
-                if !self.submit_layout(OP, COMMAND, document, records) {
+                let kept = if plan.records.is_some() { "updated" } else { "none" };
+                if !self.submit_layout_records(OP, COMMAND, plan.document, plan.records) {
                     return false;
                 }
                 if self.undo_stack.len() > depth
@@ -763,21 +783,70 @@ impl Run<'_> {
                 {
                     step.label = format!("{OP} {page}");
                 }
-                if let Some(record) = self.ops.last_mut()
-                    && record["detail"].is_object()
-                {
-                    record["detail"]["page_id"] = json!(page);
-                    record["detail"]["layout_records"] = json!("updated");
-                    if let Value::Object(counts) = cascade.detail() {
-                        for (k, v) in counts {
-                            record["detail"][k] = v;
-                        }
-                    }
-                }
+                self.add_cascade_detail(&plan.cascade, &[("page_id", json!(page)), ("layout_records", json!(kept))]);
                 true
             }
             Err((code, detail)) => self.refuse_with_detail(OP, COMMAND, code, detail),
         }
+    }
+
+    /// The page delete with content as one pure function (review F2 of acd73bc7: `page.delete`, the layout
+    /// editor's `layout.page.delete_page` and smart reflow's `delete_empty_pages` share it): the text frames on
+    /// `page`, the graphic frames the records place on it and, when its spread holds no other page, every layer
+    /// the spread holds go through [`cascade_layout_delete`]; the page goes (and the spread with it); the page's
+    /// parent-page binding is dropped; a section that starts on the page starts on the next page instead, or is
+    /// dropped when no page of its own is left (the next page starts another section, or the page was the last);
+    /// the updated records must validate against the result. `records` are the live, valid records, `None` for a
+    /// document without them (then none come back). Refusals, nothing changed: `unknown_page`, `last_page`,
+    /// `canceled`, `page_bound_by_layout_records` (detail `page_id`, `record`, `folio_code`).
+    pub fn delete_page_with_content(document: &folio::StudioDocument, records: Option<&LayoutRecords>, page: &str, cancel: &CancellationToken) -> Result<PageDelete, (&'static str, Value)> {
+        let at = document.locate_page(page).ok_or(("unknown_page", json!({"page_id": page})))?;
+        let spread = (at.spread.pages.len() == 1).then(|| at.spread.page_spread_id.clone());
+        let mut doomed: BTreeSet<String> = document
+            .layers
+            .iter()
+            .filter(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == page) || spread.as_ref().is_some_and(|s| matches!(&l.parent, Parent::Node(n) if n.node_id == *s)))
+            .map(|l| l.layer_id.clone())
+            .collect();
+        if let Some(r) = records {
+            doomed.extend(r.longdoc.graphic_frames.iter().filter(|g| g.page_id == page).map(|g| g.layer_id.clone()));
+        }
+        let mut successor = document.clone();
+        let mut updated = records.cloned();
+        let mut scratch = LayoutRecords::new(&document.document_id);
+        let cascade = cascade_layout_delete(&mut successor, updated.as_mut().unwrap_or(&mut scratch), &doomed);
+        let mut spreads = successor.page_spreads.clone();
+        delete_page_edit(&successor, &mut spreads, page).map_err(|code| (code, json!({"page_id": page})))?;
+        successor.page_spreads = spreads;
+        if let Some(updated) = updated.as_mut() {
+            updated.parents.page_bindings.retain(|b| b.page_id != page);
+            // The page after `page` in document order (sections number pages in that order).
+            let order: Vec<&str> = document.page_spreads.iter().flat_map(|s| &s.pages).map(|p| p.page_id.as_str()).collect();
+            let next = order.iter().position(|p| *p == page).and_then(|i| i.checked_add(1)).and_then(|i| order.get(i)).map(|p| (*p).to_owned());
+            let starts: BTreeSet<String> = updated.longdoc.sections.iter().map(|s| s.page_start.clone()).collect();
+            updated.longdoc.sections.retain_mut(|s| {
+                if s.page_start != page {
+                    return true;
+                }
+                match &next {
+                    Some(n) if !starts.contains(n) => {
+                        s.page_start.clone_from(n);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            // The updated set must validate without the page even when nothing in it changed (a record this
+            // update does not follow): a delete never leaves a stale entry.
+            updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| {
+                if d.code == folio::Code::Canceled {
+                    ("canceled", Value::Null)
+                } else {
+                    ("page_bound_by_layout_records", json!({"page_id": page, "record": d.target, "folio_code": format!("{:?}", d.code)}))
+                }
+            })?;
+        }
+        Ok(PageDelete { document: successor, records: updated, cascade })
     }
 
     /// One refusal record `op` of `command` with `detail` (`Value::Null` for none); always false.
@@ -794,14 +863,41 @@ impl Run<'_> {
         ok
     }
 
-    /// The document without `page` and its content, the stored layout records updated for it and what the
-    /// cascade removed (`delete_page` docs), or `None` when the plain container step applies (no session, an
-    /// empty page with no records or records that need no update, a stale entry under an empty page, or a
-    /// delete the container step refuses itself). A refusal is its code and the op record's detail
-    /// (`Value::Null` for none).
-    #[allow(clippy::type_complexity)]
-    fn page_delete_plan(&self, page: &str) -> Result<Option<(folio::StudioDocument, LayoutRecords, LayoutCascade)>, (&'static str, Value)> {
+    /// Adds `fields` and the cascade's counts to the detail of the newest op record.
+    fn add_cascade_detail(&mut self, cascade: &LayoutCascade, fields: &[(&str, Value)]) {
+        if let Some(record) = self.ops.last_mut()
+            && record["detail"].is_object()
+        {
+            for (k, v) in fields {
+                record["detail"][*k] = v.clone();
+            }
+            if let Value::Object(counts) = cascade.detail() {
+                for (k, v) in counts {
+                    record["detail"][k] = v;
+                }
+            }
+        }
+    }
+
+    /// The stored layout records, validated: `Ok(None)` when none are stored; `layout_records_unreadable` when
+    /// the entry does not decode, `layout_records_stale` when it decodes and does not validate against the
+    /// document, `canceled` (as `Run::submit_layout` tells them apart; review F6 of acd73bc7).
+    fn readable_layout_records(&self) -> Result<Option<LayoutRecords>, &'static str> {
         let cancel = self.cancel;
+        let session = self.session.as_ref().ok_or("not_open")?;
+        let code = |e: SessionError, other: &'static str| if matches!(e, SessionError::Canceled) { "canceled" } else { other };
+        match session.layout_records_shape(cancel) {
+            Err(e) => Err(code(e, "layout_records_unreadable")),
+            Ok(None) => Ok(None),
+            Ok(Some(_)) => session.layout_records(cancel).map_err(|e| code(e, "layout_records_stale")),
+        }
+    }
+
+    /// The page delete of `page` with its content (`Run::delete_page_with_content` on the live state), or `None`
+    /// when the plain container step applies (no session, an unknown or last page, which that step refuses, or
+    /// an empty page whose records need no update: none stored, or a stale or unreadable entry under an empty
+    /// page). A refusal is its code and the op record's detail (`Value::Null` for none).
+    fn page_delete_plan(&self, page: &str) -> Result<Option<PageDelete>, (&'static str, Value)> {
         let Some(session) = self.session.as_ref() else {
             return Ok(None);
         };
@@ -812,77 +908,74 @@ impl Run<'_> {
         if rules::page_count(document) <= 1 {
             return Ok(None);
         }
-        let spread = (at.spread.pages.len() == 1).then(|| at.spread.page_spread_id.clone());
-        let readable = match session.layout_records(cancel) {
-            Ok(r) => Some(r),
-            Err(SessionError::Canceled) => return Err(("canceled", Value::Null)),
-            Err(_) => None,
+        let spread = (at.spread.pages.len() == 1).then(|| at.spread.page_spread_id.as_str());
+        let content = document.layers.iter().any(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == page) || spread.is_some_and(|s| matches!(&l.parent, Parent::Node(n) if n.node_id == s)));
+        let records = match self.readable_layout_records() {
+            Ok(r) => r,
+            Err(code) if code != "canceled" && !content => return Ok(None),
+            Err(code) => return Err((code, if code == "canceled" { Value::Null } else { json!({"page_id": page}) })),
         };
-        let mut doomed: BTreeSet<String> = document
-            .layers
-            .iter()
-            .filter(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == page) || spread.as_ref().is_some_and(|s| matches!(&l.parent, Parent::Node(n) if n.node_id == *s)))
-            .map(|l| l.layer_id.clone())
-            .collect();
-        let records = match readable {
-            Some(r) => r,
-            None if doomed.is_empty() => return Ok(None),
-            None => return Err(("layout_records_stale", json!({"page_id": page}))),
-        };
-        if let Some(r) = &records {
-            doomed.extend(r.longdoc.graphic_frames.iter().filter(|g| g.page_id == page).map(|g| g.layer_id.clone()));
-        }
-        if doomed.is_empty() && records.is_none() {
-            return Ok(None);
-        }
-        let mut successor = document.clone();
-        let mut updated = records.clone().unwrap_or_else(|| LayoutRecords::new(&document.document_id));
-        let cascade = cascade_layout_delete(&mut successor, &mut updated, &doomed);
-        let mut spreads = successor.page_spreads.clone();
-        if delete_page_edit(&successor, &mut spreads, page).is_err() {
-            return Ok(None);
-        }
-        successor.page_spreads = spreads;
-        updated.parents.page_bindings.retain(|b| b.page_id != page);
-        // The page after `page` in document order (sections number pages in that order).
-        let order: Vec<&str> = document.page_spreads.iter().flat_map(|s| &s.pages).map(|p| p.page_id.as_str()).collect();
-        let next = order.iter().position(|p| *p == page).and_then(|i| i.checked_add(1)).and_then(|i| order.get(i)).map(|p| (*p).to_owned());
-        let starts: BTreeSet<String> = updated.longdoc.sections.iter().map(|s| s.page_start.clone()).collect();
-        updated.longdoc.sections.retain_mut(|s| {
-            if s.page_start != page {
-                return true;
-            }
-            match &next {
-                Some(n) if !starts.contains(n) => {
-                    s.page_start.clone_from(n);
-                    true
-                }
-                _ => false,
-            }
-        });
-        // The updated set must validate without the page even when nothing in it changed (a record this
-        // update does not follow): a delete never leaves a stale entry.
-        updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| {
-            if d.code == folio::Code::Canceled {
-                ("canceled", Value::Null)
-            } else {
-                ("page_bound_by_layout_records", json!({"page_id": page, "record": d.target, "folio_code": format!("{:?}", d.code)}))
-            }
-        })?;
-        Ok(if cascade.layers.is_empty() && records.as_ref() == Some(&updated) { None } else { Some((successor, updated, cascade)) })
+        let plan = Self::delete_page_with_content(document, records.as_ref(), page, self.cancel)?;
+        Ok(if plan.cascade.layers.is_empty() && plan.records == records { None } else { Some(plan) })
     }
 
-    /// `layer.delete` of layers that layout records follow (lane SMB-LAYOUT-DELETE-CASCADE-1; the Viewer's
-    /// Layers > Delete of a text frame, a graphic frame or a group holding one): `layers` and every layer
-    /// under them go through [`cascade_layout_delete`] (a thread closes over a removed frame) and commit with
-    /// the updated layout records as ONE layout step under `command` (`Run::submit_layout`; with `entry`, the
-    /// session document entry `(token, bytes)` set in the same step, `Run::submit_layout_and_entry`), labelled
-    /// `op`; undo restores the layers, the thread and the records together. Detail: the step's and the
-    /// cascade's counts ([`LayoutCascade::detail`]). Refusals change nothing: `not_open`, `unknown_layer`,
-    /// `canceled`, `layout_records_stale` (the stored entry does not validate now), and
-    /// `layer_bound_by_layout_records`, fail closed, when the updated records would still not validate (detail
-    /// `record`, `folio_code`), then `submit_layout`'s codes. A document without layout records stores empty
-    /// records with the step.
+    /// One layout step that writes `document` and `records` (`Run::submit_layout`), or, for `None`, the document
+    /// alone with the entry left absent (a document without a layout records entry gets none: review F7 of
+    /// acd73bc7). Same records, refusals and undo as `Run::submit_layout`.
+    fn submit_layout_records(&mut self, op: &str, command: &'static str, document: folio::StudioDocument, records: Option<LayoutRecords>) -> bool {
+        if let Some(records) = records {
+            return self.submit_layout(op, command, document, records);
+        }
+        self.note_unrecordable(command);
+        let before = self.frames.count();
+        let cancel = self.cancel;
+        if self.session.is_none() {
+            return self.push(op, before, Err("not_open"), None, None);
+        }
+        let ctx = self.begin(command, None);
+        let Some(session) = self.session.as_mut() else {
+            return self.push(op, before, Err("not_open"), None, None);
+        };
+        let step = hsk_studio_session::LayoutStep {
+            command_id: command_text(&ctx).to_string(),
+            correlation_id: ctx.correlation().value(),
+            expect: Box::new(session.snapshot().document().clone()),
+            write: Box::new(document),
+            records_expect: None,
+            records_write: None,
+        };
+        let revision = session.document_revision();
+        match session.submit_layout_as(&ctx, &step, revision, cancel) {
+            Ok(applied) => {
+                if applied.changed && !applied.replayed {
+                    self.emit_business_event(StudioBusinessEventId::LayerMutated, &ctx, applied.revision, &[]);
+                }
+                if applied.layout_inverse.is_some() {
+                    self.undo_stack.push(HistoryStep { label: op.to_string(), inverse: Value::Null, entry: None, timeline: None, group: None, sequences: None, containers: None, layout: applied.layout_inverse.clone(), ctx, revision: applied.revision });
+                    self.redo_stack.clear();
+                }
+                let detail = json!({"provider": applied.provider, "command": applied.command_id, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
+                self.push(op, before, Ok(detail), Some(applied.report), Some(applied.revision))
+            }
+            Err(f) => {
+                let revision = self.revision();
+                self.push(op, before, Err(f.code()), Some(f.report), revision)
+            }
+        }
+    }
+
+    /// The Viewer's Layers > Delete of layers that layout records follow (lane SMB-LAYOUT-DELETE-CASCADE-1; a
+    /// text frame, a graphic frame or a group holding one; row `layer.delete_layout_layers`, driven as
+    /// `viewer.delete_layer`): `layers` and every layer under them go through [`cascade_layout_delete`] (a
+    /// thread closes over a removed frame) and commit with the updated layout records as ONE layout step under
+    /// `command` (`Run::submit_layout`; with `entry`, the session document entry `(token, bytes)` set in the same
+    /// step, `Run::submit_layout_and_entry`), labelled `op`; undo restores the layers, the thread and the records
+    /// together. A document without a layout records entry gets none (review F7 of acd73bc7). Detail: the step's
+    /// and the cascade's counts ([`LayoutCascade::detail`]). Refusals change nothing: `not_open`, `unknown_layer`,
+    /// `canceled`, `layout_records_unreadable`, `layout_records_stale` (the stored entry does not decode, or does
+    /// not validate now), `layer_bound_by_layout_records`, fail closed, when the updated records would still not
+    /// validate (detail `record`, `folio_code`), `layout_records_missing` for an `entry` in a document without a
+    /// layout records entry (no step writes that pair), then `submit_layout`'s codes.
     pub fn delete_layout_layers(&mut self, op: &str, command: &'static str, layers: &[String], entry: Option<(&str, Vec<u8>)>) -> bool {
         let cancel = self.cancel;
         let planned = (|| {
@@ -891,40 +984,36 @@ impl Run<'_> {
             if let Some(missing) = layers.iter().find(|id| !document.layers.iter().any(|l| l.layer_id == **id)) {
                 return Err(("unknown_layer", json!({"layer_id": missing})));
             }
-            let records = match session.layout_records(cancel) {
-                Ok(r) => r.unwrap_or_else(|| LayoutRecords::new(&document.document_id)),
-                Err(SessionError::Canceled) => return Err(("canceled", Value::Null)),
-                Err(_) => return Err(("layout_records_stale", Value::Null)),
-            };
+            let records = self.readable_layout_records().map_err(|code| (code, Value::Null))?;
+            if records.is_none() && entry.is_some() {
+                return Err(("layout_records_missing", Value::Null));
+            }
             let mut successor = document.clone();
             let mut updated = records;
+            let mut scratch = LayoutRecords::new(&document.document_id);
             let doomed: BTreeSet<String> = layers.iter().cloned().collect();
-            let cascade = cascade_layout_delete(&mut successor, &mut updated, &doomed);
-            updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| {
-                if d.code == folio::Code::Canceled {
-                    ("canceled", Value::Null)
-                } else {
-                    ("layer_bound_by_layout_records", json!({"record": d.target, "folio_code": format!("{:?}", d.code)}))
-                }
-            })?;
+            let cascade = cascade_layout_delete(&mut successor, updated.as_mut().unwrap_or(&mut scratch), &doomed);
+            if let Some(updated) = &updated {
+                updated.validate(&successor, folio::Budget::default(), cancel).map_err(|d| {
+                    if d.code == folio::Code::Canceled {
+                        ("canceled", Value::Null)
+                    } else {
+                        ("layer_bound_by_layout_records", json!({"record": d.target, "folio_code": format!("{:?}", d.code)}))
+                    }
+                })?;
+            }
             Ok((successor, updated, cascade))
         })();
         let (document, records, cascade) = match planned {
             Ok(p) => p,
             Err((code, detail)) => return self.refuse_with_detail(op, command, code, detail),
         };
-        let ok = match entry {
-            Some((token, bytes)) => self.submit_layout_and_entry(op, command, document, records, token, bytes),
-            None => self.submit_layout(op, command, document, records),
+        let ok = match (records, entry) {
+            (Some(records), Some((token, bytes))) => self.submit_layout_and_entry(op, command, document, records, token, bytes),
+            (records, _) => self.submit_layout_records(op, command, document, records),
         };
-        if ok
-            && let Some(record) = self.ops.last_mut()
-            && record["detail"].is_object()
-            && let Value::Object(counts) = cascade.detail()
-        {
-            for (k, v) in counts {
-                record["detail"][k] = v;
-            }
+        if ok {
+            self.add_cascade_detail(&cascade, &[]);
         }
         ok
     }

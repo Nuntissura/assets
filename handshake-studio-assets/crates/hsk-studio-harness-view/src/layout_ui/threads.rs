@@ -13,9 +13,11 @@
 //! editor (STU-LAY-026) is not drawn; ports are not drag targets (click the frame with the thread
 //! tool). InDesign port/story-editor behaviour UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
-use super::{LayoutEditor, LayoutUiError, story_text, widget};
+use super::{LayoutDoc, LayoutEditor, LayoutRecords, LayoutUiError, story_text, widget};
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::Payload;
+use hsk_studio_folio::{PageSide, Parent, Payload};
+use hsk_studio_layout::LayoutError;
+use std::collections::BTreeSet;
 use serde_json::{Value, json};
 
 /// State of a frame's in or out port.
@@ -318,28 +320,71 @@ impl FlowReport {
 /// The smart text reflow controls this pass takes ([STU-LAY-123]); every one is given, none assumed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReflowControls {
-    /// `delete_empty_pages`: trailing pages that hold only empty frames of the story go.
+    /// `delete_empty_pages`: the pages that hold nothing but the story's empty frames after its last
+    /// composed line go.
     pub delete_empty_pages: bool,
-    /// `preserve_facing_page_spreads`: on a facing-pages document pages are added and removed in pairs.
+    /// `preserve_facing_page_spreads`: on a facing-pages document a left-hand page left alone on its spread gets
+    /// its partner, and only whole spreads go.
     pub preserve_facing_page_spreads: bool,
+}
+
+/// The editor's state as the session's layout records (as `Viewer::layout_commit` builds them).
+fn session_records(d: &LayoutDoc, r: &LayoutRecords) -> hsk_studio_session::LayoutRecords {
+    hsk_studio_session::LayoutRecords {
+        document_id: d.document.document_id.clone(),
+        stories: d.stories.clone(),
+        flow: d.flow.clone(),
+        styles: d.styles.clone(),
+        parents: r.parents.clone(),
+        longdoc: r.longdoc.clone(),
+    }
+}
+
+/// The editor's page delete with content (review F2 of acd73bc7): `layout.page.delete_page` and smart reflow's
+/// `delete_empty_pages` run harness-core's `Run::delete_page_with_content`, the rule `page.delete` runs, so the
+/// page's frames, graphic frames, frame records, binding and section start follow it in the same step.
+/// Refusals: `unknown_page`, `last_page`, `canceled`, and harness-core's codes as `LayoutUiError::Folio`.
+pub(crate) fn delete_page_with_content(d: &LayoutDoc, r: &LayoutRecords, page: &str, cancel: &CancellationToken) -> Result<(LayoutDoc, LayoutRecords), LayoutUiError> {
+    let records = session_records(d, r);
+    let plan = hsk_studio_harness_core::Run::delete_page_with_content(&d.document, Some(&records), page, cancel).map_err(|(code, detail)| match code {
+        "unknown_page" => LayoutUiError::UnknownPage(page.to_owned()),
+        "last_page" => LayoutUiError::LastPage,
+        "canceled" => LayoutUiError::Layout(LayoutError::Canceled),
+        other => LayoutUiError::Folio(other, detail.to_string()),
+    })?;
+    let updated = plan.records.unwrap_or(records);
+    let doc = LayoutDoc { document: plan.document, stories: updated.stories, flow: updated.flow, styles: updated.styles };
+    Ok((doc, LayoutRecords { parents: updated.parents, longdoc: updated.longdoc }))
+}
+
+fn checked(cancel: &CancellationToken) -> Result<(), LayoutUiError> {
+    cancel.check().map_err(|_| LayoutUiError::Layout(LayoutError::Canceled))
 }
 
 /// Autoflow and smart text reflow (lane SMB-LAYOUT-DELETE-CASCADE-1; [STU-LAY-020], [STU-LAY-123]). A new
 /// frame fills its page's margin box and threads after the frame before it (`LayoutEdit::DrawFrame` and
-/// `LayoutEdit::Thread` of the frame tool); a new page follows the document's last page with that page's size,
-/// margins and applied parent (`PageEdit::InsertPage`): a left-hand page alone on its spread takes its partner,
-/// else a new spread. Each call is ONE undo step (`layout.autoflow`, `layout.smart_reflow`) or, when nothing
-/// changes, none. Bounded: at most [`MAX_AUTOFLOW_FRAMES`] frames, one composition per placed frame.
-/// Declared gaps: the six reflow controls are not a stored document preference (Folio has no record for them),
-/// so reflow runs when called, not on every edit (`smart_text_reflow`, `smart_text_reflow_sync`), and
-/// `limit_to_primary_text_frames` and `link_text_files_when_importing` are not taken; `flow.manual` and
-/// `flow.semi_auto` place the same frame here, they differ in the window's cursor only. InDesign parity of the
-/// frame geometry, the page pairing and the empty-page rule is UNVERIFIED (D5).
+/// `LayoutEdit::Thread` of the frame tool). A new page takes the size, margins and applied parent of the page it
+/// follows (`PageEdit::InsertPage`): it joins that page's spread when that page is a left-hand page alone on its
+/// spread (the pair completes), else it starts a new spread after that page's spread. Autoflow (`flow.auto`,
+/// `flow.fixed_page_auto`) fills the existing pages after the frame's page first, whatever they hold, and
+/// `flow.auto` then adds pages after the document's last page; smart reflow adds pages directly after the page
+/// of the story's last frame and draws frames only on pages it adds, so it never covers another story. Each call
+/// is ONE undo step (`layout.autoflow`, `layout.smart_reflow`) or, when nothing changes, none. Bounded: at most
+/// [`MAX_AUTOFLOW_FRAMES`] frames per call; the caller's token is checked before every frame and page (a
+/// cancel refuses `canceled` with nothing changed); each frame costs one composition of the story, two whole-
+/// state clones and the editor's id mint (a scan over the layers and stories). Declared gaps (PARTIAL): the six
+/// reflow controls are not a stored document preference (Folio has no record for them), so reflow runs when
+/// called, not on every edit (`smart_text_reflow`, `smart_text_reflow_sync`), and `limit_to_primary_text_frames`
+/// and `link_text_files_when_importing` are not taken; `flow.manual` and `flow.semi_auto` place the same frame
+/// here, they differ in the window's cursor only. InDesign parity of the frame geometry, the existing-page rule
+/// of autoflow, the insertion point of smart reflow (InDesign also offers the end of the section or document,
+/// not among the six controls), the page pairing and the empty-page rule is UNVERIFIED (D5).
 impl LayoutEditor {
     /// Places the overset text of `from`'s story by `mode`, starting on `page` (default: the page after
-    /// `from`'s page). `from` must end its thread (`already_threaded`); `unknown_frame`, `unknown_page`, and the
-    /// frame tool's codes refuse with nothing changed. Text that fits already places nothing (no step).
-    pub fn autoflow(&mut self, from: &str, mode: FlowMode, page: Option<&str>, _cancel: &CancellationToken) -> Result<FlowReport, LayoutUiError> {
+    /// `from`'s page). `from` must end its thread (`already_threaded`); `unknown_frame`, `unknown_page`,
+    /// `canceled` and the frame tool's codes refuse with nothing changed. Text that fits already places nothing
+    /// (no step).
+    pub fn autoflow(&mut self, from: &str, mode: FlowMode, page: Option<&str>, cancel: &CancellationToken) -> Result<FlowReport, LayoutUiError> {
         let story = super::story_id_of(&self.doc, from)?;
         if self.frame_link(from).and_then(|(_, n)| n).is_some() {
             return Err(LayoutUiError::AlreadyThreaded(from.to_owned()));
@@ -351,25 +396,25 @@ impl LayoutEditor {
         }
         self.as_one_step("layout.autoflow", |ed| {
             let mut report = FlowReport::default();
-            ed.flow_into_frames(&story, from, mode, page.map(str::to_owned), false, &mut report)?;
+            ed.flow_into_frames(&story, from, mode, page.map(str::to_owned), cancel, &mut report)?;
             Ok(report)
         })
     }
 
-    /// Smart text reflow of `frame`'s story, run once: while text is overset, frames and pages are added after
-    /// the thread's last frame (as `flow.auto`); else, with `delete_empty_pages`, the trailing pages that hold
-    /// nothing but frames of the story with no composed line are removed with their frames (the thread closes
-    /// over them; never the page of the story's first frame, never the last page of the document). With
-    /// `preserve_facing_page_spreads` on a facing-pages document pages come and go in pairs.
-    pub fn smart_reflow(&mut self, frame: &str, controls: ReflowControls, _cancel: &CancellationToken) -> Result<FlowReport, LayoutUiError> {
+    /// Smart text reflow of `frame`'s story, run once: while text is overset, pages are added directly after the
+    /// page of the thread's last frame, each with a frame threaded on; else, with `delete_empty_pages`, the pages
+    /// after the story's last composed line that hold nothing but its empty frames go (wherever they sit;
+    /// `delete_page_with_content`: the thread closes over them; never the page of the story's first frame, never
+    /// the document's last page). Refusals as [`LayoutEditor::autoflow`].
+    pub fn smart_reflow(&mut self, frame: &str, controls: ReflowControls, cancel: &CancellationToken) -> Result<FlowReport, LayoutUiError> {
         let story = super::story_id_of(&self.doc, frame)?;
         let info = self.thread_info(frame)?;
         self.as_one_step("layout.smart_reflow", |ed| {
             let mut report = FlowReport::default();
             if ed.compose(&story)?.overset.is_some() {
-                ed.flow_into_frames(&story, &info.end_text_frame, FlowMode::Auto, None, controls.preserve_facing_page_spreads, &mut report)?;
+                ed.grow_after_story(&story, &info.end_text_frame, controls.preserve_facing_page_spreads, cancel, &mut report)?;
             } else if controls.delete_empty_pages {
-                ed.remove_empty_pages(&story, &info.start_text_frame, controls.preserve_facing_page_spreads, &mut report)?;
+                ed.remove_empty_pages(&story, &info.start_text_frame, controls.preserve_facing_page_spreads, cancel, &mut report)?;
             }
             Ok(report)
         })
@@ -400,15 +445,17 @@ impl LayoutEditor {
         }
     }
 
-    /// Frames threaded after `last` while the story is overset (one only for `flow.manual` and
-    /// `flow.semi_auto`), on `first_page` then the following pages; `flow.auto` adds pages past the last.
-    fn flow_into_frames(&mut self, story: &str, last: &str, mode: FlowMode, first_page: Option<String>, pairs: bool, report: &mut FlowReport) -> Result<(), LayoutUiError> {
+    /// Autoflow: frames threaded after `last` while the story is overset (one only for `flow.manual` and
+    /// `flow.semi_auto`), on `first_page` then the following existing pages; `flow.auto` adds pages past the
+    /// document's last.
+    fn flow_into_frames(&mut self, story: &str, last: &str, mode: FlowMode, first_page: Option<String>, cancel: &CancellationToken, report: &mut FlowReport) -> Result<(), LayoutUiError> {
         if self.compose(story)?.overset.is_none() {
             return Ok(());
         }
         let mut last = last.to_owned();
         let mut target = first_page;
         loop {
+            checked(cancel)?;
             if report.frames.len() >= MAX_AUTOFLOW_FRAMES {
                 report.stopped = Some("frame_limit");
                 break;
@@ -416,7 +463,8 @@ impl LayoutEditor {
             let on = match target.take().or_else(|| self.page_after(&last)) {
                 Some(p) => p,
                 None if mode == FlowMode::Auto => {
-                    let added = self.add_page()?;
+                    let end = self.page_order().last().cloned().ok_or(LayoutUiError::InvalidGeometry)?;
+                    let added = self.insert_after(&end)?;
                     report.pages_added.push(added.clone());
                     added
                 }
@@ -431,12 +479,39 @@ impl LayoutEditor {
                 break;
             }
         }
-        // A facing pair stays whole: a page added alone gets its partner, with its frame of the thread.
-        if pairs && self.facing() && report.pages_added.len() & 1 == 1 && report.frames.len() < MAX_AUTOFLOW_FRAMES {
-            let added = self.add_page()?;
-            report.pages_added.push(added.clone());
-            report.frames.push(self.margin_frame(&added, &last)?);
+        self.settle(story, report)
+    }
+
+    /// Smart reflow's grow: a page directly after the last one (from `last`'s page on), each with a frame
+    /// threaded after the one before, while the story is overset; with `pairs` on a facing document, a
+    /// left-hand page left alone on its spread gets its partner (with its frame of the thread).
+    fn grow_after_story(&mut self, story: &str, last: &str, pairs: bool, cancel: &CancellationToken, report: &mut FlowReport) -> Result<(), LayoutUiError> {
+        let mut last = last.to_owned();
+        let mut at = self.page_of_frame(&last).ok_or_else(|| LayoutUiError::UnknownFrame(last.clone()))?;
+        loop {
+            checked(cancel)?;
+            if report.frames.len() >= MAX_AUTOFLOW_FRAMES {
+                report.stopped = Some("frame_limit");
+                break;
+            }
+            at = self.insert_after(&at)?;
+            report.pages_added.push(at.clone());
+            last = self.margin_frame(&at, &last)?;
+            report.frames.push(last.clone());
+            if self.compose(story)?.overset.is_none() {
+                break;
+            }
         }
+        if pairs && self.facing() && report.frames.len() < MAX_AUTOFLOW_FRAMES && self.lone_left(&at) {
+            checked(cancel)?;
+            at = self.insert_after(&at)?;
+            report.pages_added.push(at.clone());
+            report.frames.push(self.margin_frame(&at, &last)?);
+        }
+        self.settle(story, report)
+    }
+
+    fn settle(&mut self, story: &str, report: &mut FlowReport) -> Result<(), LayoutUiError> {
         report.cursor_loaded = self.compose(story)?.overset.is_some();
         if !report.cursor_loaded {
             report.stopped = None;
@@ -451,7 +526,12 @@ impl LayoutEditor {
 
     /// Any page is left- or right-hand.
     fn facing(&self) -> bool {
-        self.doc.document.page_spreads.iter().flat_map(|s| &s.pages).any(|p| p.side != hsk_studio_folio::PageSide::SingleSided)
+        self.doc.document.page_spreads.iter().flat_map(|s| &s.pages).any(|p| p.side != PageSide::SingleSided)
+    }
+
+    /// `page` is a left-hand page alone on its spread.
+    fn lone_left(&self, page: &str) -> bool {
+        self.doc.document.locate_page(page).is_some_and(|l| l.page.side == PageSide::LeftHand && l.spread.pages.len() == 1)
     }
 
     fn page_of_frame(&self, frame: &str) -> Option<String> {
@@ -466,14 +546,12 @@ impl LayoutEditor {
         order.get(at.checked_add(1)?).cloned()
     }
 
-    /// A page after the document's last page (module docs): its key.
-    fn add_page(&mut self) -> Result<String, LayoutUiError> {
-        let spread = self.doc.document.page_spreads.last().ok_or(LayoutUiError::InvalidGeometry)?;
-        let page = spread.pages.last().ok_or(LayoutUiError::InvalidGeometry)?;
-        let new_spread = !(page.side == hsk_studio_folio::PageSide::LeftHand && spread.pages.len() == 1);
-        let after = page.page_id.clone();
-        let parent = self.rec.parents.binding(&after).and_then(|b| b.applied_parent.clone());
-        let held: std::collections::BTreeSet<String> = self.page_order().into_iter().collect();
+    /// A page directly after `page` (module docs): its key.
+    fn insert_after(&mut self, page: &str) -> Result<String, LayoutUiError> {
+        let at = self.doc.document.locate_page(page).ok_or_else(|| LayoutUiError::UnknownPage(page.to_owned()))?;
+        let (after, new_spread) = if self.lone_left(page) { (page.to_owned(), false) } else { (at.spread.pages.last().map_or_else(|| page.to_owned(), |p| p.page_id.clone()), true) };
+        let parent = self.rec.parents.binding(page).and_then(|b| b.applied_parent.clone());
+        let held: BTreeSet<String> = self.page_order().into_iter().collect();
         let (doc, rec) = super::pages::transform(&self.doc, &self.rec, &super::PageEdit::InsertPage { after, new_spread, parent })?;
         (self.doc, self.rec) = (doc, rec);
         self.page_order().into_iter().find(|p| !held.contains(p)).ok_or(LayoutUiError::InvalidGeometry)
@@ -496,33 +574,51 @@ impl LayoutEditor {
         Ok(frame)
     }
 
-    /// The trailing pages of `story` that hold nothing but its frames with no composed line, removed
-    /// (`PageEdit::DeletePage`: the frames go, the thread closes).
-    fn remove_empty_pages(&mut self, story: &str, first: &str, pairs: bool, report: &mut FlowReport) -> Result<(), LayoutUiError> {
+    /// Smart reflow's shrink: the pages of the story's frames after its last frame with a composed line (never
+    /// the first frame) that hold nothing but those empty frames (no other frame, no graphic frame, and, when the
+    /// page is alone on its spread, no other layer of the spread) go through `delete_page_with_content`; with
+    /// `pairs` on a facing document only whole spreads go; the document keeps at least one page.
+    fn remove_empty_pages(&mut self, story: &str, first: &str, pairs: bool, cancel: &CancellationToken, report: &mut FlowReport) -> Result<(), LayoutUiError> {
         let proposal = self.compose(story)?;
-        let filled: std::collections::BTreeSet<&str> = proposal.frames.iter().filter(|f| !f.lines.is_empty()).map(|f| f.frame_id.as_str()).collect();
-        let keep = self.page_of_frame(first);
-        let graphic: std::collections::BTreeSet<&str> = self.rec.longdoc.graphic_frames.iter().map(|g| g.page_id.as_str()).collect();
-        let shows = |l: &hsk_studio_folio::StudioLayer| matches!(&l.payload, Payload::Text { story_id } if story_id == story);
-        let order = self.page_order();
-        let mut doomed: Vec<String> = Vec::new();
-        for page in order.iter().rev() {
-            if Some(page) == keep.as_ref() || doomed.len().saturating_add(1) >= order.len() {
+        let filled: BTreeSet<&str> = proposal.frames.iter().filter(|f| !f.lines.is_empty()).map(|f| f.frame_id.as_str()).collect();
+        // The thread in flow order (bounded by the layer count).
+        let mut chain: Vec<String> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut at = Some(first.to_owned());
+        while let Some(f) = at {
+            if !seen.insert(f.clone()) {
                 break;
             }
-            let on: Vec<&hsk_studio_folio::StudioLayer> = self.doc.document.layers.iter().filter(|l| l.text_frame.as_ref().is_some_and(|f| f.page_id == *page)).collect();
-            let empty = !on.is_empty() && on.iter().all(|&l| shows(l) && !filled.contains(l.layer_id.as_str())) && !graphic.contains(page.as_str());
-            if !empty {
+            at = self.frame_link(&f).and_then(|(_, n)| n);
+            chain.push(f);
+        }
+        let last_filled = chain.iter().rposition(|f| filled.contains(f.as_str())).unwrap_or(0);
+        let empty: BTreeSet<&str> = chain.iter().skip(last_filled.saturating_add(1)).map(String::as_str).collect();
+        let graphic: BTreeSet<&str> = self.rec.longdoc.graphic_frames.iter().map(|g| g.page_id.as_str()).collect();
+        let mut pages: Vec<String> = Vec::new();
+        for frame in chain.iter().filter(|f| empty.contains(f.as_str())) {
+            let Some(page) = self.page_of_frame(frame) else { continue };
+            let Some(loc) = self.doc.document.locate_page(&page) else { continue };
+            let only_empty = self.doc.document.layers.iter().all(|l| {
+                let on_page = l.text_frame.as_ref().is_some_and(|f| f.page_id == page);
+                let on_lone_spread = loc.spread.pages.len() == 1 && matches!(&l.parent, Parent::Node(n) if n.node_id == loc.spread.page_spread_id);
+                !(on_page || on_lone_spread) || empty.contains(l.layer_id.as_str())
+            });
+            if only_empty && !graphic.contains(page.as_str()) && !pages.contains(&page) {
+                pages.push(page);
+            }
+        }
+        if pairs && self.facing() {
+            let doomed: BTreeSet<&str> = pages.iter().map(String::as_str).collect();
+            let whole = |p: &str| self.doc.document.locate_page(p).is_some_and(|l| l.spread.pages.iter().all(|q| doomed.contains(q.page_id.as_str())));
+            pages = pages.iter().filter(|p| whole(p.as_str())).cloned().collect();
+        }
+        for page in pages {
+            checked(cancel)?;
+            if self.page_order().len() <= 1 {
                 break;
             }
-            doomed.push(page.clone());
-        }
-        if pairs && self.facing() && doomed.len() & 1 == 1 {
-            doomed.pop();
-        }
-        for page in doomed {
-            let (doc, rec) = super::pages::transform(&self.doc, &self.rec, &super::PageEdit::DeletePage { page: page.clone() })?;
-            (self.doc, self.rec) = (doc, rec);
+            (self.doc, self.rec) = delete_page_with_content(&self.doc, &self.rec, &page, cancel)?;
             report.pages_removed.push(page);
         }
         Ok(())
