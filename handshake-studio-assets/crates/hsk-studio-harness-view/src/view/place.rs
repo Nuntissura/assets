@@ -581,8 +581,9 @@ impl Viewer {
     /// The layer a smart filter stack renders over (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, review F1): the pixels of
     /// raster layer `layer_id` over its tiles' bounds (straight linear RGBA, `layer_rgba`) and those bounds cut to
     /// the canvas when the document has one (the content plane render-cpu filters over, inside the plan extent);
-    /// `None` for a layer without tiles. Refused: `not_open`, `layer_unknown`, `layer_not_pixel`,
-    /// `tile_format_unsupported`, `budget_exceeded`.
+    /// `None` for a layer without tiles. Tiles in a format other than `rgb_f32le` (which neither this reader nor the
+    /// render decodes: the render refuses the tile itself, with or without a stack) give the bounds and no pixels.
+    /// Refused: `not_open`, `layer_unknown`, `layer_not_pixel`, `budget_exceeded`.
     pub(super) fn layer_content(&self, layer_id: &str) -> Result<Option<super::raster_effects::LayerContent>, CommandRefusal> {
         let doc = self.place_doc().map_err(command_refusal)?;
         let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| CommandRefusal::new("layer_unknown", json!({"layer": layer_id})))?;
@@ -593,14 +594,14 @@ impl Viewer {
             return Ok(None);
         }
         if tiles.iter().any(|t| t.format != "rgb_f32le") {
-            return Err(CommandRefusal::new("tile_format_unsupported", json!({"layer": layer_id, "expected": "rgb_f32le"})));
+            return Ok(Some(super::raster_effects::LayerContent { plane: None, bounds: self.layer_content_bounds(layer_id) }));
         }
         let (region, pixels) = self.layer_rgba(layer_id).map_err(command_refusal)?;
         let bounds = match self.canvas() {
             Ok(canvas) => region.intersect(canvas).ok().flatten(),
             Err(_) => Some(region),
         };
-        Ok(Some(super::raster_effects::LayerContent { plane: hsk_studio_pigment::retouch::RgbaPlane { bounds: region, data: pixels }, bounds }))
+        Ok(Some(super::raster_effects::LayerContent { plane: Some(hsk_studio_pigment::retouch::RgbaPlane { bounds: region, data: pixels }), bounds }))
     }
 
     /// The content bounds of [`Self::layer_content`] without reading the pixels (`effect.read`); `None` without tiles.
@@ -1524,14 +1525,23 @@ mod in_place_tests {
         }
         let tiles = v.resampled_tiles(&id, Rect { x: 0, y: 0, width: W, height: H }, pixels, Affine2::IDENTITY, ResampleFilter::NearestNeighbour, None).unwrap();
         assert!(v.run.set_tiles("seed", &id, tiles), "seed tiles");
-        let (_, read) = v.layer_rgba(&id).unwrap();
-        // The seeded texels read back exactly (alpha-0 texels are not stored: they read as transparent black).
-        for (k, (got, want)) in read.iter().zip(pixels).enumerate() {
-            if want[3] > 0.0 {
-                assert_eq!(got, want, "texel {k}");
+        let (bounds, read) = v.layer_rgba(&id).unwrap();
+        // The seeded texels read back exactly over the tiles' bounds (alpha-0 texels read as transparent black).
+        for y in 0..H {
+            for x in 0..W {
+                let want = pixels[usize::try_from(y * W + x).unwrap()];
+                if want[3] > 0.0 {
+                    assert_eq!(texel(bounds, &read, x, y), want, "texel ({x}, {y})");
+                }
             }
         }
         (v, id)
+    }
+
+    /// The texel at document pixel `(x, y)` of a plane over `bounds`.
+    fn texel(bounds: Rect, plane: &[[f32; 4]], x: u32, y: u32) -> [f32; 4] {
+        let k = (i64::from(y) - bounds.y) * i64::from(bounds.width) + (i64::from(x) - bounds.x);
+        plane[usize::try_from(k).unwrap()]
     }
 
     /// The document rendered by the read-back path in linear light: `(frame rect, straight RGBA)`.

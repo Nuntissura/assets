@@ -190,7 +190,11 @@ fn parameter_specs_are_model_visible_and_out_of_range_values_refuse_naming_the_b
     assert_eq!((gauss["bound_classification"]["hard_max"].as_str(), gauss["observed_max"].as_str()), (Some("derived"), Some("absent")));
     let angle = spec("motion_blur", "angle_deg");
     assert_eq!((angle["hard_min"].as_str(), angle["hard_max"].as_str()), (Some("unknown"), Some("unknown")));
-    assert_eq!(spec("radial_blur", "kind")["options"], json!([{"token": "spin", "discriminant": 1}, {"token": "zoom", "discriminant": 2}]));
+    // STU-RAS-109: every member's integer discriminant, classified (the Radial Blur table declares these).
+    assert_eq!(
+        spec("radial_blur", "kind")["options"],
+        json!([{"token": "spin", "discriminant": 1, "discriminant_classification": "declared"}, {"token": "zoom", "discriminant": 2, "discriminant_classification": "declared"}])
+    );
     let one = ok(&mut v, "effect.parameters", json!({"filter_kind": "mosaic"}));
     assert_eq!(one["kinds"].as_array().unwrap().len(), 1);
     refused(&mut v, "effect.parameters", json!({"filter_kind": "melt"}), "parameter_invalid");
@@ -593,9 +597,9 @@ fn effect_and_adjustment_edits_are_entry_only_steps_and_leave_the_revision() {
     assert!(revision(&v) > created, "adjustment.apply is a revision");
 }
 
-/// Review F9: `effect.read` summarises a liquify mesh unless `full`; an opacity-only or resample-only update keeps
-/// the stored mesh (no decode of it again); the vertex lists are capped (the cap itself: harness-view unit test
-/// `a_mesh_list_over_the_cap_is_refused_before_decoding`).
+/// Review F9: the vertex lists are capped at Folio's node budget of the raster records (4096: a 256 x 256 mesh at
+/// spacing 1, 65536 vertices, is refused `budget_exceeded` before decoding); `effect.read` summarises a liquify
+/// mesh unless `full`; an opacity-only or resample-only update keeps the stored mesh (no decode of it again).
 #[test]
 fn a_large_liquify_mesh_is_summarised_and_kept_by_updates() {
     let scratch = Scratch::new("raster-effects-mesh");
@@ -606,16 +610,19 @@ fn a_large_liquify_mesh_is_summarised_and_kept_by_updates() {
     let big = layer(&v, "big");
     let (x, y, w, h) = content_bounds(&mut v, &big);
     assert_eq!((w, h), (256, 256));
-    let mut m = mesh(x, y, w, h, 1);
+    let r = refused(&mut v, "effect.apply", json!({"layer": big, "filter_kind": "liquify", "params": {"mesh": mesh(x, y, w, h, 1), "resample": "bilinear"}}), "budget_exceeded");
+    assert_eq!((r.detail["key"].as_str(), r.detail["at_most"].as_u64()), (Some("params.mesh.displacement"), Some(4096)), "{}", r.detail);
+    // Spacing 5: 52 x 52 = 2704 vertices, under the cap.
+    let mut m = mesh(x, y, w, h, 5);
     m["displacement"][1000] = json!([1.5, -0.5]);
     ok(&mut v, "effect.apply", json!({"layer": big, "filter_kind": "liquify", "params": {"mesh": m, "resample": "bilinear"}}));
     let summary = filters(&mut v, &big);
     let s = &summary["filters"][0]["params"]["mesh"];
-    assert_eq!((s["summary"].as_bool(), s["vertices"].as_u64(), s["cols"].as_u64(), s["rows"].as_u64()), (Some(true), Some(65_536), Some(256), Some(256)), "{s}");
+    assert_eq!((s["summary"].as_bool(), s["vertices"].as_u64(), s["cols"].as_u64(), s["rows"].as_u64()), (Some(true), Some(2_704), Some(52), Some(52)), "{s}");
     assert!(summary.to_string().len() < 2_000, "the summary is small: {} bytes", summary.to_string().len());
     let full = |v: &mut Viewer| ok(v, "effect.read", json!({"layer": big, "full": true}))["filters"][0]["params"]["mesh"].clone();
     let before = full(&mut v);
-    assert_eq!(before["displacement"].as_array().unwrap().len(), 65_536);
+    assert_eq!(before["displacement"].as_array().unwrap().len(), 2_704);
     assert_eq!(before["displacement"][1000], json!([1.5, -0.5]));
     ok(&mut v, "effect.update", json!({"layer": big, "instance": "fx-1", "opacity": 60}));
     assert_eq!(full(&mut v), before, "an opacity update keeps the mesh");

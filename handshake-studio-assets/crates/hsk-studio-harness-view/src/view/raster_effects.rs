@@ -52,8 +52,10 @@
 //!   `effect_value_range_unsupported`; and the entry must fit pigment's budget over the layer's content bounds
 //!   inside the canvas (`FilterKernel::admit`, `filter_math::filter_window_cost` against `StackLimits::default()`,
 //!   so a box blur above `MAX_BOX_KERNEL_TAPS` taps refuses), else `effect_render_budget_exceeded {needed, limit}`;
-//!   a liquify mesh must cover exactly those bounds. Returns `{layer_id, instance_id, filter_kind, index, defaulted,
-//!   revision}`.
+//!   a liquify mesh must cover exactly those bounds, and its vertex lists hold at most Folio's node budget of the
+//!   raster records (4096; `budget_exceeded` before decoding). A layer whose tiles the viewer does not decode
+//!   (not `rgb_f32le`) is budget-checked over its bounds only. Returns `{layer_id, instance_id, filter_kind,
+//!   index, defaulted, revision}`.
 //! - `effect.update {layer, instance, params?, opacity?}` (`STUDIO_EFFECT_UPDATE`): the given parameters over the
 //!   entry's current ones, checked and admitted as above; the kind stays. An opacity-only update and a liquify
 //!   update without a new `mesh` do not decode the mesh again (review F9).
@@ -830,14 +832,21 @@ fn check_param(kind: &str, p: &EffectParam, v: &Value) -> Result<Value, CommandR
         }
         ParamType::Mesh => {
             let m = v.as_object().ok_or_else(|| invalid(&key, "a liquify mesh {origin_x, origin_y, width, height, spacing, cols, rows, displacement, freeze}"))?;
-            mesh_lists_within(&key, m, usize::try_from(MAX_LIQUIFY_VERTICES).unwrap_or(usize::MAX))?;
+            mesh_lists_within(&key, m, mesh_cap())?;
             Ok(v.clone())
         }
     }
 }
 
-/// Hostile size (V4-02, review F9): a mesh's vertex lists longer than `cap` (Folio's `MAX_LIQUIFY_VERTICES`) are
-/// refused `budget_exceeded` before Folio decodes them.
+/// The most vertices a liquify mesh of a stored stack can hold: Folio's `MAX_LIQUIFY_VERTICES`, bounded by the node
+/// budget the raster records are validated with at every edit (`Budget::default().nodes`: stack entries and mesh
+/// vertices count against it), so a longer list could never be stored.
+fn mesh_cap() -> usize {
+    usize::try_from(MAX_LIQUIFY_VERTICES).unwrap_or(usize::MAX).min(folio::Budget::default().nodes)
+}
+
+/// Hostile size (V4-02, review F9): a mesh's vertex lists longer than `cap` ([`mesh_cap`]) are refused
+/// `budget_exceeded` before Folio decodes them.
 fn mesh_lists_within(key: &str, m: &Map<String, Value>, cap: usize) -> Result<(), CommandRefusal> {
     for list in ["displacement", "freeze"] {
         if m.get(list).and_then(Value::as_array).is_some_and(|a| a.len() > cap) {
@@ -908,10 +917,11 @@ fn kind_tag(kind: &StudioSmartFilterKind) -> String {
     serde_json::to_value(kind).ok().and_then(|v| v["filter_kind"].as_str().map(str::to_owned)).unwrap_or_default()
 }
 
-/// The layer a stack renders over (review F1): its pixels over its tiles' bounds and those bounds cut to the canvas
-/// (the content plane render-cpu filters over), as `place::layer_content` reads them.
+/// The layer a stack renders over (review F1): its pixels over its tiles' bounds (`None` for tiles in a format the
+/// viewer does not decode) and those bounds cut to the canvas (the content plane render-cpu filters over), as
+/// `place::layer_content` reads them.
 pub(super) struct LayerContent {
-    pub(super) plane: RgbaPlane,
+    pub(super) plane: Option<RgbaPlane>,
     pub(super) bounds: Option<Rect>,
 }
 
@@ -921,7 +931,7 @@ pub(super) struct LayerContent {
 /// those bounds. No layer content: nothing renders, nothing to admit.
 fn admit(layer: &str, op: &StackFilter, kind: &str, content: Option<&LayerContent>) -> Result<(), CommandRefusal> {
     let Some(content) = content else { return Ok(()) };
-    if content.plane.validate().is_err() {
+    if content.plane.as_ref().is_some_and(|p| p.validate().is_err()) {
         return Err(CommandRefusal::new("effect_value_range_unsupported", json!({"layer": layer, "filter_kind": kind, "message": "the smart filter stack renders unit-range content (0..=1); this layer holds other values"})));
     }
     let Some(bounds) = content.bounds else { return Ok(()) };
@@ -1503,8 +1513,8 @@ mod tests {
         assert_eq!(centre["x-default"]["fraction_of_layer_content_bounds"].as_f64(), Some(0.5), "{centre}");
     }
 
-    /// Review F9: the vertex-list cap (Folio's `MAX_LIQUIFY_VERTICES` in `check_param`, here a small cap so the test
-    /// allocates no 4-million-entry list).
+    /// Review F9: the vertex-list cap ([`mesh_cap`] in `check_param`, here a small cap; the harness test
+    /// `a_large_liquify_mesh_is_summarised_and_kept_by_updates` runs the real one through the row).
     #[test]
     fn a_mesh_list_over_the_cap_is_refused_before_decoding() {
         let mesh = |n: usize| json!({"displacement": vec![[0.0, 0.0]; n], "freeze": vec![0.0; 3]});
@@ -1514,7 +1524,8 @@ mod tests {
         assert_eq!((r.code.as_str(), &r.detail), ("budget_exceeded", &json!({"key": "params.mesh.displacement", "at_most": 3})));
         let freeze = json!({"displacement": [], "freeze": vec![0.0; 4]});
         assert_eq!(mesh_lists_within("params.mesh", freeze.as_object().unwrap(), 3).unwrap_err().detail["key"], "params.mesh.freeze");
-        // The real cap is Folio's (`check_param` passes it).
-        assert_eq!(usize::try_from(MAX_LIQUIFY_VERTICES).unwrap(), 1 << 22);
+        // The real cap (`check_param` passes it): Folio's node budget of the records validation, below its vertex cap.
+        assert_eq!(mesh_cap(), folio::Budget::default().nodes);
+        assert!(mesh_cap() <= usize::try_from(MAX_LIQUIFY_VERTICES).unwrap());
     }
 }
