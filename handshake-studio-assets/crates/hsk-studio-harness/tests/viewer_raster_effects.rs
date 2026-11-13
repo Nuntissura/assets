@@ -14,7 +14,9 @@ use hsk_studio_harness::view::Viewer;
 use hsk_studio_harness::view::commands::CommandRefusal;
 use hsk_studio_harness::view::develop::DevelopExport;
 use hsk_studio_harness::view::export::ExportFormat;
+use hsk_studio_accord::CancellationToken;
 use hsk_studio_harness::view::render::Prefer;
+use hsk_studio_harness::{Harness, PlacementWrite, Selection, asset_local_test_context};
 use hsk_studio_interop_tiff as tiff;
 use serde_json::{Map, Value, json};
 use std::io::Write;
@@ -370,6 +372,78 @@ fn the_develop_dng_xmp_carries_the_crop_keys() {
     let e = v.export_develop(&never, dng, false).unwrap_err();
     assert_eq!(e.code, "xmp_invalid", "{}", e.detail);
     assert!(!never.exists());
+}
+
+// ---- records never outlive their layer (lead decision 2026-11-13) ----------------------------------------------
+
+/// The layer ids the `raster_records` entry keys (rows of absent layers included).
+fn record_ids(v: &Viewer) -> Vec<String> {
+    let Some(bytes) = v.run().document_entry("raster_records") else { return Vec::new() };
+    let entry: Value = serde_json::from_slice(bytes).unwrap();
+    entry["records"]["layers"].as_array().map(|a| a.iter().filter_map(|r| r["layer_id"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+/// Deleting a layer removes its `raster_records` row (its smart filter stack) in the same undo step, so a layer
+/// created afterwards, which may take the same id, inherits nothing, in the session and after save and reopen; undo
+/// of the delete brings the layer and its stack back together.
+#[test]
+fn a_deleted_layers_records_leave_with_it_and_undo_brings_them_back() {
+    let scratch = Scratch::new("raster-effects-delete-records");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let gone = v.new_raster_layer("filtered").unwrap();
+    ok(&mut v, "effect.apply", json!({"layer": gone, "filter_kind": "gaussian_blur", "params": {"radius_px": 2}}));
+    let steps = undo(&v).len();
+    v.delete_layer(&gone).unwrap();
+    assert_eq!(undo(&v).len(), steps + 1, "the delete is one step");
+    assert!(!record_ids(&v).contains(&gone), "the row leaves with the layer");
+    v.undo().unwrap();
+    assert_eq!(filters(&mut v, &gone)["filters"].as_array().map_or(0, Vec::len), 1, "undo brings the stack back with the layer");
+    v.redo().unwrap();
+    assert!(!record_ids(&v).contains(&gone), "redo removes it again");
+    let fresh = v.new_raster_layer("fresh").unwrap();
+    assert_eq!(filters(&mut v, &fresh)["filters"], json!([]), "a new layer ({fresh}; the deleted one was {gone}) inherits no smart filter stack");
+
+    let mut w = open(&src);
+    let gone = w.new_raster_layer("filtered").unwrap();
+    ok(&mut w, "effect.apply", json!({"layer": gone, "filter_kind": "box_blur"}));
+    w.delete_layer(&gone).unwrap();
+    let saved = scratch.0.join("deleted.handshake");
+    w.save(&saved, false).unwrap();
+    let mut r = open(&saved);
+    assert!(!record_ids(&r).contains(&gone), "the saved entry holds no row of the deleted layer");
+    let fresh = r.new_raster_layer("fresh").unwrap();
+    assert_eq!(filters(&mut r, &fresh)["filters"], json!([]), "after reopen a new layer ({fresh}) inherits nothing");
+}
+
+/// A package whose `raster_records` entry names a layer it does not hold (written before this fix, or by another
+/// writer) opens with those rows dropped and a loss note on the status log; a new layer that takes the id inherits
+/// nothing.
+#[test]
+fn records_naming_an_absent_layer_are_dropped_on_open_with_a_loss_note() {
+    let scratch = Scratch::new("raster-effects-open-orphans");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let gone = v.new_raster_layer("filtered").unwrap();
+    ok(&mut v, "effect.apply", json!({"layer": gone, "filter_kind": "sharpen"}));
+    let saved = scratch.0.join("with-row.handshake");
+    v.save(&saved, false).unwrap();
+    // Another writer deletes the layer and keeps its row: a raw structure edit through a harness run.
+    let h = Harness::new(Selection { providers: vec!["chronicle.patch".to_string()], ..Selection::default() }).unwrap();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(asset_local_test_context(), &cancel);
+    assert!(run.open_path(&saved));
+    assert!(run.restructure("raw_delete", &[PlacementWrite { layer_id: gone.clone(), to: None, create: None }]));
+    let orphaned = scratch.0.join("orphaned.handshake");
+    assert!(run.save_to(&orphaned));
+    let mut r = open(&orphaned);
+    assert!(!record_ids(&r).contains(&gone), "the row naming an absent layer is dropped on open");
+    let status = r.state_json()["status"].to_string();
+    assert!(status.contains("raster_records_dropped") && status.contains(&gone), "a loss note names it: {status}");
+    let fresh = r.new_raster_layer("fresh").unwrap();
+    assert_eq!(filters(&mut r, &fresh)["filters"], json!([]), "a new layer ({fresh}) inherits nothing");
 }
 
 // ---- review fixes of d05d2699 (lead rulings 2026-11-13) ---------------------------------------------------------
