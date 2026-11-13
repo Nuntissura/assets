@@ -8,6 +8,7 @@ use super::Viewer;
 use crate::{Place, PlacementWrite};
 use hsk_studio_folio::{NodeKind, NodeRef, Operation, Parent, Payload, StudioDocument, StudioLayer};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 /// The parent of a stack: the document root or a group layer.
 fn parent_of(group: Option<&str>) -> Parent {
@@ -184,41 +185,77 @@ impl Viewer {
         Ok(id)
     }
 
-    /// Deletes `layer_id` (a group with everything inside it) as one undoable step.
-    pub fn delete_layer(&mut self, layer_id: &str) -> Result<u64, String> {
-        // Lane SMB-LAYOUT-PLACE-1: a layout picture's layer goes with its graphic frame record, one layout step.
-        if self.is_graphic_frame(layer_id) {
-            return self.delete_graphic_frame(layer_id);
-        }
-        let doc = self.doc()?;
-        // Lane SMB-R60-FOLLOWUPS-1 (lead ruling 2026-11-11T10:39Z): a text-frame layer that a thread (another
-        // frame's previous or next frame) or a layout flow record names is refused typed before any change,
-        // naming the record, so no delete leaves records naming a missing frame (a stale entry locks the layout
-        // after save). Re-linking the thread past the deleted frame is a next-lane candidate.
-        fn path_naming(v: &serde_json::Value, at: String, id: &str) -> Option<String> {
-            match v {
-                serde_json::Value::String(s) if s == id => Some(at),
-                serde_json::Value::Array(items) => items.iter().enumerate().find_map(|(i, x)| path_naming(x, format!("{at}/{i}"), id)),
-                serde_json::Value::Object(map) => map.iter().find_map(|(k, x)| path_naming(x, format!("{at}/{k}"), id)),
-                _ => None,
+    /// The layer ids of `layer_id`'s subtree (itself and every layer whose parent chain reaches it), from the
+    /// parent links; bounded: one pass over the layers, then each layer is entered once.
+    fn subtree(doc: &StudioDocument, layer_id: &str) -> Vec<String> {
+        let mut children: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+        for l in &doc.layers {
+            if let Some(p) = parent_id(&l.parent) {
+                children.entry(p).or_default().push(l.layer_id.as_str());
             }
         }
-        let thread = doc.layers.iter().filter(|l| l.layer_id != layer_id).find_map(|l| {
-            let f = l.text_frame.as_ref()?;
-            [("previous_text_frame", &f.previous_text_frame), ("next_text_frame", &f.next_text_frame)]
-                .into_iter()
-                .find(|(_, v)| v.as_deref() == Some(layer_id))
-                .map(|(field, _)| format!("thread {}.{field}", l.layer_id))
-        });
-        let flow = || {
-            let bytes = self.run.document_entry(hsk_studio_session::LAYOUT_RECORDS_ENTRY)?;
-            let records = hsk_studio_session::LayoutRecords::decode(bytes, hsk_studio_folio::Budget::default(), self.cancel).ok()?;
-            path_naming(&serde_json::to_value(&records.flow).ok()?, "flow".to_string(), layer_id)
-        };
-        if let Some(record) = thread.or_else(flow) {
-            let e = format!("delete: layer_bound_by_layout_records {record}");
-            self.say(e.clone());
-            return Err(e);
+        let mut out: Vec<String> = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![layer_id];
+        while let Some(id) = stack.pop() {
+            if seen.insert(id) {
+                stack.extend(children.get(id).into_iter().flatten().copied());
+                out.push(id.to_string());
+            }
+        }
+        out
+    }
+
+    /// `layers` hold a text frame, or the stored layout records name one of them (a graphic frame, a parent
+    /// page item, an override's replacement, a flow record): the delete is a layout cascade. Records that do
+    /// not decode name nothing here (a text frame still goes to the cascade, which refuses them typed).
+    fn layout_bound(&self, doc: &StudioDocument, layers: &[String]) -> bool {
+        fn names(v: &Value, ids: &BTreeSet<&str>) -> bool {
+            match v {
+                Value::String(s) => ids.contains(s.as_str()),
+                Value::Array(items) => items.iter().any(|x| names(x, ids)),
+                Value::Object(map) => map.values().any(|x| names(x, ids)),
+                _ => false,
+            }
+        }
+        let ids: BTreeSet<&str> = layers.iter().map(String::as_str).collect();
+        if doc.layers.iter().any(|l| ids.contains(l.layer_id.as_str()) && l.text_frame.is_some()) {
+            return true;
+        }
+        let Some(bytes) = self.run.document_entry(hsk_studio_session::LAYOUT_RECORDS_ENTRY) else { return false };
+        let Ok(r) = hsk_studio_session::LayoutRecords::decode(bytes, hsk_studio_folio::Budget::default(), self.cancel) else { return false };
+        [serde_json::to_value(&r.flow), serde_json::to_value(&r.longdoc), serde_json::to_value(&r.parents)].iter().any(|v| v.as_ref().is_ok_and(|v| names(v, &ids)))
+    }
+
+    /// Deletes `layer_id` (a group with everything inside it) as one undoable step.
+    ///
+    /// Layout layers (lane SMB-LAYOUT-DELETE-CASCADE-1, replacing lane SMB-R60-FOLLOWUPS-1's typed refusal
+    /// `layer_bound_by_layout_records` for a threaded frame and lane SMB-LAYOUT-PLACE-1's graphic-frame delete): a
+    /// text frame, a graphic frame, or a layer whose subtree holds one or that layout records name goes through
+    /// `Run::delete_layout_layers`, ONE layout step: the thread closes over a removed frame (the frame before it
+    /// continues into the frame after it, [STU-LAY-122]), a story no frame shows any more goes with its records,
+    /// the records naming a removed layer go (harness-core `cascade_layout_delete`), and, as for every delete, the
+    /// component and instance records keyed to it (`Viewer::records_after_delete`). Undo restores the layers, the
+    /// thread and the records together. Refused typed, nothing changed: `layout_records_stale`, and
+    /// `layer_bound_by_layout_records` when records the cascade does not follow would still name a removed layer.
+    /// The raster records entry keeps a removed picture's placement record, inert until an undo brings the layer
+    /// back (as for every deleted placement).
+    pub fn delete_layer(&mut self, layer_id: &str) -> Result<u64, String> {
+        let doc = self.doc()?;
+        if !doc.layers.iter().any(|l| l.layer_id == layer_id) {
+            return Err(format!("delete: {layer_id} is not in a layer stack"));
+        }
+        let gone = Self::subtree(doc, layer_id);
+        if self.layout_bound(doc, &gone) {
+            let entry = self.records_after_delete(&gone).map(|bytes| (super::vector::ENTRY, bytes));
+            let ok = self.run.delete_layout_layers("delete_layer", "layer.delete", &[layer_id.to_string()], entry);
+            let revision = self.after_edit(ok, format!("deleted {layer_id}"))?;
+            if self.selected.as_ref().is_some_and(|s| gone.contains(s)) {
+                self.selected = None;
+            }
+            self.place_sync();
+            self.layout_sync();
+            return Ok(revision);
         }
         if self.run.placement(layer_id).is_none() {
             return Err(format!("delete: {layer_id} is not in a layer stack"));

@@ -256,31 +256,6 @@ impl Viewer {
         self.graphic_frames_now().into_iter().map(|g| g.layer_id).collect()
     }
 
-    /// Deletes the graphic-frame layer `layer_id` and its frame record as ONE layout step (Layers > Delete on a
-    /// layout picture; undo restores both): the frame record would otherwise name a layer the document no
-    /// longer holds and every later layout edit would refuse `layout_records_stale`. The raster records entry
-    /// keeps the placement's record, inert until an undo brings the layer back (as for every deleted placement).
-    pub(in crate::view) fn delete_graphic_frame(&mut self, layer_id: &str) -> Result<u64, String> {
-        const OP: &str = "delete_layer";
-        let (mut document, mut records) = self.layout_state().map_err(|e| format!("delete: {e}"))?;
-        document.layers.retain(|l| l.layer_id != layer_id);
-        records.longdoc.graphic_frames.retain(|g| g.layer_id != layer_id);
-        if !self.run.submit_layout(OP, "layer.delete", document, records) {
-            let e = format!("delete: {}", self.op_error());
-            self.say(e.clone());
-            return Err(e);
-        }
-        if self.selected.as_deref() == Some(layer_id) {
-            self.selected = None;
-        }
-        self.dirty = true;
-        self.place_sync();
-        self.layout_sync();
-        let revision = self.revision_now();
-        self.say(format!("deleted {layer_id} and its graphic frame (revision {revision})"));
-        Ok(revision)
-    }
-
     /// The frames of `layers` in `records` refitted to `content` (pt at 100 %, Update All Links of a source whose
     /// pixel size or stated ppi changed): each keeps its stored fit, which is applied again ([`refit`]). The first
     /// frame that cannot refit refuses with its layer id; `records` is then unchanged.
@@ -392,7 +367,7 @@ impl Viewer {
         document.layers.push(layer);
         folio::validate_raster_records(&entry.records, &document, folio::Budget::default(), self.cancel, &crate::harness::TrustAll).map_err(|d| folio_refusal(&d))?;
         let [x, y, fw, fh] = frame.bounds;
-        let g = StudioGraphicFrame {
+        let mut g = StudioGraphicFrame {
             layer_id: layer_id.clone(),
             page_id: frame.page_id.clone(),
             bounds: Bounds { x: pt(x), y: pt(y), width: pt(fw), height: pt(fh) },
@@ -404,7 +379,9 @@ impl Viewer {
             anchor: frame.anchor,
             crop: None,
         };
-        let placed = place_graphic(&document, &g).map_err(fit_refusal)?;
+        // Lane SMB-LAYOUT-DELETE-CASCADE-1 (ledger 2026-11-11T12:51:10Z): `frame_to_content` writes the fitted frame
+        // into the record here as `asset.fit` does ([`refit`]), not the bounds given.
+        let placed = refit(&document, &mut g)?;
         records.longdoc.graphic_frames.push(g.clone());
         let body = entry.to_bytes()?;
         if !self.run.submit_layout_and_entry(OP, OP, document, records, ENTRY, body) {
