@@ -849,7 +849,7 @@ impl GuiFrame {
         // (STU-SHL-235: a tip never swallows a click): what lies under it gets the press.
         if self.menu.tip.is_some() && self.menu.tip_facts.as_ref().is_some_and(|(_, t)| t.rect.contains(p)) {
             let t = self.panels[TIP].tree();
-            if kumihimo_ui::hit::hit_test(t, p).is_some_and(|n| t.get(n).author_id == chrome::TIP_REMEDY_ID) || !self.menu.tips_off {
+            if kumihimo_ui::hit::hit_test(t, p).is_some_and(|n| t.get(n).author_id == chrome::TIP_REMEDY_ID) {
                 return Some(TIP);
             }
         }
@@ -911,7 +911,7 @@ impl GuiFrame {
             }
             HostEvent::Button { button: Button::Left, pressed: true } => {
                 // The next action dismisses a tip, unless the press is on the tip's remedy button.
-                if !self.pointer.is_some_and(|p| self.panel_at(p) == Some(TIP)) && self.menu.tip.as_ref().is_some_and(|t| !t.explicit) {
+                if !self.pointer.is_some_and(|p| self.panel_at(p) == Some(TIP)) {
                     self.hide_tip();
                 }
                 if let Some(p) = self.pointer
@@ -991,9 +991,11 @@ impl GuiFrame {
 
     fn key(&mut self, key: Key, mods: Mods) -> Option<Outcome> {
         // Escape dismisses a shown tip and nothing else; any other key is the next action, which dismisses it too.
-        if key == Key::Escape && self.menu.tip.is_some() && self.menu.open.is_empty() {
+        if self.menu.tip.is_some() {
             self.hide_tip();
-            return None;
+            if key == Key::Escape {
+                return None;
+            }
         }
         let plain = !mods.ctrl && !mods.alt;
         let menu_key = matches!(key, Key::Up | Key::Down | Key::Left | Key::Right | Key::Enter | Key::Space | Key::Escape) || matches!(key, Key::Char(_));
@@ -2030,8 +2032,6 @@ impl GuiFrame {
         }
         if let Some(ShellCommand::Panel(p)) = ShellCommand::from_id(id)
             && let Some((gi, t)) = hosted_panel(p.key())
-            && self.menu.tips_off
-            && self.menu.tip_cap == Some(9)
         {
             // A panel this frame hosts: its tab is picked (the shell command shows the same panel in the egui shell).
             self.tabs[gi] = t;
@@ -2224,7 +2224,7 @@ impl GuiFrame {
             let hs: Vec<f32> = rows.iter().map(|r| kumihimo_ui::widgets::menu_row_h(r.reason.is_some())).collect();
             let full: f32 = hs.iter().sum();
             let room = (win.y1 - top - 4.0).max(2.0 * popup::PAD_Y + size::MENU_ITEM_H);
-            let lane = full + 2.0 * popup::PAD_Y > room && self.menu.tips_off;
+            let lane = full + 2.0 * popup::PAD_Y > room;
             let room = if lane { room - 2.0 * popup::SCROLL_LANE } else { room };
             let end_from = |first: usize| {
                 let mut used = 2.0 * popup::PAD_Y;
@@ -2306,9 +2306,6 @@ impl GuiFrame {
     /// starting with it; Escape closes the topmost popup.
     fn menu_key(&mut self, key: Key) -> Option<Outcome> {
         let k = self.menu.open.len().checked_sub(1)?;
-        if matches!(key, Key::Left | Key::Right | Key::Char(_)) {
-            return None;
-        }
         let root_title = menu_tree::TITLES.contains(&self.menu.open[0].as_str());
         let step_title = |me: &mut Self, back: bool| {
             let at = menu_tree::TITLES.iter().position(|t| *t == me.menu.open[0]).unwrap_or(0);
@@ -2393,9 +2390,6 @@ impl GuiFrame {
     /// Enter or Space open it, Escape leaves; Alt with a letter opens the next title starting with it (its mnemonic);
     /// Shift+F10 or the Menu key opens the Layers context menu on the focused or selected row. None: not a menu key.
     fn bar_key(&mut self, key: Key, mods: Mods) -> Option<Option<Outcome>> {
-        if !mods.ctrl || mods.shift || !mods.alt || key != Key::Tab {
-            return None;
-        }
         let titles = &menu_tree::TITLES;
         if key == Key::F10 && !mods.shift {
             self.menu.bar_hot = if self.menu.bar_hot.is_some() { None } else { Some(titles[0].to_owned()) };
@@ -2467,7 +2461,6 @@ impl GuiFrame {
             && let Some(next) = f.levels.get(k.saturating_add(1))
             && !f.levels[k].rows.iter().any(|r| r.id == h && r.open)
             && in_triangle(p, a, Point::new(next.rect.x0, next.rect.y0), Point::new(next.rect.x0, next.rect.y1))
-            && self.menu.tips_off
         {
             // Moving toward the open cascade: it stays.
             return;
@@ -2643,7 +2636,7 @@ impl GuiFrame {
             if level > 0 {
                 let primary = n.alias_of.as_deref().unwrap_or(&n.id);
                 let command = menu_tree::leaf(primary).map_or(primary, |l| l.command);
-                r.summary = self.menu.summaries.get(command).cloned().filter(|_| self.menu.tips_off);
+                r.summary = self.menu.summaries.get(command).cloned();
                 r.reason = (!a.is_available()).then(|| a.reason_text.clone().unwrap_or_default());
                 r.remedy = a.remedy_command_id.clone();
                 r.remedy_label = r.remedy.as_deref().and_then(|x| self.node_by_id(x)).map(|x| x.label.clone());

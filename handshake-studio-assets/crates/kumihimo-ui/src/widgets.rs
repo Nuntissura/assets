@@ -688,7 +688,7 @@ pub fn menu_popup_begin(b: &mut Builder<'_>, id: &str, label: &str, w: f32, h: f
 pub fn menu_item(b: &mut Builder<'_>, r: &MenuRow<'_>, check: IconId, chevron: IconId) {
     let greyed = r.reason.is_some();
     let lit = r.hot || r.open;
-    let role = if r.toggle && r.remedy { Role::MenuItemCheckBox } else { Role::MenuItem };
+    let role = if r.toggle { Role::MenuItemCheckBox } else { Role::MenuItem };
     let mut n = Node::new(r.id, role).label(cut_label(r.label)).actions(CLICK).availability(r.availability.clone()).flags(|f| {
         f.disabled = greyed;
         f.selected = lit;
@@ -731,9 +731,9 @@ pub fn menu_item(b: &mut Builder<'_>, r: &MenuRow<'_>, check: IconId, chevron: I
         b.end();
         return;
     };
-    let fill = if lit && r.remedy { Paint::Fill(ColorToken::SurfaceRowSelected) } else { Paint::None };
+    let fill = if lit { Paint::Fill(ColorToken::SurfaceRowSelected) } else { Paint::None };
     b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(menu_row_h(true)), cross: Align::Start, ..LayoutSpec::default() }).paint(fill));
-    let edge = if lit && r.remedy { Paint::Fill(ColorToken::AccentBase) } else { Paint::None };
+    let edge = if lit { Paint::Fill(ColorToken::AccentBase) } else { Paint::None };
     b.leaf(Node::deco().paint(edge).size(Size::Fixed(popup::EDGE), Size::Fill));
     b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, cross: Align::Start, ..LayoutSpec::default() }));
     b.begin(n.layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(size::MENU_ITEM_H), cross: Align::Start, ..LayoutSpec::default() }));

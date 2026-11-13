@@ -349,10 +349,7 @@ impl Live {
             return Err(refuse("command_not_driveable", json!({"command_id": id, "reason": reason})));
         }
         let Some(command) = ShellCommand::from_id(id) else {
-            if id.is_empty() {
-                return self.menu_leaf(id, params, expected);
-            }
-            return Err(refuse("unknown_command", json!({"command_id": id, "hint": "state.shell.menu lists the leaves"})));
+            return self.menu_leaf(id, params, expected);
         };
         if let Some(key) = params.keys().next() {
             return Err(refuse("parameter_unknown", json!({"key": key})));

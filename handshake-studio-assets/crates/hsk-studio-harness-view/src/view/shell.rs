@@ -984,11 +984,7 @@ impl Viewer {
         );
         let undo = if can_undo { A::available() } else { A::not_in_document(ReasonCode::DocFeatureAbsent, "nothing to undo", None) };
         // Redo names no remedy (lead ruling Q3, lane SMB-GUI-MENU-1): Undo would discard the operator's last step.
-        let redo = match (can_redo, can_undo) {
-            (true, _) => A::available(),
-            (false, true) => A::inapplicable(ReasonCode::DocFeatureAbsent, "nothing to redo", &ShellCommand::Undo.id()),
-            (false, false) => A::not_in_document(ReasonCode::DocFeatureAbsent, "nothing to redo", None),
-        };
+        let redo = if can_redo { A::available() } else { A::not_in_document(ReasonCode::DocFeatureAbsent, "nothing to redo", None) };
         let edit = MenuNode::title(
             "edit",
             "Edit",
