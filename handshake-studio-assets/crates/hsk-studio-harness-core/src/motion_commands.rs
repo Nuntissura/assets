@@ -872,14 +872,15 @@ fn apply(e: &mut Edit<'_>, p: &P<'_>) -> R<()> {
         "property.read" => property_read(e, p),
         "property.set_value" => property_set(e, p),
         "property.enable_animation" => {
+            // [STU-MOT-038]: the first key captures the current evaluated value (the static value,
+            // since the property is not animated yet), so enabling never changes the render; the row
+            // declares no `value` (lane SMB-FIX-ANIMATION-VALUES-1).
             let (id, prop, time) = key_address(p)?;
-            let value: Option<Vec<f64>> = opt!(p, "value")?;
-            let ((sv, keys), _) = slot(e, &id, &prop, value.as_deref())?;
+            let ((sv, keys), _) = current_slot(e, &id, &prop)?;
             if !keys.is_empty() {
                 return no("property_already_animated", &prop);
             }
-            let v = value.unwrap_or_else(|| sv.clone());
-            keys.push(linear_key(time, v));
+            keys.push(linear_key(time, sv.clone()));
             Ok(())
         }
         "property.disable_animation" => {

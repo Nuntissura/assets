@@ -33,7 +33,8 @@ const QUEUE_NEW: &[ParamSpec] = &[ITEM_ID, COMPOSITION_ID, MODULE_ID, p("format"
 const MASK_SET: &[ParamSpec] = &[LAYER_ID, MASK_ID, p("mode", ValueType::Enumerated), p("inverted", ValueType::Boolean), p("closed", ValueType::Boolean), p("path", ValueType::List)];
 const EFFECT_SET: &[ParamSpec] = &[LAYER_ID, EFFECT_ID, p("filter_kind", ValueType::Enumerated), p("enabled", ValueType::Boolean), p("solo", ValueType::Boolean), p("opacity", ValueType::Number), p("blend_mode", ValueType::Number), MASK_ID, p("values", ValueType::Class), p("at", ValueType::Number), p("colour_profiles", ValueType::Class)];
 const KEY_AT: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, VALUE_LIST];
-/// Add or toggle at current capture the evaluated value: no `value` (review F5).
+/// Add or toggle at current, and enable animation, capture the evaluated value: no `value` (review F5;
+/// lane SMB-FIX-ANIMATION-VALUES-1 for enable animation, [STU-MOT-038]).
 const KEY_AT_CURRENT: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME];
 const KEY_SET: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, VALUE_LIST, IN_INTERP, OUT_INTERP, IN_TANGENT, OUT_TANGENT];
 const KEY_INTERP: &[ParamSpec] = &[LAYER_ID, PROPERTY, TIME, IN_INTERP, OUT_INTERP, IN_TANGENT, OUT_TANGENT];
@@ -89,7 +90,7 @@ pub(super) const ROWS: &[CommandEntry] = &[
     entry("composition.add_text_selector", "motion_command", "Add Text Selector", false, true, &[LAYER_ID, ANIMATOR, p("selector", ValueType::Class)]),
     entry("property.read", "motion_command", "Read Property", false, false, &[LAYER_ID, PROPERTY, TIME]),
     entry("property.set_value", "motion_command", "Set Property Value", false, true, KEY_AT),
-    entry("property.enable_animation", "motion_command", "Enable Animation", false, true, KEY_AT),
+    entry("property.enable_animation", "motion_command", "Enable Animation", false, true, KEY_AT_CURRENT),
     entry("property.disable_animation", "motion_command", "Disable Animation", false, true, &[LAYER_ID, PROPERTY]),
     entry("keyframe.add_at_current", "motion_command", "Add Keyframe at Current Time", false, true, KEY_AT_CURRENT),
     entry("keyframe.toggle_at_current", "motion_command", "Add/Delete Keyframe at Current Time", false, true, KEY_AT_CURRENT),
