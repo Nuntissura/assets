@@ -31,7 +31,9 @@ Every `offscreen` and `window` run sends one terminal observe frame (F-R60-22), 
 refusal (usage refusals of the command line included) and a panic (`Failure(Unavailable)`, then the panic goes on).
 The frame is attributed to the caller `--actor` (account and principal; owner and access space default to it),
 `--session` and `--resource` name; all three or none. With none, the run is the asset-local test host's fixed
-context, the one harness-view's `Viewer::new` runs on, and the line says `caller_default: true`. Each frame is one
+context, the one harness-view's `Viewer::new` runs on, with the documented default resource
+`SDOC-00000000-0000-7000-8000-000000000000` (`cli::ASSET_LOCAL_RESOURCE`), and the line says
+`caller_default: true`. Each frame is one
 `hsk.studio.native_host.observe@1` JSON line (class, bytes, outcome and failure wire codes, correlation, sequence,
 `caller_default`, `frame_hex`) appended to `--observe`, else written to stderr. `help` is not a run and sends none.
 Library callers pass their own `diag::HostRun` (actor, resource, correlation, cancellation, sink) to
