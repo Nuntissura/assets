@@ -265,6 +265,36 @@ fn a_board_survives_save_and_reopen_and_exports_its_content_to_png() {
     assert_eq!((whole["width"].clone(), whole["height"].clone()), (json!(1920), json!(1080)));
 }
 
+/// Every native shape (with its interior lines) and every cap of the closed set renders in a board export: a
+/// node whose drawing the renderer refused would refuse the whole frame.
+#[test]
+fn every_native_shape_and_every_cap_renders_in_a_board_export() {
+    let scratch = Scratch::new("board-shapes");
+    let mut v = board_doc();
+    let tokens = ["rectangle", "rounded_rectangle", "ellipse", "diamond", "triangle", "parallelogram", "hexagon", "cylinder", "cloud", "document", "predefined_process", "terminator"];
+    let mut nodes = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        let (x, y) = (40.0 + 300.0 * (i % 4) as f64, 40.0 + 200.0 * (i / 4) as f64);
+        let made = ok(&mut v, "board.shape_with_text.create", json!({"x": x, "y": y, "shape_type": format!("studio_declared:{token}"), "text": token}));
+        nodes.push(text(&made, "node_id"));
+    }
+    for token in ["ENG_DATABASE", "SUMMING_JUNCTION", "INTERNAL_STORAGE", "STAR"] {
+        ok(&mut v, "board.shape_with_text.create", json!({"x": 40, "y": 700, "shape_type": format!("figma_plugin_api@1.141.0:{token}"), "text": token}));
+    }
+    let caps = ["NONE", "ARROW_EQUILATERAL", "ARROW_LINES", "TRIANGLE_FILLED", "CIRCLE_FILLED", "DIAMOND_FILLED", "ERD_ONE", "ERD_MANY", "ERD_ONE_OR_MORE", "ERD_ZERO_OR_ONE", "ERD_ZERO_OR_MORE", "ERD_EXACTLY_ONE"];
+    for (i, cap) in caps.iter().enumerate() {
+        let (a, b) = (&nodes[i], &nodes[(i + 1) % nodes.len()]);
+        ok(&mut v, "board.connector.create", json!({"start": {"endpoint_node_id": a, "magnet": "AUTO"}, "end": {"endpoint_node_id": b, "magnet": "AUTO"}, "connector_start_stroke_cap": cap, "connector_end_stroke_cap": cap}));
+    }
+    // A shape keeps its interior lines through a move and a recolour.
+    ok(&mut v, "board.node.move", json!({"node": nodes[7], "x": 980, "y": 260}));
+    ok(&mut v, "board.node.set_fill", json!({"node": nodes[10], "fill": [200, 230, 200]}));
+    let png = scratch.0.join("shapes.png");
+    let report = ok(&mut v, "board.export_png", json!({"path": png.to_string_lossy()}));
+    assert!(report["bytes"].as_u64().unwrap() > 0, "{report}");
+    assert_eq!(ok(&mut v, "board.read", json!({}))["issues"], json!([]));
+}
+
 #[test]
 fn hostile_board_commands_are_typed_refusals_that_change_nothing() {
     let mut v = board_doc();
