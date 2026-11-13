@@ -111,9 +111,11 @@ pub struct StudioTextStory {
     pub text_kind: StoryTextKind,
     pub story_direction: StoryDirection,
     pub content: StoryContent,
-    /// Ordered, non-empty, tiling `[0, byte_len)` exactly; empty only for an empty stream.
+    /// Ordered, non-empty, tiling `[0, byte_len)` exactly. An empty stream carries none or exactly
+    /// one empty paragraph `[0, 0)` (which keeps an empty frame's paragraph style).
     pub paragraphs: Vec<StoryParagraph>,
-    /// Ordered, non-empty, tiling `[0, byte_len)` exactly; empty only for an empty stream.
+    /// Ordered, non-empty, tiling `[0, byte_len)` exactly. An empty stream carries none or exactly
+    /// one empty range `[0, 0)`.
     pub character_ranges: Vec<StoryRange>,
 }
 impl StudioTextStory {
@@ -163,6 +165,12 @@ fn tiles(
         let boundary = |offset: u64| {
             text.is_none_or(|t| usize::try_from(offset).is_ok_and(|o| t.is_char_boundary(o)))
         };
+        // An empty stream may carry exactly one empty entry `[0, 0)` (lane
+        // SMB-TYPE-CHARACTER-ATTRIBUTES-1, lead decision (a)): the paragraph that holds an empty
+        // frame's paragraph style. A second entry, or any entry with bytes, is still refused.
+        if len == 0 && n == 0 && start == 0 && end == 0 {
+            continue;
+        }
         if start != expected || end <= start || end > len || !boundary(start) || !boundary(end) {
             return Err(err(Code::InvalidField, format!("{target}/{n}")));
         }

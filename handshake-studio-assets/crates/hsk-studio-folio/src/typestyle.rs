@@ -31,8 +31,18 @@
 //! `space_after` (points, finite, either sign, no bound: [`INDENT_SPACING_PARAMS`] holds the spec's
 //! seven-field rows with every UNKNOWN as `None`) and `space_between_same_style`.
 //!
-//! Declared gaps, not invented here: the full character/paragraph attribute groups of 14.7 (OpenType
-//! features, decoration, baseline shift, keep options, rules, tabs, lists, nested styles;
+//! Character attributes (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1, STU-TYP-155..161, 133, 170, 174,
+//! 192, 209): [`StudioCharacterAttributes`] (numeric block, enumerations, booleans, the OpenType
+//! feature map, case-synthesis parameters, underline and strikethrough records, hyperlink,
+//! `digits_type`) per style (`style_character`, either scope) and as local overrides over story
+//! byte spans (`character_overrides`, non-overlapping per story), resolved paragraph style chain,
+//! then character style chain, then the override ([`StudioTypeStyleRecords::resolved_character`]);
+//! the stored stroke-style registry members (`stroke_styles`, built-ins `solid`, `dotted`, `wavy`)
+//! and the language records (`languages`, keyed by the name a range's `applied_language` holds).
+//! Folio stores and validates; rendering belongs to Type and the hosts.
+//!
+//! Declared gaps, not invented here: the paragraph attribute groups of 14.7 (keep options, rules,
+//! tabs, lists, nested styles;
 //! GREP styles are carried since SMB-LAYOUT-UI as `grep_styles`), override reporting (STU-TYP-202) and variable-bound fields (STU-TYP-204) are not stored;
 //! the `StudioStyleRegistry` storage and publishing fields (14.6/14.10) stay with the design records
 //! (`PAINT` entries only). Bounds the spec does not state are checked for finiteness and their
@@ -396,6 +406,687 @@ pub const INDENT_SPACING_PARAMS: [TypographyParamRow; 6] = [
     unknown_bounds_points("space_after"),
 ];
 
+// ---------------------------------------------------------------------------------------------
+// Character attributes (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1; STU-TYP-155..161, 133, 170, 174,
+// 192, 209). Stored beside the styles, like the composition settings: per style
+// (`style_character`) and as local overrides over story byte spans (`character_overrides`), plus
+// the stroke-style registry (`stroke_styles`) and the language records (`languages`).
+// ---------------------------------------------------------------------------------------------
+
+/// Local character overrides per record set (a Folio hard ceiling; the spec declares none).
+pub const MAX_CHARACTER_OVERRIDES: usize = 65_536;
+/// OpenType feature entries per character-attribute record (a Folio hard ceiling).
+pub const MAX_RECORD_FEATURES: usize = 256;
+/// Stored stroke styles per record set (a Folio hard ceiling).
+pub const MAX_STROKE_STYLES: usize = 1024;
+/// Language records per record set (a Folio hard ceiling).
+pub const MAX_LANGUAGES: usize = 1024;
+/// Dash or stripe entries of one stroke style (a Folio hard ceiling).
+pub const MAX_STROKE_PATTERN: usize = 32;
+/// Bytes of a hyperlink URL (a Folio hard ceiling).
+pub const MAX_URL_BYTES: usize = 2048;
+/// Bytes of one quote mark of a language's quote pair (a Folio hard ceiling).
+pub const MAX_QUOTE_BYTES: usize = 16;
+/// Bytes of an ICU locale name (a Folio hard ceiling).
+pub const MAX_ICU_LOCALE_BYTES: usize = 64;
+/// The stroke-style registry's built-in members (STU-TYP-192: "Solid is a member"; `dotted` and
+/// `wavy` are the STU-TYP-160 `decoration_style` members, which select a registry style). A stored
+/// style cannot take these names.
+pub const BUILTIN_STROKE_STYLES: [&str; 3] = ["solid", "dotted", "wavy"];
+/// The decoration `type` that draws nothing (STU-TYP-156 `underline_type`: `off`, plus the registry).
+pub const DECORATION_OFF: &str = "off";
+
+/// STU-TYP-156 `kerning_mode`. `metrics_roman_only` is its own member, never folded into `metrics`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioKerningMode {
+    None,
+    Metrics,
+    Optical,
+    MetricsRomanOnly,
+}
+/// STU-TYP-156 `capitalization` (a render transform, STU-TYP-158: stored characters never change).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioCapitalization {
+    Normal,
+    SmallCaps,
+    AllCaps,
+    AllSmallCaps,
+    LowerCase,
+}
+/// STU-TYP-156 `position`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioCharacterPosition {
+    Normal,
+    Superscript,
+    Subscript,
+    OtSuperscript,
+    OtSubscript,
+    OtNumerator,
+    OtDenominator,
+}
+/// STU-TYP-156 `anti_alias_method` (five members; a four-member source maps `strong` to `strong`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioAntiAliasMethod {
+    None,
+    Sharp,
+    Crisp,
+    Strong,
+    Smooth,
+}
+/// STU-TYP-156 `character_alignment`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioCharacterAlignment {
+    Baseline,
+    EmTop,
+    EmCenter,
+    EmBottom,
+    IcfTop,
+    IcfBottom,
+}
+/// STU-TYP-156 `alternate_glyph_form`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioAlternateGlyphForm {
+    None,
+    Traditional,
+    Expert,
+    Jis78,
+    Jis83,
+    Jis90,
+    Jis04,
+    Nlc,
+    HalfWidth,
+    ThirdWidth,
+    QuarterWidth,
+    FullWidth,
+    ProportionalWidth,
+}
+/// STU-TYP-156 `baseline_direction`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioBaselineDirection {
+    Standard,
+    VerticalRotated,
+    TateChuYoko,
+}
+/// STU-TYP-156 `font_baseline_option`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioFontBaselineOption {
+    Normal,
+    Superscript,
+    Subscript,
+}
+/// STU-TYP-133 `digits_type`: the digit glyph set chosen at shaping time; never rewrites the
+/// stored characters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioDigitsType {
+    Default,
+    Arabic,
+    Hindi,
+    Farsi,
+    Native,
+    FullFarsi,
+    Thai,
+    Lao,
+    Devanagari,
+    Bengali,
+    Gurmukhi,
+    Gujarati,
+    Oriya,
+    Tamil,
+    Telugu,
+    Kannada,
+    Malayalam,
+    Tibetan,
+    Khmer,
+    Burmese,
+}
+
+/// Every character-attribute enumeration with its complete member list (STU-TYP-156, 133;
+/// STU-TYP-221: a model discovers the members without trial and error). The decoration types are
+/// `off` plus the stroke-style registry (STU-TYP-192), not a closed list. Pinned to the serde
+/// names by `tests/character_attributes.rs`.
+pub const CHARACTER_ENUMERATIONS: [(&str, &[&str]); 9] = [
+    ("kerning_mode", &["none", "metrics", "optical", "metrics_roman_only"]),
+    ("capitalization", &["normal", "small_caps", "all_caps", "all_small_caps", "lower_case"]),
+    ("position", &["normal", "superscript", "subscript", "ot_superscript", "ot_subscript", "ot_numerator", "ot_denominator"]),
+    ("anti_alias_method", &["none", "sharp", "crisp", "strong", "smooth"]),
+    ("character_alignment", &["baseline", "em_top", "em_center", "em_bottom", "icf_top", "icf_bottom"]),
+    (
+        "alternate_glyph_form",
+        &["none", "traditional", "expert", "jis78", "jis83", "jis90", "jis04", "nlc", "half_width", "third_width", "quarter_width", "full_width", "proportional_width"],
+    ),
+    ("baseline_direction", &["standard", "vertical_rotated", "tate_chu_yoko"]),
+    ("font_baseline_option", &["normal", "superscript", "subscript"]),
+    (
+        "digits_type",
+        &[
+            "default", "arabic", "hindi", "farsi", "native", "full_farsi", "thai", "lao", "devanagari", "bengali", "gurmukhi", "gujarati", "oriya", "tamil", "telugu",
+            "kannada", "malayalam", "tibetan", "khmer", "burmese",
+        ],
+    ),
+];
+
+/// A decoration weight or offset (STU-TYP-159 points; STU-TYP-160 `auto`, `percent`, `pixels`,
+/// mapped onto the one decoration record: `auto` resolves from font metrics at composition time).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "length_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioDecorationLength {
+    Auto,
+    Points { value: f64 },
+    Percent { value: f64 },
+    Pixels { value: f64 },
+}
+impl StudioDecorationLength {
+    /// The stated number; `None` for `auto`.
+    pub fn value(&self) -> Option<f64> {
+        match self {
+            Self::Auto => None,
+            Self::Points { value } | Self::Percent { value } | Self::Pixels { value } => Some(*value),
+        }
+    }
+}
+
+/// A decoration colour: a `StudioSwatch` reference (STU-TYP-159, id prefix `SSWT`) or `auto`, the
+/// run's fill colour (STU-TYP-160).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "colour_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioDecorationColour {
+    Auto,
+    Swatch { swatch_id: String },
+}
+
+/// STU-TYP-159 decoration record: underline and strikethrough are two independent records of this
+/// shape; every field is stored separately and gap fields round-trip even when inert. STU-TYP-160
+/// maps onto it without a second primitive: `decoration_style` is the `type` (a registry style:
+/// `solid`, `dotted`, `wavy`), `decoration_thickness` the `weight`, `decoration_offset` the
+/// `offset`, `decoration_colour` the `colour`; `skip_ink` is a first-class Studio field.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioDecoration {
+    /// `off` or a stroke-style registry name (STU-TYP-156 `underline_type` / `strikethrough_type`).
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub stroke_type: Option<String>,
+    /// Hard minimum 0 (any stated form).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<StudioDecorationLength>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<StudioDecorationLength>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<StudioDecorationColour>,
+    /// Percent, 0..=100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overprint: Option<bool>,
+    /// `SSWT` swatch id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_colour: Option<String>,
+    /// Percent, 0..=100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_tint: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_overprint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_ink: Option<bool>,
+}
+impl StudioDecoration {
+    /// `self` with every field `top` states replaced by `top`'s.
+    pub fn overlaid(&self, top: &Self) -> Self {
+        Self {
+            stroke_type: top.stroke_type.clone().or_else(|| self.stroke_type.clone()),
+            weight: top.weight.clone().or_else(|| self.weight.clone()),
+            offset: top.offset.clone().or_else(|| self.offset.clone()),
+            colour: top.colour.clone().or_else(|| self.colour.clone()),
+            tint: top.tint.or(self.tint),
+            overprint: top.overprint.or(self.overprint),
+            gap_colour: top.gap_colour.clone().or_else(|| self.gap_colour.clone()),
+            gap_tint: top.gap_tint.or(self.gap_tint),
+            gap_overprint: top.gap_overprint.or(self.gap_overprint),
+            skip_ink: top.skip_ink.or(self.skip_ink),
+        }
+    }
+    /// True when a stated `type` other than `off` draws a line.
+    pub fn draws(&self) -> bool {
+        self.stroke_type.as_deref().is_some_and(|t| t != DECORATION_OFF)
+    }
+}
+
+/// STU-TYP-161 per-range hyperlink target: a URL or an in-document node (artboard, page spread or
+/// anchor id). A character attribute, so it survives range splitting and merging.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "target_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioHyperlink {
+    Url { url: String },
+    Node { node_id: String },
+}
+
+/// STU-TYP-155 character-attribute record (plus 156, 157, 158, 159-161, 133 and the STU-TYP-170
+/// feature map). Every field is optional: absent = not set here, so a record is also a patch and a
+/// local override (STU-TYP-110). Units are the spec table's: `size`, `leading`, `baseline_shift`
+/// and `stroke_weight` points; `tracking` and `kerning_manual` em/1000 with precision 0 (whole
+/// numbers); scales, `tsume` and the synthesis sizes and positions percent; rotation and skew
+/// degrees; aki em. Bounds: only the stated ones ([`CHARACTER_PARAMS`]); where the spec says UNKNOWN
+/// only finiteness and the physical domain are checked (size, leading and scales positive).
+/// STU-TYP-174: the legacy OpenType booleans (`ligatures` ... `proportional_metrics`) are entries of
+/// `opentype_features` (Type's `LegacyBoolean` mapping), never a second storage; the STU-TYP-157
+/// booleans stored here are the ones with no single registered tag.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCharacterAttributes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leading: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kerning_manual: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizontal_scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical_scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_shift: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_rotation: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skew: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aki_left: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aki_right: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tsume: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_weight: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kerning_mode: Option<StudioKerningMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capitalization: Option<StudioCapitalization>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<StudioCharacterPosition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anti_alias_method: Option<StudioAntiAliasMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_alignment: Option<StudioCharacterAlignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate_glyph_form: Option<StudioAlternateGlyphForm>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_direction: Option<StudioBaselineDirection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_baseline_option: Option<StudioFontBaselineOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digits_type: Option<StudioDigitsType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_break: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faux_bold: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faux_italic: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fractional_widths: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlap_swash: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretched_alternate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_forms: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kana: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub italics: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotate_single_byte_characters: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cjk_grid_tracking: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overprint_fill: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overprint_stroke: Option<bool>,
+    /// STU-TYP-170 feature map: four-character tag -> value (0/1 for a binary feature, an alternate
+    /// index otherwise). Any well-formed tag is accepted; there is no closed list.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub opentype_features: BTreeMap<String, u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_cap_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superscript_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscript_size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superscript_position: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscript_position: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<StudioDecoration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strikethrough: Option<StudioDecoration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyperlink: Option<StudioHyperlink>,
+}
+
+/// The fields of [`StudioCharacterAttributes`] in declaration order: the names a model sets one at
+/// a time or clears (STU-TYP-112). Pinned to the record's schema by `tests/character_attributes.rs`.
+pub const CHARACTER_ATTRIBUTE_FIELDS: [&str; 44] = [
+    "size", "leading", "tracking", "kerning_manual", "horizontal_scale", "vertical_scale", "baseline_shift", "character_rotation", "skew", "aki_left", "aki_right",
+    "tsume", "stroke_weight", "kerning_mode", "capitalization", "position", "anti_alias_method", "character_alignment", "alternate_glyph_form",
+    "baseline_direction", "font_baseline_option", "digits_type", "no_break", "faux_bold", "faux_italic", "fractional_widths", "overlap_swash",
+    "stretched_alternate", "connection_forms", "kana", "italics", "rotate_single_byte_characters", "cjk_grid_tracking", "overprint_fill", "overprint_stroke",
+    "opentype_features", "small_cap_size", "superscript_size", "subscript_size", "superscript_position", "subscript_position", "underline", "strikethrough",
+    "hyperlink",
+];
+
+/// STU-TYP-155 / 158 / 159 parameter rows as data (STU-TYP-221: the seven-field record per numeric
+/// parameter; `None` = the spec's UNKNOWN, never clamped). Decoration rows name the
+/// `underline` / `strikethrough` record fields.
+pub const CHARACTER_PARAMS: [TypographyParamRow; 26] = [
+    param("size", None, None, None, "points", None),
+    param("leading", None, None, None, "points", None),
+    param("tracking", None, None, Some(0.0), "em/1000", Some(0)),
+    param("kerning_manual", None, None, Some(0.0), "em/1000", Some(0)),
+    param("horizontal_scale", None, None, Some(100.0), "percent", None),
+    param("vertical_scale", None, None, Some(100.0), "percent", None),
+    param("baseline_shift", None, None, Some(0.0), "points", None),
+    param("character_rotation", None, None, Some(0.0), "degrees", None),
+    param("skew", None, None, Some(0.0), "degrees", None),
+    param("aki_left", None, None, None, "em", None),
+    param("aki_right", None, None, None, "em", None),
+    param("tsume", None, None, None, "percent", None),
+    param("stroke_weight", Some(0.0), None, None, "points", None),
+    param("small_cap_size", Some(1.0), Some(200.0), None, "percent", None),
+    param("superscript_size", Some(0.0), Some(200.0), None, "percent", None),
+    param("subscript_size", Some(0.0), Some(200.0), None, "percent", None),
+    param("superscript_position", Some(-500.0), Some(500.0), None, "percent", None),
+    param("subscript_position", Some(-500.0), Some(500.0), None, "percent", None),
+    param("underline_weight", Some(0.0), None, None, "points", None),
+    param("underline_offset", None, None, None, "points", None),
+    param("underline_tint", Some(0.0), Some(100.0), None, "percent", None),
+    param("underline_gap_tint", Some(0.0), Some(100.0), None, "percent", None),
+    param("strikethrough_weight", Some(0.0), None, None, "points", None),
+    param("strikethrough_offset", None, None, None, "points", None),
+    param("strikethrough_tint", Some(0.0), Some(100.0), None, "percent", None),
+    param("strikethrough_gap_tint", Some(0.0), Some(100.0), None, "percent", None),
+];
+
+const fn param(key: &'static str, hard_min: Option<f64>, hard_max: Option<f64>, default: Option<f64>, unit: &'static str, precision: Option<u32>) -> TypographyParamRow {
+    TypographyParamRow { key, hard_min, hard_max, soft_min: None, soft_max: None, default, unit, precision }
+}
+
+/// True for a well-formed OpenType tag: four ASCII bytes 0x20..=0x7E, no leading space.
+pub fn opentype_tag_ok(tag: &str) -> bool {
+    let b = tag.as_bytes();
+    b.len() == 4 && b.iter().all(|c| (0x20..=0x7E).contains(c)) && b.first() != Some(&b' ')
+}
+
+/// The hyperlink URL rule: 1..=[`MAX_URL_BYTES`] bytes, no whitespace or control character, an
+/// RFC 3986 scheme, and not a script or inline-data scheme (`javascript`, `vbscript`, `data`).
+pub fn hyperlink_url_ok(url: &str) -> bool {
+    if url.is_empty() || url.len() > MAX_URL_BYTES || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    let well_formed = chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    well_formed && !["javascript", "vbscript", "data"].iter().any(|s| scheme.eq_ignore_ascii_case(s))
+}
+
+impl StudioCharacterAttributes {
+    /// True when no field is set.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+    /// `self` with every field `top` sets replaced by `top`'s (decorations field by field, feature
+    /// entries tag by tag): the STU-TYP-201 later-wins order.
+    pub fn overlaid(&self, top: &Self) -> Self {
+        let mut out = self.clone();
+        macro_rules! take {
+            ($($f:ident),* $(,)?) => {
+                $(if top.$f.is_some() {
+                    out.$f = top.$f.clone();
+                })*
+            };
+        }
+        take!(
+            size, leading, tracking, kerning_manual, horizontal_scale, vertical_scale, baseline_shift, character_rotation, skew, aki_left, aki_right, tsume,
+            stroke_weight, kerning_mode, capitalization, position, anti_alias_method, character_alignment, alternate_glyph_form, baseline_direction,
+            font_baseline_option, digits_type, no_break, faux_bold, faux_italic, fractional_widths, overlap_swash, stretched_alternate, connection_forms, kana,
+            italics, rotate_single_byte_characters, cjk_grid_tracking, overprint_fill, overprint_stroke, small_cap_size, superscript_size, subscript_size,
+            superscript_position, subscript_position, hyperlink,
+        );
+        for (slot, top) in [(&mut out.underline, &top.underline), (&mut out.strikethrough, &top.strikethrough)] {
+            if let Some(t) = top {
+                *slot = Some(slot.as_ref().map_or_else(|| t.clone(), |s| s.overlaid(t)));
+            }
+        }
+        for (tag, value) in &top.opentype_features {
+            out.opentype_features.insert(tag.clone(), *value);
+        }
+        out
+    }
+    /// The record validator: stated bounds ([`CHARACTER_PARAMS`]), finiteness, physical domains,
+    /// whole numbers where the precision is 0, feature tags, decoration references (`off`, a
+    /// built-in or a stored stroke style of `strokes`), swatch ids and hyperlink targets.
+    /// `Code::InvalidField` (`Code::DanglingReference` for an unknown stroke style), target
+    /// `{target}/{field}`.
+    pub fn validate(&self, target: &str, strokes: &[StudioStrokeStyleEntry]) -> Result<()> {
+        let finite = |v: Option<f64>| v.is_none_or(f64::is_finite);
+        let positive = |v: Option<f64>| v.is_none_or(|v| v.is_finite() && v > 0.0);
+        let whole = |v: Option<f64>| v.is_none_or(|v| v.is_finite() && v.fract() == 0.0);
+        let within = |v: Option<f64>, lo: f64, hi: f64| v.is_none_or(|v| v.is_finite() && (lo..=hi).contains(&v));
+        for (field, ok) in [
+            ("size", positive(self.size)),
+            ("leading", positive(self.leading)),
+            ("tracking", whole(self.tracking)),
+            ("kerning_manual", whole(self.kerning_manual)),
+            ("horizontal_scale", positive(self.horizontal_scale)),
+            ("vertical_scale", positive(self.vertical_scale)),
+            ("baseline_shift", finite(self.baseline_shift)),
+            ("character_rotation", finite(self.character_rotation)),
+            ("skew", finite(self.skew)),
+            ("aki_left", finite(self.aki_left)),
+            ("aki_right", finite(self.aki_right)),
+            ("tsume", finite(self.tsume)),
+            ("stroke_weight", self.stroke_weight.is_none_or(|v| v.is_finite() && v >= 0.0)),
+            ("small_cap_size", within(self.small_cap_size, 1.0, 200.0)),
+            ("superscript_size", within(self.superscript_size, 0.0, 200.0)),
+            ("subscript_size", within(self.subscript_size, 0.0, 200.0)),
+            ("superscript_position", within(self.superscript_position, -500.0, 500.0)),
+            ("subscript_position", within(self.subscript_position, -500.0, 500.0)),
+        ] {
+            check(ok, target, field)?;
+        }
+        check(self.opentype_features.len() <= MAX_RECORD_FEATURES, target, "opentype_features")?;
+        for tag in self.opentype_features.keys() {
+            check(opentype_tag_ok(tag), target, "opentype_features")?;
+        }
+        for (field, d) in [("underline", &self.underline), ("strikethrough", &self.strikethrough)] {
+            let Some(d) = d else { continue };
+            let t = format!("{target}/{field}");
+            if let Some(name) = &d.stroke_type
+                && name != DECORATION_OFF
+                && !BUILTIN_STROKE_STYLES.contains(&name.as_str())
+                && !strokes.iter().any(|s| s.name == *name)
+            {
+                return Err(err(Code::DanglingReference, format!("{t}/type")));
+            }
+            check(d.weight.as_ref().is_none_or(|w| w.value().is_none_or(|v| v.is_finite() && v >= 0.0)), &t, "weight")?;
+            check(d.offset.as_ref().is_none_or(|o| o.value().is_none_or(f64::is_finite)), &t, "offset")?;
+            check(within(d.tint, 0.0, 100.0), &t, "tint")?;
+            check(within(d.gap_tint, 0.0, 100.0), &t, "gap_tint")?;
+            if let Some(StudioDecorationColour::Swatch { swatch_id }) = &d.colour {
+                id(swatch_id, "SSWT", &format!("{t}/colour"))?;
+            }
+            if let Some(g) = &d.gap_colour {
+                id(g, "SSWT", &format!("{t}/gap_colour"))?;
+            }
+        }
+        match &self.hyperlink {
+            Some(StudioHyperlink::Url { url }) => check(hyperlink_url_ok(url), target, "hyperlink")?,
+            Some(StudioHyperlink::Node { node_id }) => check(label(node_id), target, "hyperlink")?,
+            None => {}
+        }
+        Ok(())
+    }
+}
+
+/// STU-TYP-192 end cap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioStrokeEndCap {
+    Butt,
+    Round,
+    Projecting,
+}
+/// STU-TYP-192 end join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StudioStrokeEndJoin {
+    Miter,
+    Round,
+    Bevel,
+}
+/// STU-TYP-192 pattern: solid, a dash pattern (on/off lengths in points, an even count) or a stripe
+/// pattern (relative widths alternating line/gap, an odd count so it starts and ends with a line),
+/// or the dotted and wavy forms of the STU-TYP-160 decoration styles.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "pattern_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StudioStrokePattern {
+    Solid,
+    Dash { segments: Vec<f64> },
+    Stripe { stripes: Vec<f64> },
+    Dotted,
+    Wavy,
+}
+/// One member of the stroke-style registry (STU-TYP-192): underline, strikethrough, paragraph
+/// rules and borders all name styles here; there is no per-decoration stroke vocabulary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioStrokeStyleEntry {
+    /// Unique in the registry; not `off` and not a built-in name ([`BUILTIN_STROKE_STYLES`]).
+    pub name: String,
+    pub pattern: StudioStrokePattern,
+    pub end_cap: StudioStrokeEndCap,
+    pub end_join: StudioStrokeEndJoin,
+}
+impl StudioStrokeStyleEntry {
+    /// Name, pattern counts and lengths (finite, non-negative, a positive total). `InvalidField`.
+    pub fn validate(&self) -> Result<()> {
+        let t = format!("stroke_styles/{}", self.name);
+        check(label(&self.name) && self.name != DECORATION_OFF && !BUILTIN_STROKE_STYLES.contains(&self.name.as_str()), &t, "name")?;
+        let lengths = |v: &[f64], even: bool| {
+            !v.is_empty()
+                && v.len() <= MAX_STROKE_PATTERN
+                && (v.len() & 1 == 0) == even
+                && v.iter().all(|x| x.is_finite() && *x >= 0.0)
+                && v.iter().any(|x| *x > 0.0)
+        };
+        match &self.pattern {
+            StudioStrokePattern::Dash { segments } => check(lengths(segments, true), &t, "pattern"),
+            StudioStrokePattern::Stripe { stripes } => check(lengths(stripes, false), &t, "pattern"),
+            StudioStrokePattern::Solid | StudioStrokePattern::Dotted | StudioStrokePattern::Wavy => Ok(()),
+        }
+    }
+}
+
+/// A quote pair (open, close) of a language (STU-TYP-209).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioQuotePair {
+    pub open: String,
+    pub close: String,
+}
+
+/// STU-TYP-209 language record, a document resource keyed by `name` (the key a character range's
+/// `applied_language` names, STU-TYP-210). The vendors are open-registry strings, not enumerations;
+/// the quote pairs drive typographer-quote substitution and are language properties.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioLanguage {
+    pub name: String,
+    pub primary_language_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sublanguage_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untranslated_name: Option<String>,
+    /// ICU locale name (`en_US`, `de_DE`, `zh_Hans_CN`): letters, then `_`-separated
+    /// alphanumeric subtags.
+    pub icu_locale_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyphenation_vendor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spelling_vendor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_quotes: Option<StudioQuotePair>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub double_quotes: Option<StudioQuotePair>,
+}
+impl StudioLanguage {
+    /// The BCP 47 form of `icu_locale_name` (`en_US` -> `en-US`): Type's shaping language tag.
+    pub fn language_tag(&self) -> String {
+        self.icu_locale_name.replace('_', "-")
+    }
+    /// Names (labels), the locale syntax and the quote marks (1..=[`MAX_QUOTE_BYTES`] bytes, no
+    /// control character). `InvalidField`, target `languages/{name}/{field}`.
+    pub fn validate(&self) -> Result<()> {
+        let t = format!("languages/{}", self.name);
+        check(label(&self.name), &t, "name")?;
+        check(label(&self.primary_language_name), &t, "primary_language_name")?;
+        for (field, v) in [
+            ("sublanguage_name", &self.sublanguage_name),
+            ("untranslated_name", &self.untranslated_name),
+            ("hyphenation_vendor", &self.hyphenation_vendor),
+            ("spelling_vendor", &self.spelling_vendor),
+        ] {
+            check(v.as_deref().is_none_or(label), &t, field)?;
+        }
+        let locale = &self.icu_locale_name;
+        let mut parts = locale.split('_');
+        let ok = locale.len() <= MAX_ICU_LOCALE_BYTES
+            && parts.next().is_some_and(|p| (2..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphabetic()))
+            && parts.all(|p| (1..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()));
+        check(ok, &t, "icu_locale_name")?;
+        let mark = |m: &str| !m.is_empty() && m.len() <= MAX_QUOTE_BYTES && !m.chars().any(char::is_control);
+        for (field, q) in [("single_quotes", &self.single_quotes), ("double_quotes", &self.double_quotes)] {
+            check(q.as_ref().is_none_or(|q| mark(&q.open) && mark(&q.close)), &t, field)?;
+        }
+        Ok(())
+    }
+}
+
+/// The character attributes a style states (either scope: a paragraph style's apply to every
+/// character of its paragraphs, a character style's on top; one entry per style).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioStyleCharacter {
+    /// `STYS` id of a style of the same set.
+    pub style_id: String,
+    pub attributes: StudioCharacterAttributes,
+}
+
+/// A local character override (STU-TYP-110 "plus local overrides") over the story bytes
+/// `[start, end)` of `text_id`. Overrides of one story never overlap; text edits move them like the
+/// story's ranges (hsk-studio-layout `shift_paragraph_records`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCharacterOverride {
+    /// `STXT` id of the text story (a document-local reference).
+    pub text_id: String,
+    pub start: u64,
+    pub end: u64,
+    /// Not empty.
+    pub attributes: StudioCharacterAttributes,
+}
+
 /// The composition settings a paragraph style states (paragraph scope only; one entry per style).
 /// Kept beside the styles rather than on `StudioTypeStyle` so existing style records, their wire
 /// form and every struct literal that builds one stay unchanged.
@@ -436,6 +1127,18 @@ pub struct StudioTypeStyleRecords {
     /// Local paragraph overrides of the composition settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paragraph_composition: Vec<StudioParagraphComposition>,
+    /// Character attributes per style (lane SMB-TYPE-CHARACTER-ATTRIBUTES-1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub style_character: Vec<StudioStyleCharacter>,
+    /// Local character overrides over story byte spans, ordered by story and start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub character_overrides: Vec<StudioCharacterOverride>,
+    /// The stored members of the stroke-style registry (STU-TYP-192; the built-ins are implicit).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stroke_styles: Vec<StudioStrokeStyleEntry>,
+    /// Language records (STU-TYP-209).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<StudioLanguage>,
 }
 impl StudioTypeStyleRecords {
     /// An empty set for `document_id`.
@@ -446,6 +1149,45 @@ impl StudioTypeStyleRecords {
             styles: Vec::new(),
             style_composition: Vec::new(),
             paragraph_composition: Vec::new(),
+            style_character: Vec::new(),
+            character_overrides: Vec::new(),
+            stroke_styles: Vec::new(),
+            languages: Vec::new(),
+        }
+    }
+    /// The character attributes the style `style_id` itself states.
+    pub fn style_character(&self, style_id: &str) -> Option<&StudioCharacterAttributes> {
+        self.style_character.iter().find(|c| c.style_id == style_id).map(|c| &c.attributes)
+    }
+    /// The language record named `name` (a range's `applied_language`).
+    pub fn language(&self, name: &str) -> Option<&StudioLanguage> {
+        self.languages.iter().find(|l| l.name == name)
+    }
+    /// The character attributes a style states along its `based_on` chain, root first (the chain
+    /// is bounded by the set size; a cycle, which validation refuses, stops the walk).
+    pub fn chain_character(&self, style_id: &str) -> StudioCharacterAttributes {
+        let mut chain = Vec::new();
+        let mut at = Some(style_id);
+        while let Some(id) = at {
+            if chain.len() > self.styles.len() || chain.contains(&id) {
+                break;
+            }
+            chain.push(id);
+            at = self.style(id).and_then(|s| s.based_on.as_deref());
+        }
+        chain.iter().rev().fold(StudioCharacterAttributes::default(), |acc, id| self.style_character(id).map_or(acc.clone(), |c| acc.overlaid(c)))
+    }
+    /// The character attributes in force at a byte of `text_id` (STU-TYP-201 order): the
+    /// paragraph style's chain, then the character style's chain, then the local override covering
+    /// `byte`.
+    pub fn resolved_character(&self, text_id: &str, byte: u64, paragraph_style: Option<&str>, character_style: Option<&str>) -> StudioCharacterAttributes {
+        let mut out = paragraph_style.map(|s| self.chain_character(s)).unwrap_or_default();
+        if let Some(s) = character_style {
+            out = out.overlaid(&self.chain_character(s));
+        }
+        match self.character_overrides.iter().find(|o| o.text_id == text_id && o.start <= byte && byte < o.end) {
+            Some(o) => out.overlaid(&o.attributes),
+            None => out,
         }
     }
     /// The style with this id.
@@ -675,6 +1417,69 @@ pub fn validate_type_style_records(
             return Err(err(Code::DuplicateIdentity, target));
         }
         c.settings.validate(&target)?;
+    }
+    // Character attributes, the stroke-style registry and the language records (lane
+    // SMB-TYPE-CHARACTER-ATTRIBUTES-1): counts first, then names, references and every record.
+    for (field, n, max) in [
+        ("style_character", r.style_character.len(), MAX_TYPE_STYLES),
+        ("character_overrides", r.character_overrides.len(), MAX_CHARACTER_OVERRIDES),
+        ("stroke_styles", r.stroke_styles.len(), MAX_STROKE_STYLES),
+        ("languages", r.languages.len(), MAX_LANGUAGES),
+    ] {
+        if n > max {
+            return Err(err(Code::BudgetExceeded, field));
+        }
+        cx.nodes(n, field)?;
+    }
+    let mut names = BTreeSet::new();
+    for s in &r.stroke_styles {
+        cx.tick()?;
+        s.validate()?;
+        cx.text(&s.name, "stroke_styles")?;
+        if !names.insert(s.name.as_str()) {
+            return Err(err(Code::DuplicateIdentity, format!("stroke_styles/{}", s.name)));
+        }
+    }
+    let mut names = BTreeSet::new();
+    for l in &r.languages {
+        cx.tick()?;
+        l.validate()?;
+        cx.text(&l.name, "languages")?;
+        if !names.insert(l.name.as_str()) {
+            return Err(err(Code::DuplicateIdentity, format!("languages/{}", l.name)));
+        }
+    }
+    let mut stated = BTreeSet::new();
+    for c in &r.style_character {
+        cx.tick()?;
+        let target = format!("style_character/{}", c.style_id);
+        id(&c.style_id, "STYS", &target)?;
+        if !scopes.contains_key(c.style_id.as_str()) {
+            return Err(err(Code::DanglingReference, target));
+        }
+        if !stated.insert(c.style_id.as_str()) {
+            return Err(err(Code::DuplicateIdentity, target));
+        }
+        c.attributes.validate(&target, &r.stroke_styles)?;
+    }
+    let mut spans: Vec<(&str, u64, u64)> = Vec::with_capacity(r.character_overrides.len());
+    for o in &r.character_overrides {
+        cx.tick()?;
+        let target = format!("character_overrides/{}/{}", o.text_id, o.start);
+        id(&o.text_id, "STXT", &target)?;
+        check(o.start < o.end, &target, "end")?;
+        check(!o.attributes.is_empty(), &target, "attributes")?;
+        o.attributes.validate(&target, &r.stroke_styles)?;
+        spans.push((o.text_id.as_str(), o.start, o.end));
+    }
+    spans.sort_unstable();
+    for w in spans.windows(2) {
+        if let [a, b] = w
+            && a.0 == b.0
+            && b.1 < a.2
+        {
+            return Err(err(Code::InvalidField, format!("character_overrides/{}/{}", b.0, b.1)));
+        }
     }
     // `based_on` is a forest: follow each chain, bounded by the set size.
     let parent: BTreeMap<&str, &str> = r

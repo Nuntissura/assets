@@ -30,7 +30,7 @@ use crate::timeline::valid_command_id;
 use hsk_studio_accord::{CancellationToken, SCHEMA_STUDIO_TYPE_STYLE};
 use hsk_studio_folio::{
     self as folio, Budget, Code, Diagnostic, Resolver, Snapshot, StudioDocument, StudioLayoutFlowRecords, StudioLongDocRecords,
-    StoryContent, StudioParentPageRecords, StudioTextStory, StudioTypeStyleRecords,
+    StudioParentPageRecords, StudioTextStory, StudioTypeStyleRecords,
 };
 use hsk_studio_package::Quarantined;
 use serde_json::{Value, json};
@@ -164,26 +164,9 @@ impl LayoutRecords {
             if self.stories[..i].iter().any(|s| s.story_id == story.story_id) {
                 return Err(diag(Code::DuplicateIdentity, &story.story_id));
             }
-            // The layout engine keeps one empty paragraph (and a table's cell story one empty range)
-            // in a zero-length story (hsk-studio-layout `replace_story_text`, harness-view tables);
-            // Folio's partition of zero bytes is no paragraph and no range. That form is validated as
-            // Folio's, its style references checked here.
-            let zero = |s: u64, e: u64| s == 0 && e == 0;
-            let empty = matches!(&story.content, StoryContent::Inline { text_utf8 } if text_utf8.is_empty())
-                && matches!(story.paragraphs.as_slice(), [p] if zero(p.start, p.end))
-                && matches!(story.character_ranges.as_slice(), [] | [_]) && story.character_ranges.iter().all(|r| zero(r.start, r.end));
-            let folio_form;
-            let checked = if empty {
-                let mut refs = story.paragraphs.iter().filter_map(|p| p.style_ref.as_deref()).chain(story.character_ranges.iter().filter_map(|r| r.style_ref.as_deref()));
-                if refs.any(|s| self.styles.style(s).is_none()) {
-                    return Err(diag(Code::DanglingReference, &story.story_id));
-                }
-                folio_form = StudioTextStory { paragraphs: Vec::new(), character_ranges: Vec::new(), ..story.clone() };
-                &folio_form
-            } else {
-                story
-            };
-            let issues = folio::validate_text_story(checked, b, cancel, &styles)?;
+            // An empty story's one empty paragraph (and range) is Folio's own form since lane
+            // SMB-TYPE-CHARACTER-ATTRIBUTES-1 (lead decision (a)); no workaround here.
+            let issues = folio::validate_text_story(story, b, cancel, &styles)?;
             if !issues.is_empty() {
                 return Err(diag(Code::DanglingReference, &story.story_id));
             }
