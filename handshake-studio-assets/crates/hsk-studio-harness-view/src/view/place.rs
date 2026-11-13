@@ -529,7 +529,7 @@ impl Viewer {
             out["revision"] = json!(self.revision_now());
             Ok(out)
         })();
-        self.reported(op, result)
+        self.effects_reported(op, result)
     }
 
     /// ONE undo step creating a layer and its raster record together (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, the
@@ -567,7 +567,7 @@ impl Viewer {
             self.selected = Some(layer_id.clone());
             Ok(json!({"layer_id": layer_id, "revision": self.revision_now()}))
         })();
-        self.reported(op, result)
+        self.effects_reported(op, result)
     }
 
     /// ONE tile step rewriting a pixel layer's colour in place (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, the
@@ -616,12 +616,12 @@ impl Viewer {
             }
             Ok(json!({"layer_id": layer_id, "tiles": n, "pixels": count, "extended": extended, "revision": self.revision_now()}))
         })();
-        self.reported(op, result)
+        self.effects_reported(op, result)
     }
 
     /// `result` reported like [`Self::place_reported`]: a success marks the document dirty and re-reads the
     /// records; a refusal goes to the status line.
-    fn reported(&mut self, op: &str, result: Result<Value, CommandRefusal>) -> Result<Value, CommandRefusal> {
+    fn effects_reported(&mut self, op: &str, result: Result<Value, CommandRefusal>) -> Result<Value, CommandRefusal> {
         match &result {
             Ok(_) => {
                 self.dirty = true;

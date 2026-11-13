@@ -870,7 +870,7 @@ fn layer_name(name: Option<String>, fallback: &str) -> Result<String, CommandRef
 // ---- commands -------------------------------------------------------------------------------------------------
 
 /// Runs one `effect.*` or `adjustment.*` row (`Viewer::run_command` checked the declared keys already).
-pub(super) fn run(v: &mut Viewer, id: &str, params: &Map<String, Value>) -> Result<Value, CommandRefusal> {
+fn run(v: &mut Viewer, id: &str, params: &Map<String, Value>) -> Result<Value, CommandRefusal> {
     match id {
         "effect.parameters" => parameters(opt_text(params, "filter_kind")?.as_deref()),
         "effect.read" => v.effect_read(&text(params, "layer")?),
@@ -974,6 +974,23 @@ pub(super) fn run(v: &mut Viewer, id: &str, params: &Map<String, Value>) -> Resu
 }
 
 impl Viewer {
+    /// The `effect.*` rows (module docs; the method their rows name). Parameters as `Viewer::run_command` passes
+    /// them after its declared-key check, which a direct caller does not get.
+    pub fn effect_command(&mut self, command_id: &str, params: &Map<String, Value>) -> Result<Value, CommandRefusal> {
+        if !command_id.starts_with("effect.") {
+            return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": command_id})));
+        }
+        run(self, command_id, params)
+    }
+
+    /// The `adjustment.*` rows (module docs; the method their rows name), as [`Viewer::effect_command`].
+    pub fn adjustment_command(&mut self, command_id: &str, params: &Map<String, Value>) -> Result<Value, CommandRefusal> {
+        if !command_id.starts_with("adjustment.") {
+            return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": command_id})));
+        }
+        run(self, command_id, params)
+    }
+
     /// `effect.read` (module docs).
     pub fn effect_read(&self, layer_id: &str) -> Result<Value, CommandRefusal> {
         let doc = self.run.snapshot().map(|s| s.document().clone()).ok_or_else(|| CommandRefusal::new("not_open", json!({})))?;

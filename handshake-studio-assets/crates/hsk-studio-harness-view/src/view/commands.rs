@@ -171,7 +171,8 @@ impl Viewer {
             "design" => vector::run_design(self, id, f)?,
             "photo" => photo::run(self, id, f)?,
             // Lane SMB-PS-FILTER-ADJUST-COMMANDS-1: smart filter effects and adjustment layers (`view::raster_effects`).
-            "effect" | "adjustment" => return super::raster_effects::run(self, id, f.0),
+            "effect" => return self.effect_command(id, f.0),
+            "adjustment" => return self.adjustment_command(id, f.0),
             "export" | "delivery" => return export::run(self, id, f),
             _ => return Err(CommandRefusal::new("command_not_driveable", json!({"command_id": id}))),
         };
