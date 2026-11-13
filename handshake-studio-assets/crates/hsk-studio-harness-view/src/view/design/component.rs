@@ -323,7 +323,7 @@ impl Ctx {
 /// Every set's VARIANT property definitions follow its `variant_group_properties` (Folio checks an
 /// instance's VARIANT value against a definition): one definition per group, its default the default
 /// member's value (else the group's first value), none for a group that is gone.
-pub(super) fn variant_definitions(r: &mut StudioDesignRecords, doc: &StudioDocument) {
+pub(in crate::view) fn variant_definitions(r: &mut StudioDesignRecords, doc: &StudioDocument) {
     let components = r.components.clone();
     for s in &mut r.component_sets {
         let default = components.iter().find(|k| k.component_id == s.default_variant_id && parent_id(doc, &k.layer_id).as_deref() == Some(s.layer_id.as_str())).and_then(|k| k.variant_properties.clone()).unwrap_or_default();
@@ -477,8 +477,11 @@ impl Viewer {
         self.check_authored(&doc, &writes, &authored)?;
         ventry.design = Some(authored);
         let bytes = ventry.to_bytes(&doc.document_id)?;
-        let ok = if writes.is_empty() { self.run.set_tiles_and_entry(op, target, None, vector::ENTRY, bytes) } else { self.run.restructure_and_entry(op, &writes, vector::ENTRY, bytes) };
-        self.after_edit(ok, format!("{op} {target}"))
+        if writes.is_empty() {
+            let ok = self.run.set_tiles_and_entry(op, target, None, vector::ENTRY, bytes);
+            return self.after_edit(ok, format!("{op} {target}"));
+        }
+        self.structure_step(op, format!("{op} {target}"), |run| run.restructure_and_entry(op, &writes, vector::ENTRY, bytes))
     }
 
     /// A new group named `name` at the place of the topmost of `members` (siblings) holding them in
@@ -825,40 +828,6 @@ impl Viewer {
         }
     }
 
-    /// F5 (lead ruling 2026-11-11): the vector entry a delete of `deleted` (every layer the delete
-    /// removes) leaves: the component, set and instance records keyed to a deleted layer and the
-    /// component-property references of deleted layers go in the delete's own undo step, settled as
-    /// every authoring commit is. `None` when no authored record changes (a plain structure edit).
-    pub(in crate::view) fn records_after_delete(&self, deleted: &[String]) -> Option<Vec<u8>> {
-        if !vector::entry_persistable() {
-            return None;
-        }
-        let doc = self.run.snapshot()?.document();
-        let mut ventry = self.vector_entry().ok()?;
-        let before = ventry.design.clone()?;
-        let gone: BTreeSet<&str> = deleted.iter().map(String::as_str).collect();
-        let bound: BTreeMap<String, String> = self.design_receipt().map(|r| r.bindings.iter().filter(|b| b.native).map(|b| (b.instance_id.clone(), b.layer_id.clone())).collect()).unwrap_or_default();
-        let mut d = before.clone();
-        d.components.retain(|k| !gone.contains(k.layer_id.as_str()));
-        d.component_sets.retain(|s| !gone.contains(s.layer_id.as_str()));
-        d.component_instances.retain(|i| bound.get(&i.instance_id).is_none_or(|l| !gone.contains(l.as_str())));
-        for n in d.nodes.iter_mut().filter(|n| gone.contains(n.node.node_id.as_str())) {
-            n.component_property_references.clear();
-            // Lane SMB-DS-VARIABLES-AUTHOR-1: a deleted container's explicit variable modes go in the same step.
-            n.explicit_variable_modes.clear();
-        }
-        d.nodes.retain(|n| !gone.contains(n.node.node_id.as_str()) || !carries_nothing(n));
-        let mut proj = doc.clone();
-        proj.layers.retain(|l| !gone.contains(l.layer_id.as_str()));
-        settle(&mut d, &proj);
-        variant_definitions(&mut d, &proj);
-        if d == before {
-            return None;
-        }
-        ventry.design = Some(d);
-        ventry.to_bytes(&doc.document_id).ok()
-    }
-
     /// F10 (lead ruling 2026-11-11): `writes` duplicate `source` (made by `duplicate_layer`, one write
     /// per layer in its pre-order). Each authored instance of the subtree gets a copy that is an
     /// instance of the same main with the same properties and overrides (a new record and binding),
@@ -898,8 +867,7 @@ impl Viewer {
             self.check_authored(&doc, writes, &d)?;
             ventry.design = Some(d);
             let bytes = ventry.to_bytes(&doc.document_id)?;
-            let ok = self.run.restructure_and_entry("duplicate_layer", writes, vector::ENTRY, bytes);
-            return self.after_edit(ok, what.to_owned()).map(Some);
+            return self.structure_step("duplicate_layer", what.to_owned(), |run| run.restructure_and_entry("duplicate_layer", writes, vector::ENTRY, bytes)).map(Some);
         }
         let Some(receipt) = receipt else { return Ok(None) };
         if order.len() != writes.len() {
@@ -937,8 +905,7 @@ impl Viewer {
         self.check_authored(&doc, writes, &authored)?;
         ventry.design = Some(authored);
         let bytes = ventry.to_bytes(&doc.document_id)?;
-        let ok = self.run.restructure_and_entry("duplicate_layer", writes, vector::ENTRY, bytes);
-        let revision = self.after_edit(ok, what.to_owned())?;
+        let revision = self.structure_step("duplicate_layer", what.to_owned(), |run| run.restructure_and_entry("duplicate_layer", writes, vector::ENTRY, bytes))?;
         let design_before = self.run.document_entry(persist::ENTRY).map(<[u8]>::to_vec);
         for (copy, record, main) in bindings {
             let saved = (|| {

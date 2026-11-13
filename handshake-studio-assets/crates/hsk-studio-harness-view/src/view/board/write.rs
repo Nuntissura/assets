@@ -102,17 +102,6 @@ impl Viewer {
         entry.validate(doc, self.cancel)
     }
 
-    /// Removes the story `story_id` from `entry` with the styles no other story uses (a deleted node's text
-    /// leaves in the delete's own step).
-    pub(super) fn board_story_drop(entry: &mut TextEntry, story_id: &str) {
-        let Some(at) = entry.stories.iter().position(|s| s.story_id == story_id) else { return };
-        let gone = entry.stories.remove(at);
-        let refs = |s: &folio::StudioTextStory| -> Vec<String> { s.paragraphs.iter().filter_map(|p| p.style_ref.clone()).chain(s.character_ranges.iter().filter_map(|r| r.style_ref.clone())).collect() };
-        let used: BTreeSet<String> = entry.stories.iter().flat_map(&refs).collect();
-        let own: BTreeSet<String> = refs(&gone).into_iter().filter(|r| !used.contains(r)).collect();
-        entry.styles.styles.retain(|st| !own.contains(&st.style_id));
-    }
-
     /// The text size, alignment and inset of a node kind's story.
     pub(super) const fn text_setting(fields: &StudioBoardNodeFields) -> (f64, &'static str, f64) {
         match fields {
@@ -192,7 +181,8 @@ impl Viewer {
         let ok = if !writes.is_empty() {
             let mut entries = vec![(vector::ENTRY, bytes)];
             entries.extend(more);
-            self.run.catalog_step(op, |run| run.restructure_and_entries(op, writes, entries))
+            // Lane SMB-FIX-LAYER-RECORD-PRUNE-1: a deleted node's path records and other records leave in this step.
+            return self.structure_step(op, format!("{op} {target}"), |run| run.catalog_step(op, |run| run.restructure_and_entries(op, writes, entries)));
         } else if !changes.is_empty() {
             self.run.catalog_step(op, |run| run.set_vector_paths_and_entry(op, changes, Some((vector::ENTRY, bytes))) && (more.is_empty() || run.entries_into_newest_step(op, more)))
         } else {
@@ -561,7 +551,7 @@ impl Viewer {
         let text_entry = match story {
             Some(id) => {
                 let mut te = self.text_entry()?;
-                Self::board_story_drop(&mut te, &id);
+                super::super::layer_records::drop_stories(&mut te, &BTreeSet::from([id]));
                 Some(te)
             }
             None => None,
@@ -608,27 +598,6 @@ impl Viewer {
             }
             Err(e) => self.say(format!("board: records of absent layers not dropped ({e})")),
         }
-    }
-
-    /// The vector entry a layer delete of `deleted` leaves (review F1): `candidate` (the entry the delete
-    /// already writes, else the current one) without the board records and text bindings of deleted board
-    /// nodes, so the delete's own undo step carries them. `candidate` unchanged when no board node goes.
-    pub(in crate::view) fn board_records_after_delete(&self, deleted: &[String], candidate: Option<Vec<u8>>) -> Option<Vec<u8>> {
-        let Some(snap) = self.run.snapshot() else { return candidate };
-        let doc = snap.document();
-        let entry = match &candidate {
-            Some(bytes) => VectorEntry::decode(bytes, doc, self.cancel),
-            None => self.vector_entry(),
-        };
-        let Ok(mut entry) = entry else { return candidate };
-        let gone: BTreeSet<&str> = deleted.iter().map(String::as_str).collect();
-        let nodes: BTreeSet<String> = entry.records.board_nodes.iter().filter(|n| gone.contains(n.layer_id.as_str())).map(|n| n.layer_id.clone()).collect();
-        if nodes.is_empty() || !vector::entry_persistable() {
-            return candidate;
-        }
-        entry.records.board_nodes.retain(|n| !nodes.contains(&n.layer_id));
-        entry.records.area_texts.retain(|a| !nodes.contains(&a.container_layer_id));
-        entry.to_bytes(&doc.document_id).ok().or(candidate)
     }
 
     /// Review F6: pathfinder, Create Outlines and Outline Stroke rewrite a layer into plain vector paths, which

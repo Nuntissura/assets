@@ -35,9 +35,10 @@
 //!   sources; the tiles are `rgb_f32le`).
 //!
 //! Placed layers take ids from their own block (`7ede-9200`), so a layer another tool creates after a
-//! placed layer is deleted never takes its id. A layer delete (`layers::delete_layer`) takes the deleted layers'
-//! rows and placed instances out of [`ENTRY`] in its own undo step (undo brings them back with the layers; lane
-//! SMB-PS-FILTER-ADJUST-COMMANDS-1, lead decision 2026-11-13); rows of absent layers a package still holds are
+//! placed layer is deleted never takes its id. Every structure step that removes layers takes their rows and placed
+//! instances out of [`ENTRY`] in its own undo step (undo brings them back with the layers; lane
+//! SMB-PS-FILTER-ADJUST-COMMANDS-1, lead decision 2026-11-13; lane SMB-FIX-LAYER-RECORD-PRUNE-1,
+//! [`Viewer::raster_records_without`] through `view::layer_records`); rows of absent layers a package still holds are
 //! dropped at open with a loss note ([`Viewer::place_opened`]) and are ignored at render and in validation
 //! (pruned to the document's layers).
 //! - [`Viewer::move_content`] (`transform.move`): a translation by `dx`, `dy`; on a pixel layer whole pixels
@@ -572,9 +573,11 @@ impl Viewer {
             let body = entry.to_bytes().map_err(command_refusal)?;
             let operation = operation_for(&layer_id, false).map_err(|e| CommandRefusal::new("layer_invalid", json!({"message": e})))?;
             let write = PlacementWrite { layer_id: layer_id.clone(), to: Some(place), create: Some((layer, operation)) };
+            let before = self.before_structure();
             if !self.run.restructure_and_entry(op, &[write], ENTRY, body) {
                 return Err(command_refusal(self.run_refusal(op)));
             }
+            self.prune_removed(op, before).map_err(|_| command_refusal(self.run_refusal(op)))?;
             self.selected = Some(layer_id.clone());
             Ok(json!({"layer_id": layer_id, "revision": self.revision_now()}))
         })();
@@ -796,35 +799,23 @@ impl Viewer {
         }
     }
 
-    /// Lead decision 2026-11-13 (records never outlive their layer): [`ENTRY`] without the rows and placed instances
-    /// of `gone` (the layers a delete removes, `layers::delete_layer`), for the delete's own undo step; `None` when
-    /// the entry holds none of them or cannot be read (an unreadable entry is not applied at render and never blocks
-    /// a delete).
-    pub(super) fn raster_records_after_delete(&self, gone: &[String]) -> Option<Vec<u8>> {
-        let doc = self.place_doc().ok()?;
-        let mut entry = self.editable_entry(&doc).ok()?;
-        let held = |id: &str| gone.iter().any(|g| g == id);
+    /// Lead decision 2026-11-13 (records never outlive their layer): [`ENTRY`] (else the import records) without the
+    /// rows and placed instances of `removed` (the layers a structure step removed; lane SMB-FIX-LAYER-RECORD-PRUNE-1,
+    /// `view::layer_records`, which puts it into that step), read after the step, so it is not pruned to the document;
+    /// `None` when it holds none of them or cannot be read (an unreadable entry is not applied at render and never
+    /// blocks a step).
+    pub(super) fn raster_records_without(&self, removed: &BTreeSet<String>) -> Option<Vec<u8>> {
+        let mut entry = match self.read_place_entry().ok()? {
+            Some(e) => e,
+            None => Entry::new(self.place.import.clone()?),
+        };
+        let held = |id: &String| removed.contains(id);
         if !entry.records.layers.iter().any(|r| held(&r.layer_id)) && !entry.instances.iter().any(|i| held(&i.layer_id)) {
             return None;
         }
         entry.records.layers.retain(|r| !held(&r.layer_id));
         entry.instances.retain(|i| !held(&i.layer_id));
         entry.to_bytes().ok()
-    }
-
-    /// Puts `bytes` ([`Self::raster_records_after_delete`]) into the delete's own undo step as one group step
-    /// (`Run::entries_into_newest_step`), so undo restores the layers and their records together; a refused write
-    /// rolls the delete back.
-    pub(super) fn raster_records_into_delete_step(&mut self, bytes: Option<Vec<u8>>) -> Result<(), String> {
-        let Some(bytes) = bytes else { return Ok(()) };
-        if self.run.entries_into_newest_step("delete_layer", vec![(ENTRY, bytes)]) {
-            self.place_sync();
-            Ok(())
-        } else {
-            let e = format!("delete_layer: raster records {}", self.op_error());
-            self.say(e.clone());
-            Err(e)
-        }
     }
 
     /// The opened document's folder, canonical, as captured at its open ([`PlaceState`]).
@@ -1072,9 +1063,11 @@ impl Viewer {
         let body = entry.to_bytes()?;
         let operation = operation_for(&layer_id, false).map_err(|e| PlaceRefusal::new("layer_invalid", e))?;
         let write = PlacementWrite { layer_id: layer_id.clone(), to: Some(place), create: Some((layer, operation)) };
+        let before = self.before_structure();
         if !self.run.restructure_and_entry(OP, &[write], ENTRY, body) {
             return Err(self.run_refusal(OP));
         }
+        self.prune_removed(OP, before).map_err(|_| self.run_refusal(OP))?;
         self.selected = Some(layer_id.clone());
         if uri.is_some() {
             self.place.links.insert(source_id.clone(), "resolved");

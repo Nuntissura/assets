@@ -37,6 +37,7 @@ pub mod shell;
 pub mod hosted;
 pub mod brush_mix;
 pub mod layers;
+mod layer_records;
 /// Decode hook of the program monitor: reel decoders behind pulse's frame cache (lane
 /// SMB-PULSE-PLAYBACK-2, feature `media`).
 #[cfg(feature = "media")]

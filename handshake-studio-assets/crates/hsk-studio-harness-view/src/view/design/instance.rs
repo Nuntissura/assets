@@ -187,7 +187,7 @@ const MAX_BINDING_BYTES: usize = 1_048_576;
 /// is gone (or not a group) is dropped, a member of a dropped set loses its assignment, a set whose
 /// default member is gone takes its first remaining member (none: the set goes), and an instance
 /// whose main component is gone reads `main_component_id` null. Returns the ids it dropped.
-pub(super) fn settle(r: &mut StudioDesignRecords, doc: &StudioDocument) -> Vec<String> {
+pub(in crate::view) fn settle(r: &mut StudioDesignRecords, doc: &StudioDocument) -> Vec<String> {
     let groups: BTreeSet<&str> = doc.layers.iter().filter(|l| l.kind == "group" && matches!(l.payload, Payload::Group)).map(|l| l.layer_id.as_str()).collect();
     let parent = |id: &str| doc.layers.iter().find(|l| l.layer_id == id).and_then(|l| match &l.parent {
         Parent::Node(n) => Some(n.node_id.clone()),
@@ -762,9 +762,21 @@ impl Viewer {
     /// The design records the inspector reads: the receipt's, merged with the vector entry's authored
     /// records (module docs); `None` when the document has neither.
     pub(super) fn design_receipt(&self) -> Option<Receipt> {
-        let fig = receipt_design(self.receipt.as_ref());
         let doc = self.run.snapshot()?.document();
-        let Some(mut authored) = self.vector_entry().ok().and_then(|e| e.design).filter(authors_components) else { return fig };
+        self.design_receipt_in(doc, self.vector_entry().ok())
+    }
+
+    /// The native bindings (instance id -> layer id) [`Self::design_receipt`] reads over `doc` and `ventry` (lane
+    /// SMB-FIX-LAYER-RECORD-PRUNE-1: `view::layer_records` reads them after a structure step over the document that
+    /// still holds the removed layers).
+    pub(in crate::view) fn native_bindings_in(&self, doc: &StudioDocument, ventry: VectorEntry) -> BTreeMap<String, String> {
+        self.design_receipt_in(doc, Some(ventry)).map(|r| r.bindings.iter().filter(|b| b.native).map(|b| (b.instance_id.clone(), b.layer_id.clone())).collect()).unwrap_or_default()
+    }
+
+    /// [`Self::design_receipt`] over `doc` and the vector entry `ventry` (`None`: unreadable).
+    fn design_receipt_in(&self, doc: &StudioDocument, ventry: Option<VectorEntry>) -> Option<Receipt> {
+        let fig = receipt_design(self.receipt.as_ref());
+        let Some(mut authored) = ventry.as_ref().and_then(|e| e.design.clone()).filter(authors_components) else { return fig };
         settle(&mut authored, doc);
         let mut r = fig.unwrap_or_else(|| Receipt {
             records: StudioDesignRecords::new(doc.document_id.clone()),
@@ -787,7 +799,7 @@ impl Viewer {
         let known: BTreeSet<String> = r.records.nodes.iter().map(|n| n.node.node_id.clone()).collect();
         r.records.nodes.extend(authored.nodes.iter().filter(|n| !n.component_property_references.is_empty() && !known.contains(&n.node.node_id)).cloned());
         r.native = authored.component_instances.iter().map(|i| (i.instance_id.clone(), i.clone())).collect();
-        let ventry = self.vector_entry().unwrap_or_else(|_| VectorEntry::empty());
+        let ventry = ventry.unwrap_or_else(VectorEntry::empty);
         let tentry = self.text_entry().unwrap_or_else(|_| TextEntry::empty(&doc.document_id));
         for k in authored.components.iter().map(|k| (&k.component_id, &k.layer_id)).chain(authored.component_sets.iter().map(|s| (&s.component_id, &s.layer_id))) {
             r.origins.insert(k.0.clone(), (origin_of_layer(doc, &ventry, &tentry, k.1), true));
@@ -1207,13 +1219,13 @@ impl Viewer {
         let target = jobs.first().map_or_else(String::new, |j| j.group.clone());
         // Lead ruling P2: the text entry (copies added, copies no longer drawn compacted) is in the same
         // history step as the structure edit and the vector entry.
-        let ok = if tentry == text_before {
-            self.run.restructure_and_entry(op, &writes, vector::ENTRY, vbytes)
-        } else {
-            let tbytes = TextEntry::to_bytes(&tentry)?;
-            self.run.restructure_and_entries(op, &writes, vec![(vector::ENTRY, vbytes), (text::ENTRY, tbytes)])
-        };
-        let revision = self.after_edit(ok, format!("{op} {target}"))?;
+        // Lane SMB-FIX-LAYER-RECORD-PRUNE-1: the other records of the copies the step deletes (attachments, board
+        // records, raster rows, text records) leave in the same step (`Viewer::structure_step`).
+        let tbytes = if tentry == text_before { None } else { Some(TextEntry::to_bytes(&tentry)?) };
+        let revision = self.structure_step(op, format!("{op} {target}"), |run| match tbytes {
+            None => run.restructure_and_entry(op, &writes, vector::ENTRY, vbytes),
+            Some(tbytes) => run.restructure_and_entries(op, &writes, vec![(vector::ENTRY, vbytes), (text::ENTRY, tbytes)]),
+        })?;
         // Review F5: a state refused after the step puts back the states written so far and rolls the step
         // back with no redo entry.
         let design_before = self.run.document_entry(persist::ENTRY).map(<[u8]>::to_vec);

@@ -1648,8 +1648,7 @@ impl Viewer {
             return Err(format!("{op}: vector_entry_not_persistable"));
         }
         let bytes = entry.to_bytes(&self.vdoc()?.document_id)?;
-        let ok = self.run.restructure_and_entry(op, writes, ENTRY, bytes);
-        self.after_edit(ok, format!("{op} {new_id}"))?;
+        self.structure_step(op, format!("{op} {new_id}"), |run| run.restructure_and_entry(op, writes, ENTRY, bytes))?;
         self.selected = Some(new_id.to_string());
         Ok(())
     }

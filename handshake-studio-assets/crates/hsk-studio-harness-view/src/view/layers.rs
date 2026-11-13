@@ -89,9 +89,10 @@ impl Viewer {
         self.run.snapshot().map(|s| s.document()).ok_or_else(|| "nothing open".to_string())
     }
 
+    /// One structure step (`Run::restructure`) whose removed layers' records leave in the same step (lane
+    /// SMB-FIX-LAYER-RECORD-PRUNE-1, [`Viewer::structure_step`]).
     pub(super) fn structure(&mut self, op: &str, writes: Vec<PlacementWrite>, what: String) -> Result<u64, String> {
-        let ok = self.run.restructure(op, &writes);
-        self.after_edit(ok, what)
+        self.structure_step(op, what, |run| run.restructure(op, &writes))
     }
 
     /// Where a new layer goes: directly above the selected layer in its stack, else the top of the
@@ -234,29 +235,24 @@ impl Viewer {
     /// text frame, a graphic frame, or a layer whose subtree holds one or that layout records name goes through
     /// `Run::delete_layout_layers`, ONE layout step: the thread closes over a removed frame (the frame before it
     /// continues into the frame after it, [STU-LAY-122]), a story no frame shows any more goes with its records,
-    /// the records naming a removed layer go (harness-core `cascade_layout_delete`), and, as for every delete, the
-    /// component and instance records keyed to it (`Viewer::records_after_delete`). Undo restores the layers, the
+    /// and the records naming a removed layer go (harness-core `cascade_layout_delete`). Undo restores the layers, the
     /// thread and the records together; the step runs under the row `layer.delete_layout_layers`. Refused typed,
-    /// nothing changed: `layout_records_unreadable`, `layout_records_stale`, `layout_records_missing` (component
-    /// records to drop in a document without layout records), and `layer_bound_by_layout_records` when records the
-    /// cascade does not follow would still name a removed layer.
-    /// The raster records entry keeps a removed picture's placement record, inert until an undo brings the layer
-    /// back (as for every deleted placement).
+    /// nothing changed: `layout_records_unreadable`, `layout_records_stale`, and `layer_bound_by_layout_records` when
+    /// records the cascade does not follow would still name a removed layer.
+    ///
+    /// Every delete is a structure step (lane SMB-FIX-LAYER-RECORD-PRUNE-1, [`Viewer::structure_step`]): the raster,
+    /// vector and text records of the deleted layers (component and instance records, board records and their
+    /// stories, placed instances among them) leave in the delete's own undo step, and undo brings them back with
+    /// the layers.
     pub fn delete_layer(&mut self, layer_id: &str) -> Result<u64, String> {
         let doc = self.doc()?;
         if !doc.layers.iter().any(|l| l.layer_id == layer_id) {
             return Err(format!("delete: {layer_id} is not in a layer stack"));
         }
         let gone = Self::subtree(doc, layer_id);
-        // Lane SMB-PS-FILTER-ADJUST-COMMANDS-1 (lead decision 2026-11-13, records never outlive their layer): the
-        // raster records keyed to the deleted layers leave in the delete's own undo step.
-        let raster = self.raster_records_after_delete(&gone);
         if self.layout_bound(doc, &gone) {
-            // Lane SMB-BOARD-1 (review F1): a deleted board node's record and text binding go in this step too.
-            let entry = self.board_records_after_delete(&gone, self.records_after_delete(&gone)).map(|bytes| (super::vector::ENTRY, bytes));
-            let ok = self.run.delete_layout_layers("delete_layer", "layer.delete_layout_layers", &[layer_id.to_string()], entry);
-            let revision = self.after_edit(ok, format!("deleted {layer_id}"))?;
-            self.raster_records_into_delete_step(raster)?;
+            let ids = [layer_id.to_string()];
+            let revision = self.structure_step("delete_layer", format!("deleted {layer_id}"), |run| run.delete_layout_layers("delete_layer", "layer.delete_layout_layers", &ids, None))?;
             if self.selected.as_ref().is_some_and(|s| gone.contains(s)) {
                 self.selected = None;
             }
@@ -279,17 +275,7 @@ impl Viewer {
         let mut order = Vec::new();
         post_order(doc, layer_id, &mut order);
         let writes: Vec<PlacementWrite> = order.iter().map(|id| PlacementWrite { layer_id: id.clone(), to: None, create: None }).collect();
-        // Lane SMB-DS-COMPONENTS-AUTHOR-1 (F5): the component and instance records keyed to a deleted
-        // layer go in the same undo step.
-        // Lane SMB-BOARD-1 (review F1): so do a deleted board node's record and text binding.
-        let revision = match self.board_records_after_delete(&order, self.records_after_delete(&order)) {
-            Some(bytes) => {
-                let ok = self.run.restructure_and_entry("delete_layer", &writes, super::vector::ENTRY, bytes);
-                self.after_edit(ok, format!("deleted {layer_id}"))?
-            }
-            None => self.structure("delete_layer", writes, format!("deleted {layer_id}"))?,
-        };
-        self.raster_records_into_delete_step(raster)?;
+        let revision = self.structure("delete_layer", writes, format!("deleted {layer_id}"))?;
         if self.selected.as_deref() == Some(layer_id) {
             self.selected = None;
         }
