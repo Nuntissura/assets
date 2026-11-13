@@ -34,6 +34,17 @@
 //! Hit testing: the topmost visible layer (paint order, last first) of the open overlay, else of the
 //! screen, whose bounds contain the point. Bounds are the layer's vector paths, its text glyph
 //! outlines, or the union of its children; points are frame-local pixels.
+//!
+//! Cancellation (lane SMB-PROTOTYPE-PLAY-CANCEL-1; STU-ARC-013, HBR-HOST-004): the play runs under its
+//! caller's [`CancellationToken`]. [`PrototypePlay::open_with`] and [`PrototypePlay::open_document_with`]
+//! import, decode and map under the caller's token and keep it as the play's own;
+//! [`PrototypePlay::render_with`] renders under the token passed for that call (the viewer's, for
+//! `prototype.capture_frame`). A set token refuses the render `canceled` before any frame is rendered or a
+//! cached one is served (detail `before the render`), and a cancel seen by a later step (the frame's PDF
+//! export, its render back by press, a smart frame's native mapping, the import) is typed `canceled` too,
+//! with that step's code as the detail, never a `*_refused` failure. The token-less forms ([`PrototypePlay::open`],
+//! [`PrototypePlay::render`], the `*_raster` methods) run under the play's own token (a fresh one when the
+//! play was opened without a caller's). Tests: this module's tests and `commands/prototype.rs`'s.
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
@@ -47,7 +58,7 @@ use hsk_studio_folio::{
     TransitionDirection, TransitionType,
 };
 use hsk_studio_interop_fig::{
-    Color, FigDocument, FigNode, FigOutcome, Geometry, GradientStop, Limits, Matrix, NativeConfig, NativeProposal,
+    Color, FigDocument, FigError, FigNode, FigOutcome, Geometry, GradientStop, Limits, Matrix, NativeConfig, NativeProposal,
     NodePayload, PaintKind, PathCommand, SequentialIdMint, SourceId, VersionPolicy, decode_document,
     export_frame_pdf, import_fig, plan_frame_exports, render_frame_export, to_native,
 };
@@ -74,6 +85,16 @@ pub struct PlayFail {
 
 fn fail(code: &'static str, detail: impl Into<String>) -> PlayFail {
     PlayFail { code, detail: detail.into() }
+}
+
+/// A refusal of the interop-fig step `stage`: a cancel the step saw (its own `Canceled`, or press's `canceled`
+/// carried as an export refusal) is typed `canceled` with `stage` as the detail, so a job settles `canceled`, never
+/// `failed` (module docs); any other refusal keeps `stage` as the code and the step's code as the detail.
+fn refused(stage: &'static str, e: &FigError) -> PlayFail {
+    match e {
+        FigError::Canceled | FigError::ExportRefused("canceled") => fail("canceled", stage),
+        _ => fail(stage, e.code()),
+    }
 }
 
 /// An 8-bit RGB raster, rows top to bottom.
@@ -517,30 +538,42 @@ pub struct PrototypePlay {
     match_options: SmartMatchOptions,
     events: Vec<PlayerEvent>,
     texture: Option<(egui::TextureHandle, Screen)>,
+    /// The token of the token-less forms: the caller's of [`PrototypePlay::open_with`], else a fresh one (module docs).
     cancel: CancellationToken,
 }
 
 impl PrototypePlay {
-    /// Imports `bytes` (a `.fig`) and opens its first flow starting point (else `start_source`).
+    /// Imports `bytes` (a `.fig`) and opens its first flow starting point (else `start_source`), under a
+    /// fresh token ([`PrototypePlay::open_with`] takes the caller's).
     pub fn open(bytes: &[u8], start_source: Option<SourceId>) -> Result<Self, PlayFail> {
-        let cancel = CancellationToken::default();
-        let outcome = import_fig(bytes, &Limits::default(), &VersionPolicy::observed(), None, &cancel)
-            .map_err(|e| fail("fig_import_refused", e.code()))?;
+        Self::open_with(bytes, start_source, &CancellationToken::default())
+    }
+
+    /// [`PrototypePlay::open`] under the caller's `cancel`: the import, decode and native mapping refuse `canceled`
+    /// once it is set (detail: the refusing step's code), and the play keeps it as its own token (module docs).
+    pub fn open_with(bytes: &[u8], start_source: Option<SourceId>, cancel: &CancellationToken) -> Result<Self, PlayFail> {
+        let outcome = import_fig(bytes, &Limits::default(), &VersionPolicy::observed(), None, cancel)
+            .map_err(|e| refused("fig_import_refused", &e))?;
         let FigOutcome::Imported(import) = outcome else {
             return Err(fail("fig_version_unsupported", "opaque only"));
         };
-        let doc = decode_document(&import, &Limits::default(), &cancel).map_err(|e| fail("fig_decode_refused", e.code()))?;
-        Self::open_document(doc, start_source)
+        let doc = decode_document(&import, &Limits::default(), cancel).map_err(|e| refused("fig_decode_refused", &e))?;
+        Self::open_document_with(doc, start_source, cancel)
     }
 
     /// Opens an already decoded `.fig` document (a host that edited or synthesised the decoded
     /// nodes; tests set overlay fields this way) at its first flow starting point (else
-    /// `start_source`).
+    /// `start_source`), under a fresh token ([`PrototypePlay::open_document_with`] takes the caller's).
     pub fn open_document(doc: FigDocument, start_source: Option<SourceId>) -> Result<Self, PlayFail> {
-        let cancel = CancellationToken::default();
+        Self::open_document_with(doc, start_source, &CancellationToken::default())
+    }
+
+    /// [`PrototypePlay::open_document`] under the caller's `cancel`: the native mapping refuses `canceled` once it is
+    /// set, and the play keeps it as its own token (module docs).
+    pub fn open_document_with(doc: FigDocument, start_source: Option<SourceId>, cancel: &CancellationToken) -> Result<Self, PlayFail> {
         let cfg = NativeConfig { budget: Budget::default(), resolver: &Host };
-        let proposal = to_native(&doc, &cfg, &mut SequentialIdMint::new(0xF16), &cancel)
-            .map_err(|e| fail("fig_native_refused", e.code()))?;
+        let proposal = to_native(&doc, &cfg, &mut SequentialIdMint::new(0xF16), cancel)
+            .map_err(|e| refused("fig_native_refused", &e))?;
         let start = match start_source {
             Some(s) => proposal.id_map.iter().find(|e| e.source == s).map(|e| e.node.node_id.clone()),
             None => proposal
@@ -607,7 +640,7 @@ impl PrototypePlay {
             match_options: SmartMatchOptions::default(),
             events: Vec::new(),
             texture: None,
-            cancel,
+            cancel: cancel.clone(),
         })
     }
 
@@ -754,8 +787,14 @@ impl PrototypePlay {
         self.events.extend(ev);
     }
 
-    /// The frame `layer_id` rendered (PDF frame export rendered back by press), cached.
+    /// The frame `layer_id` rendered (PDF frame export rendered back by press), cached; under the play's own token.
     pub fn frame_raster(&mut self, layer_id: &str) -> Result<Screen, PlayFail> {
+        let cancel = self.cancel.clone();
+        self.frame_raster_under(layer_id, &cancel)
+    }
+
+    /// [`PrototypePlay::frame_raster`] with its export and render back under `cancel`.
+    fn frame_raster_under(&mut self, layer_id: &str, cancel: &CancellationToken) -> Result<Screen, PlayFail> {
         if let Some(s) = self.rendered.get(layer_id) {
             return Ok(s.clone());
         }
@@ -772,15 +811,15 @@ impl PrototypePlay {
         if pixels > MAX_SCREEN_PIXELS as f64 {
             return Err(fail("screen_over_limit", layer_id));
         }
-        let pdf = export_frame_pdf(&self.proposal, plan, None, &self.cancel).map_err(|e| fail("frame_export_refused", e.code()))?;
-        let page = render_frame_export(&pdf, &self.cancel).map_err(|e| fail("frame_render_refused", e.code()))?;
+        let pdf = export_frame_pdf(&self.proposal, plan, None, cancel).map_err(|e| refused("frame_export_refused", &e))?;
+        let page = render_frame_export(&pdf, cancel).map_err(|e| refused("frame_render_refused", &e))?;
         let s = Screen { width: page.width, height: page.height, rgb: page.rgb };
         self.rendered.insert(layer_id.to_owned(), s.clone());
         Ok(s)
     }
 
     /// The smart-animate frame between screens `from` and `to` (Folio layer ids) at eased progress
-    /// `eased` (module text), cached for the last progress point.
+    /// `eased` (module text), cached for the last progress point; under the play's own token.
     pub fn smart_raster(&mut self, from: &str, to: &str, eased: f64) -> Result<Screen, PlayFail> {
         self.smart_raster_mode(from, to, eased, None)
     }
@@ -792,6 +831,19 @@ impl PrototypePlay {
         to: &str,
         eased: f64,
         directional: Option<(TransitionType, TransitionDirection)>,
+    ) -> Result<Screen, PlayFail> {
+        let cancel = self.cancel.clone();
+        self.smart_raster_under(from, to, eased, directional, &cancel)
+    }
+
+    /// [`PrototypePlay::smart_raster_mode`] with its native mapping, export and render back under `cancel`.
+    fn smart_raster_under(
+        &mut self,
+        from: &str,
+        to: &str,
+        eased: f64,
+        directional: Option<(TransitionType, TransitionDirection)>,
+        cancel: &CancellationToken,
     ) -> Result<Screen, PlayFail> {
         let mode = SmartMode { directional, options: self.match_options };
         let key = (from.to_owned(), to.to_owned(), (eased * 1e6).round() as i64, format!("{mode:?}"));
@@ -806,25 +858,32 @@ impl PrototypePlay {
         let (fs, ts) = (source(from)?, source(to)?);
         let doc = smart_document(&self.doc, fs, ts, eased, &mode)?;
         let cfg = NativeConfig { budget: Budget::default(), resolver: &Host };
-        let proposal = to_native(&doc, &cfg, &mut SequentialIdMint::new(0xF16), &self.cancel)
-            .map_err(|e| fail("smart_native_refused", e.code()))?;
+        let proposal = to_native(&doc, &cfg, &mut SequentialIdMint::new(0xF16), cancel)
+            .map_err(|e| refused("smart_native_refused", &e))?;
         let (plans, _) = plan_frame_exports(&doc, &proposal, ts);
         let plan = plans.first().ok_or_else(|| fail("frame_not_exportable", to))?;
         if (plan.bounds[2] * plan.bounds[3]).max(0.0) > MAX_SCREEN_PIXELS as f64 {
             return Err(fail("screen_over_limit", to));
         }
-        let pdf = export_frame_pdf(&proposal, plan, None, &self.cancel).map_err(|e| fail("frame_export_refused", e.code()))?;
-        let page = render_frame_export(&pdf, &self.cancel).map_err(|e| fail("frame_render_refused", e.code()))?;
+        let pdf = export_frame_pdf(&proposal, plan, None, cancel).map_err(|e| refused("frame_export_refused", &e))?;
+        let page = render_frame_export(&pdf, cancel).map_err(|e| refused("frame_render_refused", &e))?;
         let s = Screen { width: page.width, height: page.height, rgb: page.rgb };
         self.smart_cache = Some((key, s.clone()));
         Ok(s)
     }
 
     /// A directional transition without matching: the two screen rasters shifted by
-    /// `directional_frame` at `eased` (offsets rounded to whole px), the moving one on top.
+    /// `directional_frame` at `eased` (offsets rounded to whole px), the moving one on top; under the play's own
+    /// token.
     pub fn directional_raster(&mut self, t: &ActiveTransition, eased: f64) -> Result<Screen, PlayFail> {
-        let from = self.frame_raster(&t.from)?;
-        let to = self.frame_raster(&t.to)?;
+        let cancel = self.cancel.clone();
+        self.directional_raster_under(t, eased, &cancel)
+    }
+
+    /// [`PrototypePlay::directional_raster`] with both screen rasters under `cancel`.
+    fn directional_raster_under(&mut self, t: &ActiveTransition, eased: f64, cancel: &CancellationToken) -> Result<Screen, PlayFail> {
+        let from = self.frame_raster_under(&t.from, cancel)?;
+        let to = self.frame_raster_under(&t.to, cancel)?;
         let dir = t.direction.ok_or_else(|| fail("transition_not_directional", t.kind.clone()))?;
         let place = directional_frame(t.transition_type, dir, eased, f64::from(to.width), f64::from(to.height))
             .ok_or_else(|| fail("transition_not_directional", t.kind.clone()))?;
@@ -841,18 +900,28 @@ impl PrototypePlay {
     }
 
     /// What the play mode shows now: the screen (a running transition: the smart-animate tween when
-    /// its layers match, else the eased cross-fade) with the open overlays placed on top.
+    /// its layers match, else the eased cross-fade) with the open overlays placed on top; under the play's own token
+    /// ([`PrototypePlay::render_with`]).
     pub fn render(&mut self) -> Result<Screen, PlayFail> {
+        let cancel = self.cancel.clone();
+        self.render_with(&cancel)
+    }
+
+    /// [`PrototypePlay::render`] under the caller's `cancel` (module docs): once it is set the render refuses
+    /// `canceled` (detail `before the render`) before any frame is rendered or a cached one is served, and every
+    /// step of the render runs under it.
+    pub fn render_with(&mut self, cancel: &CancellationToken) -> Result<Screen, PlayFail> {
+        cancel.check().map_err(|_| fail("canceled", "before the render"))?;
         let state = self.session.state();
         let mut base = match &state.transition {
             Some((t, _, eased)) if t.match_layers => {
                 let dir = t.direction.map(|d| (t.transition_type, d));
-                self.smart_raster_mode(&t.from, &t.to, *eased, dir)?
+                self.smart_raster_under(&t.from, &t.to, *eased, dir, cancel)?
             }
-            Some((t, _, eased)) if t.direction.is_some() => self.directional_raster(t, *eased)?,
+            Some((t, _, eased)) if t.direction.is_some() => self.directional_raster_under(t, *eased, cancel)?,
             Some((t, _, eased)) => {
-                let from = self.frame_raster(&t.from)?;
-                let to = self.frame_raster(&t.to)?;
+                let from = self.frame_raster_under(&t.from, cancel)?;
+                let to = self.frame_raster_under(&t.to, cancel)?;
                 if (from.width, from.height) != (to.width, to.height) {
                     to
                 } else {
@@ -866,10 +935,10 @@ impl PrototypePlay {
                     Screen { width: to.width, height: to.height, rgb }
                 }
             }
-            None => self.frame_raster(&state.screen)?,
+            None => self.frame_raster_under(&state.screen, cancel)?,
         };
         for (i, o) in state.overlays.iter().enumerate() {
-            let ov = self.frame_raster(o)?;
+            let ov = self.frame_raster_under(o, cancel)?;
             let Some(off) = self.overlay_offset(o, state.overlay_positions.get(i).and_then(Option::as_ref)) else { continue };
             // STU-PRO-124 solid background behind the overlay (alpha = background opacity).
             if let Some(StudioOverlayBackground::SolidColor { color }) = self.session.overlay_config(o).map(|c| &c.overlay_background) {
@@ -955,8 +1024,9 @@ impl PrototypePlay {
 /// that can be canceled.
 #[cfg(test)]
 mod tests {
-    use super::PrototypePlay;
+    use super::{PrototypePlay, refused};
     use hsk_studio_accord::CancellationToken;
+    use hsk_studio_interop_fig::FigError;
 
     /// The Operator prototype fixture (repository-relative, never machine-local).
     fn fig() -> Vec<u8> {
@@ -983,6 +1053,58 @@ mod tests {
         assert!(!warm.rendered.is_empty(), "the screen is cached");
         warm.cancel = canceled();
         let e = warm.render().unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "before the render"), "{e:?}");
+    }
+
+    /// The caller's token of `render_with` governs that call, not the play's own: a canceled caller's token refuses
+    /// while the play's token is live (nothing rendered), and the next call under a live token renders.
+    #[test]
+    fn render_with_takes_the_callers_token_for_that_call() {
+        let mut play = PrototypePlay::open(&fig(), None).unwrap();
+        let e = play.render_with(&canceled()).unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "before the render"), "{e:?}");
+        assert!(play.rendered.is_empty(), "nothing rendered");
+        let live = CancellationToken::default();
+        let screen = play.render_with(&live).unwrap();
+        assert_eq!(play.render().unwrap(), screen, "the token-less form renders the same screen");
+    }
+
+    /// A cancel a step sees is typed `canceled` with the step as the detail: the frame export of an uncached frame
+    /// (real path), and the mapping of interop-fig's and press's cancel refusals; other refusals keep their stage code.
+    #[test]
+    fn a_cancel_seen_by_a_step_is_typed_canceled_with_the_step_as_detail() {
+        let mut play = PrototypePlay::open(&fig(), None).unwrap();
+        let screen = play.session.state().screen;
+        let e = play.frame_raster_under(&screen, &canceled()).unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "frame_export_refused"), "{e:?}");
+        assert!(play.rendered.is_empty(), "nothing cached");
+        let e = refused("frame_render_refused", &FigError::ExportRefused("canceled"));
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "frame_render_refused"));
+        let e = refused("smart_native_refused", &FigError::Canceled);
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "smart_native_refused"));
+        let e = refused("frame_render_refused", &FigError::ExportRefused("budget_exceeded"));
+        assert_eq!((e.code, e.detail.as_str()), ("frame_render_refused", "export_refused"));
+    }
+
+    /// `open_with` and `open_document_with` import, decode and map under the caller's token: a canceled one refuses
+    /// `canceled` at the first step.
+    #[test]
+    fn open_with_a_canceled_token_refuses_canceled() {
+        let e = PrototypePlay::open_with(&fig(), None, &canceled()).err().unwrap();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "fig_import_refused"), "{e:?}");
+        let doc = PrototypePlay::open(&fig(), None).unwrap().document().clone();
+        let e = PrototypePlay::open_document_with(doc, None, &canceled()).err().unwrap();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "fig_native_refused"), "{e:?}");
+    }
+
+    /// The play keeps its opener's token: once the caller cancels it, the token-less render refuses too.
+    #[test]
+    fn the_play_keeps_its_openers_token() {
+        let token = CancellationToken::default();
+        let mut play = PrototypePlay::open_with(&fig(), None, &token).unwrap();
+        play.render().unwrap();
+        token.cancel();
+        let e = play.render().unwrap_err();
         assert_eq!((e.code, e.detail.as_str()), ("canceled", "before the render"), "{e:?}");
     }
 }

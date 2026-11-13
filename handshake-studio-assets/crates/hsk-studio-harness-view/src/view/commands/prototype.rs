@@ -5,6 +5,10 @@
 //! and end_session, plus the play panel's frame-local click and hover, the virtual clock and
 //! restart. Every reply carries the player's state and the events since the last row. Play mode changes
 //! no document authority; one session per viewer (no session id yet).
+//!
+//! Cancellation (lane SMB-PROTOTYPE-PLAY-CANCEL-1; STU-ARC-013, HBR-HOST-004): start_session imports and
+//! capture_frame renders under the viewer's token, passed per call (`PrototypePlay::open_with`,
+//! `PrototypePlay::render_with`); once it is set they refuse `canceled`.
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::super::Viewer;
@@ -65,12 +69,13 @@ fn prototype_resource(play: &PrototypePlay) -> Option<DomainId> {
 /// `prototype.capture_frame` (module docs). With a path (lane SMB-FIX-CAPTURE-ADMISSION-1; R60 attempt 3 probe j2,
 /// common lead ruling 2; STU-ARC-008, STU-ARC-013): the cheap checks first (`parameter_conflict`, a path with a file
 /// name, `overwrite_required`), then one export job admitted through the viewer's bound JobPort before anything is
-/// rendered or written (typed `overloaded`, `canceled`, `stale_revision`), then the render, a cancel check and the
+/// rendered or written (typed `overloaded`, `canceled`, `stale_revision`), then the render under the viewer's token
+/// (lane SMB-PROTOTYPE-PLAY-CANCEL-1: a cancel raised after admission refuses it `canceled`), a cancel check and the
 /// PNG write (never over a file without `overwrite`, [`render_and_write`]), settled once (`completed`, else
 /// `canceled` or `failed` with the refusal's code); the reply carries the settlement as `job`.
 /// The job names the open document, else the play session's resource ([`prototype_resource`]). Without a path
-/// nothing is written and nothing is admitted: the frame is the reply's size and means. Test
-/// `hsk-studio-harness` `tests/fix_capture_admission.rs`.
+/// nothing is written and nothing is admitted: the frame, rendered under the viewer's token, is the reply's size and
+/// means. Test `hsk-studio-harness` `tests/fix_capture_admission.rs` and this module's tests.
 fn capture_frame(v: &mut Viewer, f: &Fields<'_>) -> Result<Value, CommandRefusal> {
     // `overwrite` applies to a written file only: refused without a path (review F7 on 2bbe2207).
     if f.has("overwrite") && !f.has("path") {
@@ -78,8 +83,9 @@ fn capture_frame(v: &mut Viewer, f: &Fields<'_>) -> Result<Value, CommandRefusal
     }
     let closed = || CommandRefusal::new("prototype_closed", Value::Null);
     if !f.has("path") {
+        let cancel = v.cancel;
         let play = v.prototype().ok_or_else(closed)?;
-        let screen = play.render().map_err(refusal)?;
+        let screen = play.render_with(cancel).map_err(refusal)?;
         let mut r = state(play);
         r["screen"] = screen_json(&screen);
         return Ok(r);
@@ -109,13 +115,14 @@ fn capture_frame(v: &mut Viewer, f: &Fields<'_>) -> Result<Value, CommandRefusal
 }
 
 /// The frame rendered and written as an 8-bit RGB PNG at `path` (the cheap checks passed, the job admitted); the
-/// reply. Review of b9074096: the viewer's token is checked after the render and before the write, so a cancel
-/// raised after admission settles `canceled` and writes nothing (F4; a cancel during the render itself is not seen,
-/// the play session renders under its own token); without `overwrite` the file is written by `write_new`, as
-/// `export_document` does, so a file that appeared after the cheap check is never replaced and is refused
-/// `overwrite_required` (F1).
+/// reply. The render runs under the viewer's token (lane SMB-PROTOTYPE-PLAY-CANCEL-1, `PrototypePlay::render_with`):
+/// a cancel raised after admission refuses it `canceled` before any frame is rendered (`before the render`) or, seen
+/// by a later render step, with that step's code as the detail. Review of b9074096: the token is checked again after
+/// the render and the encode, before the write, so a cancel raised after the render also settles `canceled` and
+/// writes nothing (F4); without `overwrite` the file is written by `write_new`, as `export_document` does, so a file
+/// that appeared after the cheap check is never replaced and is refused `overwrite_required` (F1).
 fn render_and_write(play: &mut PrototypePlay, path: &std::path::Path, overwrite: bool, cancel: &CancellationToken) -> Result<Value, Refusal> {
-    let screen = play.render().map_err(|e| Refusal { code: e.code, detail: e.detail })?;
+    let screen = play.render_with(cancel).map_err(|e| Refusal { code: e.code, detail: e.detail })?;
     let samples = hsk_studio_interop_raster::Samples::U8(screen.rgb.clone());
     let request = hsk_studio_interop_raster::PngEncodeRequest {
         width: screen.width,
@@ -151,7 +158,9 @@ fn trigger(f: &Fields<'_>) -> Result<PlayerInput, CommandRefusal> {
 pub(super) fn run(v: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, CommandRefusal> {
     if id == "prototype.start_session" {
         let bytes = read_bounded(&f.path("path")?, crate::import::MAX_SOURCE_BYTES)?;
-        v.open_prototype(&bytes).map_err(refusal)?;
+        // Under the viewer's token, passed per call (module docs); otherwise as `Viewer::open_prototype`.
+        let play = PrototypePlay::open_with(&bytes, None, v.cancel).map_err(refusal)?;
+        v.prototype = Some((play, std::time::Instant::now()));
     }
     if v.prototype.is_none() {
         return Err(CommandRefusal::new("prototype_closed", json!({"hint": "prototype.start_session first"})));
@@ -337,10 +346,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Review F4 (b): a cancel raised after admission (inside the port's ask) is checked after the render and
-    /// before the write: refused `canceled`, the job settled once `canceled` (not `failed`, not `completed`),
-    /// nothing written. A cancel during the render itself is not observed: `PrototypePlay` renders under its
-    /// own token (not_proven, lane notes).
+    /// Review F4 (b): a cancel raised after admission (inside the port's ask) is refused `canceled` before the write,
+    /// the job settled once `canceled` (not `failed`, not `completed`), nothing written. Since lane
+    /// SMB-PROTOTYPE-PLAY-CANCEL-1 the render, under the viewer's token, refuses it first (which stage refuses:
+    /// `a_cancel_after_admission_is_refused_by_the_render_and_nothing_is_written`).
     #[test]
     fn a_cancel_after_admission_settles_canceled_before_the_write() {
         let dir = scratch("canceled-after");
