@@ -1571,7 +1571,7 @@ mod in_place_tests {
             json!({"kind": "levels", "records": [{"channel": "composite", "input_black": 0.1, "input_white": 0.9, "output_black": 0.0, "output_white": 1.0, "gamma": 1.4}]}),
             json!({"kind": "curves", "curves": [{"channel": "composite", "points": [{"input": 0.0, "output": 0.0, "corner": false}, {"input": 128.0, "output": 160.0, "corner": false}, {"input": 255.0, "output": 255.0, "corner": false}]}]}),
             json!({"kind": "hue_saturation", "master": {"hue": 30.0, "saturation": 20.0, "lightness": -10.0}, "colorize": false, "colorization": zero}),
-            json!({"kind": "brightness_contrast", "brightness": 20.0, "contrast": 30.0, "use_legacy": false}),
+            json!({"kind": "brightness_contrast", "brightness": 20.0, "contrast": 30.0, "use_legacy": true}),
             json!({"kind": "exposure", "exposure": 0.5, "offset": 0.0, "gamma": 1.0, "use_legacy": false}),
             json!({"kind": "invert"}),
             json!({"kind": "threshold", "level": 128.0}),
@@ -1612,10 +1612,11 @@ mod in_place_tests {
 
     /// Review F7: for every kind both forms take the record or both refuse it with the same code; when taken, the
     /// in-place layer renders as the adjustment layer over it renders. Exact over opaque texels and over alpha 0.5
-    /// and 0.25 (a premultiplied round trip by a power of two is exact); over alpha 0.3 the render composites
-    /// premultiplied, so the colour the adjustment layer reads back is (c a) / a, within one f32 rounding of the
-    /// texel's c, and the kind's slope carries that difference: at most 1e-5 (the gain of these records is below 10;
-    /// one rounding of values below 1 is below 6e-8).
+    /// and 0.25 (a premultiplied round trip by a power of two is exact). Over alpha 0.3, for every kind, at most
+    /// 2.4e-7 (2^-22, two f32 steps at values in 0.5..1): the render composites premultiplied, so the colour the
+    /// adjustment layer reads back is (c a) / a, one f32 rounding from the texel's c, and the record's slope (below
+    /// 2 for these records) carries that difference; measured at most 1.2e-7 (the test prints each kind's figure).
+    /// The modern brightness/contrast is refused by both forms alike (pigment `adjust_unsupported`).
     #[test]
     fn apply_in_place_renders_as_the_adjustment_layer_for_every_kind() {
         let pixels = fixture();
@@ -1642,11 +1643,21 @@ mod in_place_tests {
                     max_diff(frame, &layer_form, &in_place, 6..8);
                     report.push(format!("{kind}: exact rows {exact:e}, alpha 0.3 {partial:e}"));
                     assert_eq!(exact, 0.0, "{kind}: opaque and power-of-two alpha texels are exact");
-                    assert!(partial <= 1e-5, "{kind}: alpha 0.3 within one rounding times the slope: {partial:e}");
+                    assert!(partial <= 2.4e-7, "{kind}: alpha 0.3 within one rounding times the slope: {partial:e}");
                 }
                 (c, d) => panic!("{kind}: the forms disagree: create {:?} apply {:?}", c.err().map(|e| e.code), d.err().map(|e| e.code)),
             }
         }
+        assert!(report.iter().all(|r| !r.contains("refused")), "every kind is taken by both forms: {report:?}");
+        let modern = json!({"kind": "brightness_contrast", "brightness": 20.0, "contrast": 30.0, "use_legacy": false});
+        let (mut layered, px) = seeded(&pixels);
+        layered.select(Some(px));
+        let (mut applied, px2) = seeded(&pixels);
+        let refusals = (
+            command(&mut layered, "adjustment.create", json!({"adjustment": modern})).map(|_| ()).unwrap_err().code,
+            command(&mut applied, "adjustment.apply", json!({"layer": px2, "adjustment": modern})).map(|_| ()).unwrap_err().code,
+        );
+        assert_eq!(refusals, ("adjust_unsupported".to_owned(), "adjust_unsupported".to_owned()));
         eprintln!("{}", report.join("\n"));
         assert_eq!(report.len(), 20);
     }

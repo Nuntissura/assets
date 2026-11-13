@@ -801,5 +801,5 @@ fn effect_and_adjustment_rows_run_through_the_process_with_the_callers_attributi
     let created = s.ok("adjustment.create", json!({"adjustment": {"kind": "invert"}}));
     assert!(created["detail"]["undo_name"].as_str().is_some_and(|n| n.starts_with("adjustment.create")), "{created}");
     assert_eq!(created["attribution"]["actor"]["account_id"], "lane-fx");
-    assert_eq!(s.close(), 0);
+    assert_eq!(s.close(), 1, "the session refused a row (effect.update), so it ends with exit 1");
 }
