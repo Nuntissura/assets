@@ -10,8 +10,10 @@
 //! stated. `layout`: one spread of one page, points canonical (STU-LAY-100): a size in `px` takes one
 //! point per pixel, so a 1920 by 1080 px deck frames at 1920 by 1080.
 //!
-//! Studio readings, declared (vendor parity UNVERIFIED, D5): the board profile of [STU-WB-001] is
-//! refused `profile_not_available`, because no board container exists yet; a new artboard goes to the
+//! `board` (lane SMB-BOARD-1, [STU-WB-001], [STU-WB-120]): one artboard, the document's first board, at
+//! the stated size or [`BOARD_DEFAULT_SIZE`] (the viewer lists it as a board in the vector records).
+//!
+//! Studio readings, declared (vendor parity UNVERIFIED, D5): a new artboard goes to the
 //! right of the others at [`ARTBOARD_GAP`]; a raster document starts transparent; ids are minted here
 //! as a standalone stand-in for a host `IdMint`, like `import::SourceMint`.
 #![deny(clippy::arithmetic_side_effects)]
@@ -35,6 +37,8 @@ pub const MAX_ARTBOARDS: usize = 1000;
 pub const MAX_PAGES: usize = 9999;
 /// Longest artboard or spread name in bytes.
 pub const MAX_NAME_BYTES: usize = 1024;
+/// The size of a new board when none is stated (lane SMB-BOARD-1; Studio-declared), in document units.
+pub const BOARD_DEFAULT_SIZE: (f64, f64) = (1920.0, 1080.0);
 /// The margins of a new page when they leave a positive margin box, in points.
 pub const DEFAULT_MARGIN_PT: f64 = 36.0;
 /// The session document entry holding [`ArtboardOptions`] (`hsk_studio_session::DOCUMENT_ENTRY_TOKENS`).
@@ -53,19 +57,21 @@ pub enum DocumentProfile {
     Raster,
     Design,
     Layout,
+    /// [STU-WB-001] whiteboard mode (lane SMB-BOARD-1).
+    Board,
 }
 
 impl DocumentProfile {
-    pub const TOKENS: [&'static str; 4] = ["vector", "raster", "design", "layout"];
+    pub const TOKENS: [&'static str; 5] = ["vector", "raster", "design", "layout", "board"];
 
-    /// A token as a profile: `profile_unknown`, or `profile_not_available` for [STU-WB-001]'s board.
+    /// A token as a profile: `profile_unknown`.
     pub fn parse(token: &str) -> Result<Self, &'static str> {
         match token {
             "vector" => Ok(Self::Vector),
             "raster" => Ok(Self::Raster),
             "design" => Ok(Self::Design),
             "layout" => Ok(Self::Layout),
-            "board" => Err("profile_not_available"),
+            "board" => Ok(Self::Board),
             _ => Err("profile_unknown"),
         }
     }
@@ -76,6 +82,7 @@ impl DocumentProfile {
             Self::Raster => "raster",
             Self::Design => "design",
             Self::Layout => "layout",
+            Self::Board => "board",
         }
     }
 }
@@ -139,7 +146,7 @@ impl NewDocument {
             check_name(name)?;
         }
         match (self.profile, self.size) {
-            (DocumentProfile::Design, None) => Ok(()),
+            (DocumentProfile::Design | DocumentProfile::Board, None) => Ok(()),
             (_, None) => Err("size_required"),
             (DocumentProfile::Raster, Some(_)) if self.unit != GeometryUnit::Px => Err("raster_needs_px"),
             (DocumentProfile::Raster, Some((w, h))) => {
@@ -303,11 +310,21 @@ pub fn blank_document(spec: &NewDocument, document_id: &str) -> Result<folio::St
             page_spreads.push(serde_json::to_value(one_page_spread(child("SPGS", 1), "spread 1".into(), "page-1".into(), to_points(w, spec.unit), to_points(h, spec.unit), GeometryUnit::Pt)).map_err(|_| "document_encode")?);
         }
         (_, Some((w, h))) => {
-            let name = spec.artboard_name.clone().unwrap_or_else(|| "Artboard 1".to_owned());
+            let first = if spec.profile == DocumentProfile::Board { "Board 1" } else { "Artboard 1" };
+            let name = spec.artboard_name.clone().unwrap_or_else(|| first.to_owned());
             let token = unit_token(unit);
             let len = |value: f64| json!({"value": value, "unit": token});
             artboards.push(json!({
                 "schema_id": "hsk.studio.artboard@1", "artboard_id": child("SART", 1), "name": name, "parent": null,
+                "bounds": {"x": len(0.0), "y": len(0.0), "width": len(w), "height": len(h)},
+            }));
+        }
+        (DocumentProfile::Board, None) => {
+            let (w, h) = BOARD_DEFAULT_SIZE;
+            let token = unit_token(unit);
+            let len = |value: f64| json!({"value": value, "unit": token});
+            artboards.push(json!({
+                "schema_id": "hsk.studio.artboard@1", "artboard_id": child("SART", 1), "name": spec.artboard_name.clone().unwrap_or_else(|| "Board 1".to_owned()), "parent": null,
                 "bounds": {"x": len(0.0), "y": len(0.0), "width": len(w), "height": len(h)},
             }));
         }

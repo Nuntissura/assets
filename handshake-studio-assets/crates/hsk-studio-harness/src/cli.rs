@@ -342,7 +342,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--item" => p.items.push(take(&mut i, "delivery item JSON")?),
             "--width" => p.width = Some(take(&mut i, "width")?.parse::<u32>().ok().filter(|w| *w > 0).ok_or_else(|| "width must be a positive integer".to_string())?),
             "--height" => p.height = Some(take(&mut i, "height")?.parse::<u32>().ok().filter(|h| *h > 0).ok_or_else(|| "height must be a positive integer".to_string())?),
-            "--profile" => p.profile = Some(take(&mut i, "profile (vector|raster|design|layout)")?),
+            "--profile" => p.profile = Some(take(&mut i, "profile (vector|raster|design|layout|board)")?),
             "--size" => p.size = Some(take(&mut i, "size WxH")?),
             "--unit" => p.unit = Some(take(&mut i, "unit (px|pt|mm|in)")?),
             "--colour-mode" => p.colour_mode = Some(take(&mut i, "colour mode")?),
@@ -482,7 +482,7 @@ fn dispatch(command: &str, parsed: Parsed) -> CliOutput {
                 return usage("--actor ID and --session ID are required; there is no default actor");
             }
             if parsed.profile.is_none() {
-                return usage("new needs --profile vector|raster|design|layout");
+                return usage("new needs --profile vector|raster|design|layout|board");
             }
             with_harness(command, &parsed, |h| execute_new(h, &parsed, &output))
         }

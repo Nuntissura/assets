@@ -84,7 +84,6 @@ fn refusals_are_typed_and_write_nothing() {
     let scratch = Scratch::new("refuse");
     let out = scratch.path("never.handshake");
     for (rest, code) in [
-        (vec!["--profile", "board", "--size", "100x100"], "profile_not_available"),
         (vec!["--profile", "nope", "--size", "100x100"], "profile_unknown"),
         (vec!["--profile", "vector"], "size_required"),
         (vec!["--profile", "vector", "--size", "99999999x100"], "dimension_out_of_range"),
@@ -555,7 +554,9 @@ mod through_the_viewer {
         let board = r[1]["detail"]["result"].as_str().unwrap().to_owned();
         assert_eq!(r[1]["state"]["containers"]["artboards"][1]["id"], json!(board));
         assert_eq!(r[2]["error"], "dimension_out_of_range", "{}", r[2]);
-        assert_eq!(r[3]["error"], "profile_not_available", "{}", r[3]);
+        // Lane SMB-BOARD-1: the board profile opens a whiteboard document (STU-WB-001).
+        assert_eq!(r[3]["ok"], true, "{}", r[3]);
+        assert_eq!(r[3]["state"]["containers"]["artboards"][0]["name"], "Board 1", "{}", r[3]);
         assert_eq!(r[4]["ok"], true, "{}", r[4]);
         assert_eq!(r[4]["state"]["containers"]["artboards"][0]["name"], "mark", "`name` is the artboard name");
         assert_eq!(r[4]["revision"], 0);
