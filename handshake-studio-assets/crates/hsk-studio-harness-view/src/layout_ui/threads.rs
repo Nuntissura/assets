@@ -14,6 +14,7 @@
 //! tool). InDesign port/story-editor behaviour UNVERIFIED (D5).
 #![deny(clippy::arithmetic_side_effects)]
 use super::{LayoutEditor, LayoutUiError, story_text, widget};
+use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::Payload;
 use serde_json::{Value, json};
 
@@ -338,7 +339,7 @@ impl LayoutEditor {
     /// Places the overset text of `from`'s story by `mode`, starting on `page` (default: the page after
     /// `from`'s page). `from` must end its thread (`already_threaded`); `unknown_frame`, `unknown_page`, and the
     /// frame tool's codes refuse with nothing changed. Text that fits already places nothing (no step).
-    pub fn autoflow(&mut self, from: &str, mode: FlowMode, page: Option<&str>) -> Result<FlowReport, LayoutUiError> {
+    pub fn autoflow(&mut self, from: &str, mode: FlowMode, page: Option<&str>, _cancel: &CancellationToken) -> Result<FlowReport, LayoutUiError> {
         let story = super::story_id_of(&self.doc, from)?;
         if self.frame_link(from).and_then(|(_, n)| n).is_some() {
             return Err(LayoutUiError::AlreadyThreaded(from.to_owned()));
@@ -360,7 +361,7 @@ impl LayoutEditor {
     /// nothing but frames of the story with no composed line are removed with their frames (the thread closes
     /// over them; never the page of the story's first frame, never the last page of the document). With
     /// `preserve_facing_page_spreads` on a facing-pages document pages come and go in pairs.
-    pub fn smart_reflow(&mut self, frame: &str, controls: ReflowControls) -> Result<FlowReport, LayoutUiError> {
+    pub fn smart_reflow(&mut self, frame: &str, controls: ReflowControls, _cancel: &CancellationToken) -> Result<FlowReport, LayoutUiError> {
         let story = super::story_id_of(&self.doc, frame)?;
         let info = self.thread_info(frame)?;
         self.as_one_step("layout.smart_reflow", |ed| {

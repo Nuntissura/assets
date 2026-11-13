@@ -17,13 +17,15 @@ impl Viewer {
     /// step `layout.autoflow`. Refusals change nothing: `not_open`, `layout_editor_unavailable`, the editor's codes
     /// (`unknown_frame`, `unknown_page`, `already_threaded`, ...), the session's (`value_conflict`, `folio_rejected`, ...).
     pub fn layout_autoflow(&mut self, frame: &str, mode: FlowMode, page: Option<&str>) -> Result<FlowReport, String> {
-        self.layout_flow_step("layout.autoflow", |ed| ed.autoflow(frame, mode, page))
+        let cancel = self.cancel;
+        self.layout_flow_step("layout.autoflow", |ed| ed.autoflow(frame, mode, page, cancel))
     }
 
     /// `layout_flow.smart_reflow`: [`crate::layout_ui::LayoutEditor::smart_reflow`], one document step
     /// `layout.smart_reflow`; refusals as [`Viewer::layout_autoflow`].
     pub fn layout_smart_reflow(&mut self, frame: &str, controls: ReflowControls) -> Result<FlowReport, String> {
-        self.layout_flow_step("layout.smart_reflow", |ed| ed.smart_reflow(frame, controls))
+        let cancel = self.cancel;
+        self.layout_flow_step("layout.smart_reflow", |ed| ed.smart_reflow(frame, controls, cancel))
     }
 
     fn layout_flow_step(&mut self, command: &'static str, edit: impl FnOnce(&mut crate::layout_ui::LayoutEditor) -> Result<FlowReport, LayoutUiError>) -> Result<FlowReport, String> {
@@ -60,18 +62,22 @@ fn reply(viewer: &Viewer, r: &FlowReport) -> Value {
     out
 }
 
+pub(super) fn owns(id: &str) -> bool {
+    matches!(id, "layout.autoflow" | "layout.smart_reflow")
+}
+
 pub(super) fn run(viewer: &mut Viewer, id: &str, f: Fields<'_>) -> Result<Value, CommandRefusal> {
     // Decoded first: a refused row opens no editor.
     let frame = f.text("frame")?;
     let step = |r: Result<FlowReport, String>| r.map_err(|code| CommandRefusal::new(&code, Value::Null));
     let done = match id {
-        "layout_flow.autoflow" => {
+        "layout.autoflow" => {
             let mode = f.token("mode", &FlowMode::ALL)?;
             let page = f.opt_text("page")?;
             open(viewer)?;
             step(viewer.layout_autoflow(&frame, mode, page.as_deref()))?
         }
-        "layout_flow.smart_reflow" => {
+        "layout.smart_reflow" => {
             let controls = ReflowControls { delete_empty_pages: f.flag("delete_empty_pages")?, preserve_facing_page_spreads: f.flag("preserve_facing_page_spreads")? };
             open(viewer)?;
             step(viewer.layout_smart_reflow(&frame, controls))?
