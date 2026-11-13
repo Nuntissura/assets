@@ -192,3 +192,12 @@ work_packets:
   state_ref: repo-governance/work-packets/active/WP-KUM-024-decorative-transition-v1/WP-KUM-024-decorative-transition-v1-state.yaml
   next_action: Independently reread the exact published state and transition source.
   blockers: []
+- wp_id: WP-KUM-025-live-divider-projection-v1
+  title: Live divider projection
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-025-live-divider-projection-v1/WP-KUM-025-live-divider-projection-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-025-live-divider-projection-v1/WP-KUM-025-live-divider-projection-v1-state.yaml
+  next_action: Review and publish the exact WP predecessor, then confirm dependency readiness for the named adapter
+    files.
+  blockers:
+  - Publish the bounded predecessor and record dependency readiness before implementation.

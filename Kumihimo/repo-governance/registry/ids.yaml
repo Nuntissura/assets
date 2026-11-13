@@ -42,6 +42,7 @@ ids:
 - WP-KUM-022-external-native-embedding-v1
 - WP-KUM-023-direct-vulkan-renderer-v1
 - WP-KUM-024-decorative-transition-v1
+- WP-KUM-025-live-divider-projection-v1
 - SESSION-KUM-2026-10-11-v1
 - ROLE-KUM-DEPENDENCIES
 - ROLE-KUM-DIAGNOSTICS

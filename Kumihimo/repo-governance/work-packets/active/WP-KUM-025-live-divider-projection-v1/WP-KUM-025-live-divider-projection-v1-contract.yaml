@@ -1,0 +1,26 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-025-live-divider-projection-v1
+title: Live divider projection
+scope:
+- Provide an opt-in prepaint divider projection for desktop adapters and manual host consumers.
+files:
+- product/kumihimo-egui/src/input.rs
+- product/kumihimo-egui/src/workspace.rs
+- product/kumihimo-egui/src/lib.rs
+- product/kumihimo-egui/tests/adapter_contracts.rs
+dependencies:
+- Canonical asset base 100d762c3635c5180414f21a4ebb32d125eadf7c and the existing Core solver and input state.
+spec_refs:
+- TOPIC-KUM-LAYOUT
+requirements:
+- Process captured divider events before paint and preserve the order of other events for existing postpaint routing.
+- Use one validated transient projection for pane content, chrome, clipping and hit geometry. Preserve the default outline path.
+- Preserve minimum sizes and focused keyboard and AccessKit behavior. Discard transient geometry on Escape, capture loss or invalidation.
+- Commit one valid SetLayout on release and none during drag.
+acceptance:
+- Both axes and reversal move the adjoining content and hit edges together on the first draw while the committed layout stays fixed.
+- Minimum constraints, cancel, loss and invalidation preserve the committed layout. Valid release commits once.
+- The default outline path, keyboard and editor focus retain their current behavior.
+proof:
+- Run the affected adapter_contracts cases together after separate compiler admission and obtain distinct review and independent publication readback.
+- Handshake pin adoption and MT212 first-presented-frame, debounce and reopen evidence are separate.

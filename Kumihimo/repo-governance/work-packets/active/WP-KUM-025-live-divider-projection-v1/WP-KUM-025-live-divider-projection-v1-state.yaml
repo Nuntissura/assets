@@ -1,0 +1,10 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-025-live-divider-projection-v1
+generation: 1
+phase: planned
+owner: 01a17374-1d96-7e02-9aea-77b0f62f20dc
+changed_files: []
+proof: []
+blockers:
+- Publish the bounded predecessor and record dependency readiness before implementation.
+next_action: Review and publish the exact WP predecessor, then confirm dependency readiness for the named adapter files.
