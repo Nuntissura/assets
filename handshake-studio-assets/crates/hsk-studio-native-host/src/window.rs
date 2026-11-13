@@ -8,11 +8,22 @@
 //! applied one per iteration after the first frame, a resize re-creates the pane at the client extent (released
 //! first; 0x0 creates nothing), and only a changed frame is painted and uploaded, or with `--chrome vulkan` drawn by
 //! the UI pass into the pane (a re-created pane is drawn by the next frame; the pass is dropped before the owner).
-//! The Operator's own window waits for events (ControlFlow::Wait) and presents only when something changed.
+//! The Operator's own window waits for events (ControlFlow::Wait, or WaitUntil the frame's next timer) and presents
+//! only when something changed.
+//!
+//! Host clock (SMB-GUI-GESTURE-GATE-1): every loop pass feeds the elapsed wall-clock time to `GuiFrame::advance` (dwell
+//! tips, the 400 ms wheel idle of a field). Scripted steps are instantaneous, so the clock stops while steps remain and
+//! starts after the last one; a run does not end, and does not capture, while a gesture timer is pending (bounded by
+//! its deadline). A quiet window is agent-driven: no dwell tip (STU-SHL-235 rule 5). Modifiers and focus changes reach
+//! the frame (continuous modifier sampling STU-SHL-106; focus loss finalizes a gesture STU-SHL-194). Only the
+//! Operator's window applies the frame's cursor request, and only its icon (column-resize over a field); hiding the
+//! cursor and showing it at the press point are not applied (they need a locked grab and raw motion; no cursor warp,
+//! STU-SHL-104). The frame opens as the host run's caller.
 use crate::capture::{Json, device_json, layers_json, sha256_hex, ui_pass_json, ui_trace_json, validation_json, write_png, write_receipt};
 use crate::diag::HostRun;
 use crate::error::HostError;
-use crate::event::{EventLog, HostEvent, Mods, from_winit};
+use crate::event::{CursorRequest, EventLog, HostEvent, Mods, from_winit};
+use hsk_studio_accord::ActorContext;
 use crate::offscreen::document_json;
 use crate::scene::{BACKGROUND, CHROME, ChromeMode, Content, DocumentFacts, GuiArgs, Scene, content};
 use crate::script::Step;
@@ -32,7 +43,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::windows::{EventLoopBuilderExtWindows, WindowAttributesExtWindows};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::{Window, WindowId, WindowLevel};
+use winit::window::{CursorIcon, Window, WindowId, WindowLevel};
 
 #[cfg(feature = "document")]
 use crate::gui::GuiFrame;
@@ -52,8 +63,20 @@ fn draw_vulkan(g: &mut GuiFrame, _: &mut UiPass, _: &mut Owner, _: PaneId) -> Re
 enum GuiFrame {}
 #[cfg(not(feature = "document"))]
 impl GuiFrame {
-    fn open(_: &std::path::Path, _: u32, _: u32, _: Option<u32>) -> Result<Self, HostError> {
+    fn open_as(_: &std::path::Path, _: u32, _: u32, _: Option<u32>, _: &ActorContext) -> Result<Self, HostError> {
         Err(HostError::Document("feature_off"))
+    }
+    fn set_agent_driven(&mut self, _: bool) {
+        match *self {}
+    }
+    fn advance(&mut self, _: u64) {
+        match *self {}
+    }
+    fn next_timer_ms(&self) -> Option<u64> {
+        match *self {}
+    }
+    fn cursor(&self) -> CursorRequest {
+        match *self {}
     }
     fn extent(&self) -> (u32, u32) {
         match *self {}
@@ -288,16 +311,21 @@ struct App {
     /// Milliseconds from the event loop to a created window, an opened owner and a ready presenter. The frame
     /// deadline starts after them: loading the driver alone has taken 6 to 20 s on this machine under load.
     startup_ms: [u64; 3],
+    /// The host clock fed to the GUI frame: the instant the fed time runs to; None while scripted steps remain.
+    clock: Option<Instant>,
+    /// The cursor icon applied to the Operator's window.
+    cursor: CursorRequest,
 }
 
 /// Runs a window until `frames` frames were presented (and the exercise finished), the window closes, or the
 /// deadline passes. Builds its own event loop: one window run per process. Runs as the caller `host` names and sends
 /// exactly one terminal frame through it on every exit path, early usage refusals and a panic included (F-R60-22).
 pub fn run(args: &WindowArgs, host: &mut HostRun<'_>) -> Result<WindowResult, HostError> {
-    crate::diag::observed(host, || run_window(args))
+    let actor = host.actor().clone();
+    crate::diag::observed(host, || run_window(args, &actor))
 }
 
-fn run_window(args: &WindowArgs) -> Result<WindowResult, HostError> {
+fn run_window(args: &WindowArgs, actor: &ActorContext) -> Result<WindowResult, HostError> {
     if args.quiet && args.frames == 0 {
         return Err(HostError::Usage("quiet_needs_frames"));
     }
@@ -312,7 +340,9 @@ fn run_window(args: &WindowArgs) -> Result<WindowResult, HostError> {
     }
     let (content, document, gui) = match &args.scene {
         Scene::Gui(path) => {
-            let mut g = GuiFrame::open(path, args.width, args.height, args.gui.scale_milli)?;
+            let mut g = GuiFrame::open_as(path, args.width, args.height, args.gui.scale_milli, actor)?;
+            // A quiet window is agent-driven (STU-SHL-235 rule 5: no dwell tip); the Operator's is not.
+            g.set_agent_driven(args.quiet);
             g.set_chrome(args.gui.chrome);
             (None, None, Some(g))
         }
@@ -362,6 +392,8 @@ fn run_window(args: &WindowArgs) -> Result<WindowResult, HostError> {
         validation: "none",
         ui_pass: Json::Null,
         startup_ms: [0; 3],
+        clock: None,
+        cursor: CursorRequest::Default,
     };
     event_loop.run_app(&mut app).map_err(|_| HostError::Window("event_loop"))?;
     app.finish()
@@ -382,6 +414,21 @@ impl App {
     /// while steps remain, the loop polls so each iteration applies one without an OS event).
     fn operator_wait(&self) -> bool {
         self.operator_window() && self.steps.is_empty()
+    }
+
+    /// The Operator's wait: until the frame's next timer (a dwell level, a wheel idle window) when one is pending, so
+    /// the clock fires it without an OS event and without polling; else until the next event.
+    fn wait_flow(&self) -> ControlFlow {
+        match self.gui.as_ref().and_then(GuiFrame::next_timer_ms) {
+            Some(ms) => ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(ms)),
+            None => ControlFlow::Wait,
+        }
+    }
+
+    /// No gesture timer of the GUI frame is pending: a run may capture and end (a quiet frame is agent-driven, so only
+    /// gesture timers count there).
+    fn gui_settled(&self) -> bool {
+        self.gui.as_ref().is_none_or(|g| g.next_timer_ms().is_none())
     }
 
     fn start(&mut self, el: &ActiveEventLoop) -> Result<(), HostError> {
@@ -471,7 +518,7 @@ impl App {
         self.live = Some(Live { owner, pane, presenter, pass });
         // The frame deadline counts from here.
         self.start = Instant::now();
-        el.set_control_flow(if self.operator_wait() { ControlFlow::Wait } else { ControlFlow::Poll });
+        el.set_control_flow(if self.operator_wait() { self.wait_flow() } else { ControlFlow::Poll });
         Ok(())
     }
 
@@ -547,7 +594,11 @@ impl App {
             Phase::Back if self.phase_frames >= 1 && extent == (ww, wh) => self.advance(Phase::Final),
             _ => {}
         }
-        Ok(self.phase == Phase::Final && self.steps.is_empty() && self.args.frames != 0 && self.presented.saturating_add(1) >= self.args.frames)
+        Ok(self.phase == Phase::Final
+            && self.steps.is_empty()
+            && self.gui_settled()
+            && self.args.frames != 0
+            && self.presented.saturating_add(1) >= self.args.frames)
     }
 
     /// Scene `gui`: the coalesced pointer move, one scripted step, the pane following the client size, then paint and
@@ -589,6 +640,33 @@ impl App {
         {
             g.step(&step)?;
         }
+        // The host clock: stopped while scripted steps remain (they are instantaneous), then the elapsed time.
+        let now = Instant::now();
+        if !self.steps.is_empty() {
+            self.clock = None;
+        } else if let Some(at) = self.clock {
+            let ms = u64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(u64::MAX);
+            if ms > 0 {
+                g.advance(ms);
+                self.clock = Some(at + Duration::from_millis(ms));
+            }
+        } else {
+            self.clock = Some(now);
+        }
+        // The Operator's window shows the field's column-resize cursor (STU-SHL-186); a quiet run never touches the
+        // Operator's pointer. Hide and show-at-press are not applied (no grab, no warp).
+        if !self.args.quiet && self.args.frames == 0 {
+            let want = match g.cursor() {
+                CursorRequest::ColumnResize | CursorRequest::Hidden => CursorRequest::ColumnResize,
+                CursorRequest::Default | CursorRequest::ShowAt { .. } => CursorRequest::Default,
+            };
+            if want != self.cursor
+                && let Some(win) = self.window.as_ref()
+            {
+                win.set_cursor(if want == CursorRequest::ColumnResize { CursorIcon::ColResize } else { CursorIcon::Default });
+                self.cursor = want;
+            }
+        }
         let painted = g.frame()?;
         let uploaded = match live.pass.as_mut() {
             Some(pass) => draw_vulkan(g, pass, &mut live.owner, live.pane)?,
@@ -611,7 +689,7 @@ impl App {
         }
         self.gui_tick()?;
         if self.operator_wait() && !self.needs_present {
-            el.set_control_flow(ControlFlow::Wait);
+            el.set_control_flow(self.wait_flow());
             return Ok(());
         }
         let capture_now = self.script()?;
@@ -625,8 +703,9 @@ impl App {
                 if let Some(c) = capture {
                     self.capture = Some(c);
                 }
-                el.set_control_flow(if wait { ControlFlow::Wait } else { ControlFlow::Poll });
-                let enough = self.args.frames != 0 && self.presented >= self.args.frames && self.steps.is_empty();
+                el.set_control_flow(if wait { self.wait_flow() } else { ControlFlow::Poll });
+                // A run ends only with no gesture timer pending (the wheel idle commits first), within its deadline.
+                let enough = self.args.frames != 0 && self.presented >= self.args.frames && self.steps.is_empty() && self.gui_settled();
                 if self.phase == Phase::Final && enough && (self.args.capture.is_none() || self.capture.is_some()) {
                     self.phase = Phase::Done;
                     el.exit();
@@ -855,8 +934,17 @@ impl ApplicationHandler for App {
                 // Scene `gui`: the next iteration reads the live client size (gui_tick), not this payload.
                 self.needs_present = true;
             }
-            HostEvent::Focus { gained: true } => {
-                self.focus.focus_gained_events = self.focus.focus_gained_events.saturating_add(1);
+            HostEvent::Focus { gained } => {
+                if gained {
+                    self.focus.focus_gained_events = self.focus.focus_gained_events.saturating_add(1);
+                }
+                // Focus loss finalizes a gesture of the frame (STU-SHL-194).
+                if let Some(g) = self.gui.as_mut() {
+                    if let Some((x, y)) = self.pending_move.take() {
+                        let _ = g.apply(HostEvent::PointerMoved { x, y });
+                    }
+                    let _ = g.apply(ev);
+                }
             }
             HostEvent::ScaleFactor { milli } => {
                 self.scale_milli = milli;
@@ -865,7 +953,17 @@ impl ApplicationHandler for App {
                 }
                 self.needs_present = true;
             }
-            HostEvent::Modifiers(m) => self.mods = m,
+            HostEvent::Modifiers(m) => {
+                self.mods = m;
+                // Modifiers are sampled continuously during a drag (STU-SHL-106): the frame sees each change, after
+                // the pending move so a drag sample keeps its order.
+                if let Some(g) = self.gui.as_mut() {
+                    if let Some((x, y)) = self.pending_move.take() {
+                        let _ = g.apply(HostEvent::PointerMoved { x, y });
+                    }
+                    let _ = g.apply(ev);
+                }
+            }
             HostEvent::CloseRequested => el.exit(),
             HostEvent::RedrawRequested | HostEvent::Occluded { hidden: false } => self.needs_present = true,
             HostEvent::PointerLeft | HostEvent::Button { .. } | HostEvent::Wheel { .. } | HostEvent::Key { .. } => {

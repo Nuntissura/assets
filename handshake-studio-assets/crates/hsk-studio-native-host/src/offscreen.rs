@@ -7,6 +7,7 @@
 use crate::capture::{Json, device_json, layers_json, sha256_hex, validation_json, write_png, write_receipt};
 use crate::diag::HostRun;
 use crate::error::HostError;
+use hsk_studio_accord::ActorContext;
 use crate::scene::{CHROME, Content, DocumentFacts, GuiArgs, Scene, content};
 #[cfg(feature = "document")]
 use crate::scene::ChromeMode;
@@ -40,15 +41,17 @@ pub struct OffscreenResult {
     pub receipt: Json,
 }
 
-/// Renders `args.scene` into a pane and reads it back, as the caller `host` names. Sends exactly one terminal frame
-/// through `host` on every exit path, a panic included (F-R60-22).
+/// Renders `args.scene` into a pane and reads it back, as the caller `host` names (the gui scene's viewer runs as that
+/// actor, SMB-GUI-GESTURE-GATE-1). Sends exactly one terminal frame through `host` on every exit path, a panic
+/// included (F-R60-22).
 pub fn run(args: &OffscreenArgs, host: &mut HostRun<'_>) -> Result<OffscreenResult, HostError> {
-    crate::diag::observed(host, || run_scene(args))
+    let actor = host.actor().clone();
+    crate::diag::observed(host, || run_scene(args, &actor))
 }
 
-fn run_scene(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
+fn run_scene(args: &OffscreenArgs, actor: &ActorContext) -> Result<OffscreenResult, HostError> {
     if let Scene::Gui(path) = &args.scene {
-        return gui_run(args, path);
+        return gui_run(args, path, actor);
     }
     let (content, document) = content(&args.scene, args.width, args.height)?;
     let mut owner = Owner::open(OwnerConfig { surface: false, allow_overlays: args.allow_overlays, allow_cpu_device: false })?;
@@ -64,12 +67,14 @@ fn run_scene(args: &OffscreenArgs) -> Result<OffscreenResult, HostError> {
 }
 
 #[cfg(feature = "document")]
-fn gui_run(args: &OffscreenArgs, path: &std::path::Path) -> Result<OffscreenResult, HostError> {
+fn gui_run(args: &OffscreenArgs, path: &std::path::Path, actor: &ActorContext) -> Result<OffscreenResult, HostError> {
     use crate::gui::{CpuChrome, GuiFrame, PortPane, VulkanChrome, drive, drive_chrome, parity};
     if crate::script::frame_only(&args.gui.steps) {
         return Err(HostError::Usage("script_frame_only"));
     }
-    let mut frame = GuiFrame::open(path, args.width, args.height, Some(args.gui.scale_milli.unwrap_or(1000)))?;
+    let mut frame = GuiFrame::open_as(path, args.width, args.height, Some(args.gui.scale_milli.unwrap_or(1000)), actor)?;
+    // An offscreen run is agent-driven: no dwell tip (STU-SHL-235 rule 5); its script's timers settle at its end.
+    frame.set_agent_driven(true);
     frame.set_chrome(args.gui.chrome);
     let mut owner = Owner::open(OwnerConfig { surface: false, allow_overlays: args.allow_overlays, allow_cpu_device: false })?;
     frame.set_device(crate::capture::device_readout(&owner));
@@ -121,7 +126,7 @@ fn gui_run(args: &OffscreenArgs, path: &std::path::Path) -> Result<OffscreenResu
 }
 
 #[cfg(not(feature = "document"))]
-fn gui_run(_: &OffscreenArgs, _: &std::path::Path) -> Result<OffscreenResult, HostError> {
+fn gui_run(_: &OffscreenArgs, _: &std::path::Path, _: &ActorContext) -> Result<OffscreenResult, HostError> {
     Err(HostError::Document("feature_off"))
 }
 

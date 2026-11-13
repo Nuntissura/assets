@@ -2,13 +2,15 @@
 //! (`Prefer::Cpu`: `render_if_dirty` creates a GPU backend only for `Prefer::Gpu`, so the viewer opens no device and
 //! the process keeps one device, the Vulkan owner's). The viewer runs on the asset-local test host's fixed context
 //! (`asset-local-test-host`); this path shows the document and mutates nothing (the `gui` scene edits through
-//! [`crate::gui`]).
+//! [`crate::gui`], whose host runs open the viewer as their caller: [`open_viewer_as`], SMB-GUI-GESTURE-GATE-1).
 use crate::error::HostError;
+use hsk_studio_accord::{ActorContext, ClientSessionId, TransientCorrelation};
+use hsk_studio_harness_view::RunContext;
 use hsk_studio_harness_view::view::Viewer;
 use hsk_studio_harness_view::view::render::Prefer;
 use hsk_studio_vulkan::rgba_len;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub struct DocFrame {
     pub width: u32,
@@ -46,7 +48,22 @@ pub(crate) fn open_viewer(path: &Path) -> Result<Viewer, HostError> {
     if std::fs::metadata(path).is_err() {
         return Err(HostError::Document("not_found"));
     }
-    let mut viewer = Viewer::new(Prefer::Cpu);
+    open_in(Viewer::new(Prefer::Cpu), path)
+}
+
+/// As [`open_viewer`], with the viewer attributed to `actor` (HOST INTEGRATION (4)): its client session is the actor's
+/// session and its correlations are transient, as the harness drive builds a caller's context (harness cli/drive.rs
+/// `context_of`). A session id accord refuses is the typed usage refusal `actor_invalid`, never a panic.
+pub(crate) fn open_viewer_as(path: &Path, actor: &ActorContext) -> Result<Viewer, HostError> {
+    if std::fs::metadata(path).is_err() {
+        return Err(HostError::Document("not_found"));
+    }
+    let client_session = ClientSessionId::parse(actor.session_id()).map_err(|_| HostError::Usage("actor_invalid"))?;
+    let context = RunContext::new(actor.clone(), client_session, Arc::new(TransientCorrelation::new()));
+    open_in(Viewer::with_context(Prefer::Cpu, Default::default(), context), path)
+}
+
+fn open_in(mut viewer: Viewer, path: &Path) -> Result<Viewer, HostError> {
     if let Err(message) = viewer.open(path) {
         let op = viewer.run().ops().last().and_then(|o| o["error"].as_str()).filter(|c| code_like(c)).map(intern);
         let tail = message.rsplit(": ").next().filter(|c| code_like(c)).map(intern);
