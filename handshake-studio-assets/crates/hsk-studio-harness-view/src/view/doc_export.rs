@@ -874,7 +874,7 @@ impl Viewer {
     fn export_document_admitted(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
         self.export_document_checks(path, overwrite)?;
         let job = self.admit_export_job()?;
-        let result = self.export_document_inner(path, recipe, overwrite);
+        let result = self.export_document_inner(&job, path, recipe, overwrite);
         self.settle_export_job(job, result)
     }
 
@@ -893,22 +893,55 @@ impl Viewer {
         Ok(())
     }
 
-    /// [`Viewer::export_document`] for a batch target whose one job [`RecipeTargets`] admitted before anything reached
-    /// the destination (lane SMB-FIX-EXPORT-ADMISSION-1): the same checks, op record and terminal frame, and no second
-    /// ask; the caller settles its job. Private to this module, so no other route can skip admission (the
-    /// `compile_fail` example on [`RecipeTargets`]).
-    fn export_document_for_admitted_target(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
-        let result = self.export_document_checks(path, overwrite).and_then(|()| self.export_document_inner(path, recipe, overwrite));
-        self.record_document_export(path, recipe, result)
+    /// A batch target's export under its admitted `job` (lane SMB-FIX-EXPORT-ADMISSION-1; review F4 of 54bc63fd: only
+    /// admission makes an [`AdmittedJob`], so no route reaches this export, or `export_document_inner`, without its
+    /// ask): `run`'s checkpoint into a unique temp beside `path`, opened here and exported with
+    /// [`Viewer::export_document`]'s checks, op record and terminal frame, no second ask; the temp is removed on every
+    /// path. `job` settles once against `run`'s head: `completed` (`completed_stale` when it moved) as the report's
+    /// `job`, or with the failure's code, `canceled` whenever the viewer's token (the batch's) is set. A failure returns
+    /// its code and the settlement.
+    fn export_admitted_target(
+        &mut self,
+        job: AdmittedJob,
+        run: &mut hsk_studio_harness_core::Run<'_>,
+        recipe: &DocExportRecipe,
+        path: &Path,
+        replace: bool,
+    ) -> Result<Value, (&'static str, Value)> {
+        let result: Result<Value, &'static str> = 'export: {
+            let Some(bytes) = run.checkpoint() else { break 'export Err("batch_checkpoint_failed") };
+            let Ok((temp, mut file)) = create_unique_sibling(path, ".batch-src.handshake") else { break 'export Err("batch_destination_unavailable") };
+            let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+            drop(file);
+            let exported = written.map_err(|_| "batch_destination_unavailable").and_then(|()| {
+                self.open(&temp).map_err(|_| "batch_export_open_failed")?;
+                let exported = self.export_document_checks(path, replace).and_then(|()| self.export_document_inner(&job, path, recipe, replace));
+                self.record_document_export(path, recipe, exported).map_err(|r| r.code)
+            });
+            let _ = std::fs::remove_file(&temp);
+            exported
+        };
+        let head = run.snapshot().map_or(job.bound_revision(), |s| s.document().revision);
+        match result {
+            Ok(mut report) => {
+                report["job"] = settlement_json(&job.complete(head));
+                Ok(report)
+            }
+            Err(code) => {
+                let code = if self.cancel.check().is_err() { "canceled" } else { code };
+                let settled = job.settle(if code == "canceled" { JobOutcome::Canceled } else { JobOutcome::Failed(code) });
+                Err((code, settlement_json(&settled)))
+            }
+        }
     }
 
-    /// One export job of `resource` bound to its `revision` (a batch target's source document, which is in no viewer
-    /// yet), asked through the viewer's JobPort with the viewer's lifecycle, actor and correlation source: a refusal is
-    /// typed `overloaded`, `canceled` or `stale_revision` with the port's detail.
-    fn admit_target_export(&self, resource: DomainId, revision: u64) -> Result<AdmittedJob, Refusal> {
+    /// One export job of `resource` bound to its `revision` and costing `bytes` (a batch target's source document,
+    /// which is in no viewer yet), asked through the viewer's JobPort with the viewer's lifecycle, actor, correlation
+    /// source and token: a refusal is typed `overloaded`, `canceled` or `stale_revision` with the port's detail.
+    fn admit_target_export(&self, resource: DomainId, revision: u64, bytes: u64) -> Result<AdmittedJob, Refusal> {
         let admission = self.job_admission_of(resource);
         let correlation = admission.next_correlation();
-        admission.admit(admission.request(Action::Export, 0, revision, correlation), revision, self.cancel).map_err(|r| refuse(r.code(), refusal_json(r).to_string()))
+        admission.admit(admission.request(Action::Export, bytes, revision, correlation), revision, self.cancel).map_err(|r| refuse(r.code(), refusal_json(r).to_string()))
     }
 
     /// One export job of the open document admitted through the viewer's JobPort before anything is
@@ -952,7 +985,9 @@ impl Viewer {
         }
     }
 
-    fn export_document_inner(&mut self, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
+    /// Renders, encodes and writes the export; `_admitted` is the export's job (only admission makes one, so this
+    /// write cannot run unadmitted).
+    fn export_document_inner(&mut self, _admitted: &AdmittedJob, path: &Path, recipe: &DocExportRecipe, overwrite: bool) -> Result<Value, Refusal> {
         let text = self.prepared_text().map_err(|e| refuse("render_text", e))?;
         let vectors = self.prepared_vectors().map_err(|e| refuse("render_vector", e))?;
         let snap = self.run.snapshot().ok_or_else(|| refuse("nothing_open", "open a document first"))?;
@@ -987,34 +1022,33 @@ impl Viewer {
 /// and terminal frame, and the temp is removed. Studio reading: `colour_profile_policy` and `resize_policy` stay
 /// refused by the runner; the recipe carries colour and size.
 ///
-/// Admission (lane SMB-FIX-EXPORT-ADMISSION-1, R60 attempt 3 probes e1 and e2; HBR-HOST-004, STU-ARC-008): a target
-/// is one export job of the run's document bound to the run's revision, asked once through the caller's JobPort
-/// ([`RecipeTargets::with_job_port`]; without one, the CLI, the export viewer's asset-local port) before anything
-/// reaches the destination, the checkpoint temp included. A refusal is the target's typed code (`overloaded`,
-/// `canceled` or `stale_revision`) with nothing written. The export itself does not ask again; the job settles once,
-/// `completed` (`completed_stale` when the run's head moved) as the report's `job`, or `canceled` / `failed` with the
-/// target's code. One ask per target (tests `harness/tests/fix_export_admission.rs`, `r60_followups_jobs.rs`). The
-/// export without an ask is private to this module:
-///
-/// ```compile_fail,E0624
-/// use hsk_studio_harness_view::view::Viewer;
-/// use hsk_studio_harness_view::view::doc_export::{DocExportRecipe, DocFormat};
-/// fn skip_admission(v: &mut Viewer) {
-///     let _ = v.export_document_for_admitted_target(std::path::Path::new("x.png"), &DocExportRecipe::of_format(DocFormat::Png { depth: 8 }), false);
-/// }
-/// ```
+/// Admission (lane SMB-FIX-EXPORT-ADMISSION-1, R60 attempt 3 probes e1 and e2, review rulings F1-F5 of 54bc63fd;
+/// HBR-HOST-004, STU-ARC-008): a target is one export job of the run's document bound to the run's revision and
+/// costing the input's bytes ([`TargetExporter::bind_input`]), asked once through the caller's JobPort
+/// ([`RecipeTargets::with_job_port`], which [`TargetExporter::job_port`] reports to the runner; without one, the
+/// CLI, the export viewer's asset-local port) before anything reaches the destination, the checkpoint temp included.
+/// The export viewer runs on the batch's cancellation token. A refusal is the target's typed code (`overloaded`,
+/// `canceled` or `stale_revision`) with nothing written. The export itself does not ask again: it takes the
+/// [`AdmittedJob`] only admission makes. The job settles once, `completed` (`completed_stale` when the run's head
+/// moved) as the report's `job`, or `canceled` / `failed` with the target's code, recorded in [`RecipeTargets::failed`].
+/// One ask per target (tests `harness/tests/fix_export_admission.rs`, `r60_followups_jobs.rs`).
 pub struct RecipeTargets {
     recipes: BTreeMap<String, DocExportRecipe>,
     context: RunContext,
     /// The caller's JobPort each export viewer is bound to ([`RecipeTargets::with_job_port`]).
     port: Option<std::sync::Arc<dyn hsk_studio_session::JobPort>>,
+    /// The batch's cancellation token and the current input's bytes ([`TargetExporter::bind_input`]).
+    cancel: CancellationToken,
+    input_bytes: u64,
     /// The last export report, by output path.
     pub reports: Vec<(PathBuf, Value)>,
+    /// Each target that failed after its ask, by output path: `{code, job}` (the job's settlement).
+    pub failed: Vec<(PathBuf, Value)>,
 }
 
 impl RecipeTargets {
     pub fn new(context: RunContext) -> Self {
-        Self { recipes: BTreeMap::new(), context, port: None, reports: Vec::new() }
+        Self { recipes: BTreeMap::new(), context, port: None, cancel: CancellationToken::default(), input_bytes: 0, reports: Vec::new(), failed: Vec::new() }
     }
 
     /// Targets whose exports admit through `port`, the caller's bound JobPort (type docs).
@@ -1057,39 +1091,41 @@ impl TargetExporter for RecipeTargets {
         let recipe = self.recipe(target).map_err(str::to_string)?;
         let (document_id, revision) = run.snapshot().map(|s| (s.document().document_id.clone(), s.document().revision)).ok_or_else(|| "batch_checkpoint_failed".to_string())?;
         let resource = DomainId::parse(&document_id).map_err(|_| "document_id".to_string())?;
-        let mut viewer = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), self.context.clone());
-        if let Some(port) = &self.port {
-            viewer.set_job_port(std::sync::Arc::clone(port));
-        }
+        let mut viewer = target_viewer(self.context.clone(), self.port.as_ref(), &self.cancel);
         // The target's one ask, before anything reaches the destination (type docs).
-        let job = viewer.admit_target_export(resource, revision).map_err(|r| r.code.to_string())?;
-        let result = write_admitted_target(&mut viewer, run, &recipe, path, replace);
-        let head = run.snapshot().map_or(revision, |s| s.document().revision);
-        match result {
-            Ok(mut report) => {
-                report["job"] = settlement_json(&job.complete(head));
+        let job = viewer.admit_target_export(resource, revision, self.input_bytes).map_err(|r| r.code.to_string())?;
+        match viewer.export_admitted_target(job, run, &recipe, path, replace) {
+            Ok(report) => {
                 self.reports.push((path.to_path_buf(), report));
                 Ok(())
             }
-            Err(code) => {
-                job.settle(if code == "canceled" { JobOutcome::Canceled } else { JobOutcome::Failed(code) });
+            Err((code, settlement)) => {
+                self.failed.push((path.to_path_buf(), json!({"code": code, "job": settlement})));
                 Err(code.to_string())
             }
         }
     }
+
+    fn job_port(&self) -> Option<&std::sync::Arc<dyn hsk_studio_session::JobPort>> {
+        self.port.as_ref()
+    }
+
+    fn bind_input(&mut self, cancel: &CancellationToken, input_bytes: u64) {
+        self.cancel = cancel.clone();
+        self.input_bytes = input_bytes;
+    }
 }
 
-/// The admitted part of [`RecipeTargets::write`]: `run`'s checkpoint into a unique temp beside `path`, opened in
-/// `viewer` and exported without a second ask; the temp is removed on every path.
-fn write_admitted_target(viewer: &mut Viewer, run: &mut hsk_studio_harness_core::Run<'_>, recipe: &DocExportRecipe, path: &Path, replace: bool) -> Result<Value, &'static str> {
-    let bytes = run.checkpoint().ok_or("batch_checkpoint_failed")?;
-    let (temp, mut file) = create_unique_sibling(path, ".batch-src.handshake").map_err(|_| "batch_destination_unavailable")?;
-    let written = file.write_all(&bytes).and_then(|()| file.sync_all());
-    drop(file);
-    let result = written.map_err(|_| "batch_destination_unavailable").and_then(|()| {
-        viewer.open(&temp).map_err(|_| "batch_export_open_failed")?;
-        viewer.export_document_for_admitted_target(path, recipe, replace).map_err(|r| r.code)
-    });
-    let _ = std::fs::remove_file(&temp);
-    result
+/// The export viewer of one batch target: attributed to `context`, bound to `port` when given, and on the batch's
+/// `cancel` (review F3 of 54bc63fd): its run and its admission check that token. The `'static` copy is leaked like
+/// the viewer's own harness and token ([`Viewer::with_context`]).
+fn target_viewer(context: RunContext, port: Option<&std::sync::Arc<dyn hsk_studio_session::JobPort>>, cancel: &CancellationToken) -> Viewer {
+    let mut viewer = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context);
+    let cancel: &'static CancellationToken = Box::leak(Box::new(cancel.clone()));
+    viewer.cancel = cancel;
+    viewer.run = viewer.harness.run(viewer.context.clone(), cancel);
+    if let Some(port) = port {
+        viewer.set_job_port(std::sync::Arc::clone(port));
+    }
+    viewer
 }

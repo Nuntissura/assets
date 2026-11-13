@@ -180,8 +180,9 @@ fn e2_one_slot_port_as_runner_and_exporter_port_completes_a_one_target_batch() {
     assert_eq!(listing(&out), ["in.png"]);
 }
 
-/// The runner's slot is asked again only before a native target that follows an exporter target: native, png,
-/// native on one one-slot port is 3 asks (runner, target, runner again), none refused, all written.
+/// Native, png, native on one one-slot port: all written, none refused. Count changed by the lead's F2 ruling on
+/// the review of 54bc63fd (rule 4a, 2026-11-13; it was 3 asks, runner / target / runner again): an input's native
+/// targets are written first under the runner's slot, so there is no second runner ask: 2 asks (runner, target).
 #[test]
 fn a_native_target_after_an_exporter_target_asks_the_runner_slot_again() {
     let s = Scratch::new("mixed");
@@ -192,7 +193,7 @@ fn a_native_target_after_an_exporter_target_asks_the_runner_slot_again() {
     let report = run(&job(&input, vec![target("handshake", &a), target("png", &b), target("handshake", &c)]), &mut targets, Some(port.clone()));
     let outcomes: Vec<_> = report.receipts[0].targets.iter().map(|t| (t.outcome, t.code.clone())).collect();
     assert_eq!(outcomes, [("written", None), ("written", None), ("written", None)], "{}", report.to_json());
-    assert_eq!(port.counts(), (3, 0, 3), "asks, refusals, releases");
+    assert_eq!(port.counts(), (2, 0, 2), "asks, refusals, releases");
     assert_eq!((listing(&a), listing(&b), listing(&c)), (vec!["in.handshake".to_string()], vec!["in.png".to_string()], vec!["in.handshake".to_string()]));
 }
 
@@ -232,22 +233,6 @@ fn a_refused_target_keeps_a_destination_folder_that_already_existed() {
     assert!(listing(&out).is_empty(), "nothing left behind: {:?}", listing(&out));
 }
 
-/// Admits the first `admits` asks, refuses every later one; counts asks and releases.
-struct Budgeted {
-    admits: u64,
-    asks: AtomicU64,
-    released: AtomicU64,
-}
-impl JobPort for Budgeted {
-    fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
-        let n = self.asks.fetch_add(1, Ordering::SeqCst) + 1;
-        if n <= self.admits { Ok(JobTicket(n)) } else { Err(JobRefused { retry_after_ms: 5 }) }
-    }
-    fn release(&self, _ticket: JobTicket) {
-        self.released.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
 /// Focused: a target that fails after its ask (the second write to one path without replace is
 /// `destination_exists`) settles once and releases its ticket, and no checkpoint temp is left; the first settles
 /// `completed` into the report's `job`.
@@ -271,27 +256,9 @@ fn a_target_failing_after_its_ask_settles_once_and_leaves_no_temp() {
     assert_eq!(listing(&out), ["x.png"], "no checkpoint temp is left");
 }
 
-/// Focused: the runner's second ask (a native target after an exporter target) refused is that target's typed
-/// `job_admission_refused(retry_after_ms=5)`, before its folder is made; the exporter target's file stays.
-#[test]
-fn a_refused_second_runner_ask_fails_the_native_target_before_its_folder_is_made() {
-    let s = Scratch::new("rehold");
-    let input = s.input();
-    let (a, b) = (s.0.join("a"), s.0.join("b"));
-    let port = Arc::new(Budgeted { admits: 2, asks: AtomicU64::new(0), released: AtomicU64::new(0) });
-    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
-    let report = run(&job(&input, vec![target("png", &a), target("handshake", &b)]), &mut targets, Some(port.clone()));
-    let outcomes: Vec<_> = report.receipts[0].targets.iter().map(|t| (t.outcome, t.code.clone(), t.path.is_some())).collect();
-    assert_eq!(
-        outcomes,
-        [("written", None, true), ("failed", Some("job_admission_refused(retry_after_ms=5)".to_string()), false)],
-        "{}",
-        report.to_json()
-    );
-    assert_eq!((port.asks.load(Ordering::SeqCst), port.released.load(Ordering::SeqCst)), (3, 2), "runner, png target, runner again (refused)");
-    assert_eq!(listing(&a), ["in.png"]);
-    assert!(!b.exists(), "no folder is made for a target whose ask was refused");
-}
+// Retired by the lead's F2 ruling on the review of 54bc63fd (2026-11-13): 54bc63fd's
+// `a_refused_second_runner_ask_fails_the_native_target_before_its_folder_is_made` pinned the runner's second ask,
+// which no longer exists; `f2_contention_cannot_fail_a_native_target_declared_after_an_exporter_target` replaces it.
 
 // Review of 54bc63fd (research/review-smb-fix-export-admission-1-54bc63fd.json), lead rulings 2026-11-13: F1 to F3.
 

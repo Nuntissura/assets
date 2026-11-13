@@ -8,10 +8,14 @@
 //! Every input runs in its own [`Run`] of the caller's [`Harness`]: open, digest, Job Runtime
 //! admission (optional [`JobPort`], one slot per input, released on every exit path), the
 //! automation through [`Run::play_action`] (headless), then one native package per output target
-//! through [`Run::save_to`]. The input's slot (lane SMB-FIX-EXPORT-ADMISSION-1) is held through the
-//! automation and the native targets and lent (released) before each target the exporter writes, which
-//! asks for its own job; it is asked again only before a native target that follows one, so the runner
-//! and a target never hold two slots of one port at once. Inputs are never moved, deleted or written over. A target of another format
+//! through [`Run::save_to`]. The input's slot (lane SMB-FIX-EXPORT-ADMISSION-1, review rulings F1-F3
+//! of 54bc63fd) is asked once, after a cancellation check (a canceled batch refuses `canceled` without
+//! asking), and held through the automation and the native targets, which an input writes before its
+//! exporter targets (receipts keep the declared order). Before the first exporter target it is lent
+//! (released) only when the exporter asks the runner's own port ([`TargetExporter::job_port`]), so the
+//! target's own job takes that slot and the runner and a target never hold two slots of one port;
+//! otherwise it stays held through every write. The exporter is told the batch's token and the input's
+//! bytes ([`TargetExporter::bind_input`]) before the input's targets. Inputs are never moved, deleted or written over. A target of another format
 //! or with an export recipe is written by the caller's [`TargetExporter`] port (lane SMB-DOC-EXPORT-1; the
 //! viewer's document export recipe), under the same naming, collision and overwrite rules; without the port it
 //! refuses as before.
@@ -489,10 +493,23 @@ pub trait TargetExporter {
     /// (an unknown format or recipe).
     fn extension(&self, target: &OutputTarget) -> Result<&'static str, &'static str>;
     /// Writes `run`'s current document to exactly `path`. With `replace` false nothing at `path` may be
-    /// replaced (`destination_exists`). Returns the typed code of a failure. The runner holds no slot of
-    /// its own while this runs (module docs), so an exporter admitting through the runner's port takes
-    /// that slot; the folders the runner made for `path` are removed again (while empty) when this fails.
+    /// replaced (`destination_exists`). Returns the typed code of a failure. While this runs the runner
+    /// holds no slot of its own only when [`TargetExporter::job_port`] is the runner's port (module docs);
+    /// the folders the runner made for `path` are removed again (while empty) when this fails.
     fn write(&mut self, run: &mut Run<'_>, target: &OutputTarget, path: &Path, replace: bool) -> Result<(), String>;
+
+    /// The JobPort each `write` asks for its target's own job, when the exporter is bound to one. The
+    /// runner lends its input slot to `write` only when this is its own port ([`BatchPorts::jobs`], the
+    /// same allocation, `Arc::ptr_eq`); the default (none) keeps the slot held through every write.
+    fn job_port(&self) -> Option<&Arc<dyn JobPort>> {
+        None
+    }
+
+    /// Called by the runner before an input's targets: the batch's cancellation token (the exporter's
+    /// ask and work stop on it, `canceled`) and the input's size in bytes (the cost of each target's job,
+    /// as of the slot it takes over). A direct caller of `write` that never calls this gets a token that
+    /// is never set and a cost of 0 bytes. The default ignores both.
+    fn bind_input(&mut self, _cancel: &CancellationToken, _input_bytes: u64) {}
 }
 
 /// A job that refused to start: nothing was read or written.
@@ -771,7 +788,8 @@ fn render_name(template: &[TemplateToken], input: &Path, position: usize, format
 }
 
 /// The input's Job Runtime slot (module docs): an `Edit` job of the opened document, asked when not
-/// held, lent before a target the exporter writes, released on drop (every exit path).
+/// held, lent before the exporter targets of an exporter asking the same port, released on drop (every
+/// exit path).
 struct Slot<'p> {
     port: &'p Arc<dyn JobPort>,
     resource: DomainId,
@@ -780,10 +798,11 @@ struct Slot<'p> {
 }
 
 impl Slot<'_> {
-    /// Holds the slot, asking the port unless it is held; a refusal is the typed
-    /// `job_admission_refused(retry_after_ms=N)` code.
-    fn hold(&mut self) -> Result<(), String> {
+    /// Holds the slot, asking the port unless it is held. A set `cancel` refuses `canceled` without
+    /// asking; a refusal of the port is the typed `job_admission_refused(retry_after_ms=N)` code.
+    fn hold(&mut self, cancel: &CancellationToken) -> Result<(), String> {
         if self.ticket.is_none() {
+            cancel.check().map_err(|_| "canceled".to_string())?;
             let scope = JobScope { resource: &self.resource, action: JobAction::Edit };
             let ticket = self.port.admit(&scope, self.cost).map_err(|refused| format!("job_admission_refused(retry_after_ms={})", refused.retry_after_ms))?;
             self.ticket = Some(ticket);
@@ -986,7 +1005,7 @@ fn process(
             let doc = run.snapshot().map(|s| s.document().document_id.clone()).unwrap_or_default();
             let resource = DomainId::parse(&doc).map_err(|_| Failure::before_output("admission", "job_resource_invalid"))?;
             let mut slot = Slot { port, resource, cost: Cost { jobs: 1, bytes: out.input_bytes.unwrap_or(0) }, ticket: None };
-            slot.hold().map_err(|code| Failure::before_output("admission", code))?;
+            slot.hold(cancel).map_err(|code| Failure::before_output("admission", code))?;
             Some(slot)
         }
     };
@@ -1012,9 +1031,24 @@ fn process(
     if !played {
         return Err(Failure::before_output("automation", last_error(&run, "automation_failed")));
     }
+    // The slot is lent only to an exporter that asks the runner's own port (module docs).
+    let lend = match (&slot, exporter.as_deref()) {
+        (Some(s), Some(e)) => e.job_port().is_some_and(|p| Arc::ptr_eq(s.port, p)),
+        _ => false,
+    };
+    if let Some(e) = exporter.as_deref_mut() {
+        e.bind_input(cancel, out.input_bytes.unwrap_or(0));
+    }
+    // Native targets first, under the held slot, then the others; receipts in the declared order.
+    let (native, other): (Vec<_>, Vec<_>) = job.output_targets.iter().enumerate().partition(|(_, t)| is_native(t));
+    let mut receipts = Vec::with_capacity(job.output_targets.len());
+    for (index, target) in native.into_iter().chain(other) {
+        let lent = if lend { slot.as_mut() } else { None };
+        receipts.push((index, write_target(&mut run, job, target, input, position, written, exporter.as_deref_mut(), lent)));
+    }
+    receipts.sort_by_key(|(index, _)| *index);
     let mut first_failure: Option<Failure> = None;
-    for target in &job.output_targets {
-        let receipt = write_target(&mut run, job, target, input, position, written, exporter.as_deref_mut(), slot.as_mut());
+    for (_, receipt) in receipts {
         if first_failure.is_none() && matches!(receipt.outcome, "refused" | "failed") {
             first_failure = Some(Failure { stage: "output", code: receipt.code.clone().unwrap_or_default(), retryable: false });
         }
@@ -1023,6 +1057,13 @@ fn process(
     first_failure.map_or(Ok(()), Err)
 }
 
+/// A target the runner writes as a native package (no exporter).
+fn is_native(target: &OutputTarget) -> bool {
+    target.format_id == "handshake" && target.export_recipe_id.is_none()
+}
+
+/// Writes one target. `lent` is the input's slot when the exporter asks the runner's own port: it is
+/// lent (released) right before the exporter's `write` (module docs).
 #[allow(clippy::too_many_arguments)]
 fn write_target(
     run: &mut Run<'_>,
@@ -1032,7 +1073,7 @@ fn write_target(
     position: usize,
     written: &mut BTreeSet<PathBuf>,
     exporter: Option<&mut (dyn TargetExporter + '_)>,
-    mut slot: Option<&mut Slot<'_>>,
+    mut lent: Option<&mut Slot<'_>>,
 ) -> TargetReceipt {
     let receipt = |path: Option<&Path>, outcome: &'static str, code: Option<&str>| TargetReceipt {
         format_id: target.format_id.clone(),
@@ -1040,7 +1081,7 @@ fn write_target(
         outcome,
         code: code.map(str::to_string),
     };
-    let native = target.format_id == "handshake" && target.export_recipe_id.is_none();
+    let native = is_native(target);
     let (ext, mut exporter) = match exporter {
         _ if native => ("handshake", None),
         None if target.format_id != "handshake" => return receipt(None, "refused", Some("batch_output_format_unsupported")),
@@ -1058,13 +1099,6 @@ fn write_target(
         Ok(n) => n,
         Err(code) => return receipt(None, "refused", Some(code)),
     };
-    // A native target is written under the input's slot (asked again when an exporter target lent it).
-    if native
-        && let Some(s) = slot.as_mut()
-        && let Err(code) = s.hold()
-    {
-        return receipt(None, "failed", Some(&code));
-    }
     let dir = Path::new(&target.destination);
     let Ok(made) = make_folders(dir) else {
         return receipt(None, "failed", Some("batch_destination_unavailable"));
@@ -1094,8 +1128,8 @@ fn write_target(
     let replace = target.overwrite_policy == OverwritePolicy::Overwrite;
     let saved = match exporter.as_mut() {
         Some(e) => {
-            // The target's own job takes the slot (module docs); a failed target leaves no folder made here.
-            if let Some(s) = slot.as_mut() {
+            // The target's own job takes a lent slot (module docs); a failed target leaves no folder made here.
+            if let Some(s) = lent.as_mut() {
                 s.lend();
             }
             let saved = e.write(run, target, &path, replace);
@@ -1162,4 +1196,37 @@ fn quarantine(input: &Path, folder: &Path) -> Result<String, &'static str> {
     }
     std::fs::copy(input, &dest).map_err(|_| "quarantine_copy_failed")?;
     Ok(dest.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hsk_studio_session::JobRefused;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Admits every ask and counts them.
+    #[derive(Default)]
+    struct Counting(AtomicU64);
+    impl JobPort for Counting {
+        fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
+            Ok(JobTicket(self.0.fetch_add(1, Ordering::SeqCst)))
+        }
+        fn release(&self, _ticket: JobTicket) {}
+    }
+
+    /// Review F3 of 54bc63fd: a canceled batch's slot refuses `canceled` without asking the port; the same
+    /// slot asks once when the token is clear.
+    #[test]
+    fn a_canceled_slot_hold_refuses_canceled_without_asking() {
+        let counting = Arc::new(Counting::default());
+        let port: Arc<dyn JobPort> = counting.clone();
+        let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+        let mut slot = Slot { port: &port, resource, cost: Cost { jobs: 1, bytes: 0 }, ticket: None };
+        let cancel = CancellationToken::default();
+        cancel.cancel();
+        assert_eq!(slot.hold(&cancel), Err("canceled".to_string()));
+        assert_eq!((counting.0.load(Ordering::SeqCst), slot.ticket), (0, None), "nothing asked, nothing held");
+        assert_eq!(slot.hold(&CancellationToken::default()), Ok(()));
+        assert_eq!(counting.0.load(Ordering::SeqCst), 1);
+    }
 }
