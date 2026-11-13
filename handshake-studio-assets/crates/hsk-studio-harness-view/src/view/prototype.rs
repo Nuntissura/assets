@@ -1026,7 +1026,7 @@ impl PrototypePlay {
 mod tests {
     use super::{PrototypePlay, refused};
     use hsk_studio_accord::CancellationToken;
-    use hsk_studio_interop_fig::FigError;
+    use hsk_studio_interop_fig::{FigError, export_frame_pdf, plan_frame_exports, render_frame_export};
 
     /// The Operator prototype fixture (repository-relative, never machine-local).
     fn fig() -> Vec<u8> {
@@ -1070,7 +1070,8 @@ mod tests {
     }
 
     /// A cancel a step sees is typed `canceled` with the step as the detail: the frame export of an uncached frame
-    /// (real path), and the mapping of interop-fig's and press's cancel refusals; other refusals keep their stage code.
+    /// (real path), and the mapping of interop-fig's cancel refusal; other refusals keep their stage code. Press's
+    /// render back: `a_cancel_seen_by_the_press_render_back_is_typed_canceled` (the real value, review F3 of 2adb7501).
     #[test]
     fn a_cancel_seen_by_a_step_is_typed_canceled_with_the_step_as_detail() {
         let mut play = PrototypePlay::open(&fig(), None).unwrap();
@@ -1078,12 +1079,37 @@ mod tests {
         let e = play.frame_raster_under(&screen, &canceled()).unwrap_err();
         assert_eq!((e.code, e.detail.as_str()), ("canceled", "frame_export_refused"), "{e:?}");
         assert!(play.rendered.is_empty(), "nothing cached");
-        let e = refused("frame_render_refused", &FigError::ExportRefused("canceled"));
-        assert_eq!((e.code, e.detail.as_str()), ("canceled", "frame_render_refused"));
         let e = refused("smart_native_refused", &FigError::Canceled);
         assert_eq!((e.code, e.detail.as_str()), ("canceled", "smart_native_refused"));
         let e = refused("frame_render_refused", &FigError::ExportRefused("budget_exceeded"));
         assert_eq!((e.code, e.detail.as_str()), ("frame_render_refused", "export_refused"));
+    }
+
+    /// Review F1 of 2adb7501: a cancel that `to_native`'s Folio validations see comes back as
+    /// `FigError::NativeRejected(Code::Canceled)` and is typed `canceled` with the step as the detail, never
+    /// `*_native_refused` / `native_rejected` (a capture job then settles `canceled`, not `failed`).
+    #[test]
+    fn a_cancel_seen_by_the_folio_validations_of_to_native_is_typed_canceled() {
+        let e = refused("smart_native_refused", &FigError::NativeRejected(hsk_studio_folio::Code::Canceled));
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "smart_native_refused"), "{e:?}");
+        let e = refused("fig_native_refused", &FigError::NativeRejected(hsk_studio_folio::Code::Canceled));
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "fig_native_refused"), "{e:?}");
+        let e = refused("fig_native_refused", &FigError::NativeRejected(hsk_studio_folio::Code::InvalidField));
+        assert_eq!((e.code, e.detail.as_str()), ("fig_native_refused", "native_rejected"), "{e:?}");
+    }
+
+    /// Review F3 of 2adb7501: the real press refusal of a canceled render back (the start screen's PDF exported
+    /// under a live token, rendered back under a canceled one) is typed `canceled` with the step as the detail.
+    #[test]
+    fn a_cancel_seen_by_the_press_render_back_is_typed_canceled() {
+        let play = PrototypePlay::open(&fig(), None).unwrap();
+        let screen = play.session.state().screen;
+        let source = play.proposal.id_map.iter().find(|e| e.node.node_id == screen).map(|e| e.source).unwrap();
+        let (plans, _) = plan_frame_exports(&play.doc, &play.proposal, source);
+        let pdf = export_frame_pdf(&play.proposal, plans.first().unwrap(), None, &CancellationToken::default()).unwrap();
+        let e = render_frame_export(&pdf, &canceled()).err().unwrap();
+        let e = refused("frame_render_refused", &e);
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "frame_render_refused"), "{e:?}");
     }
 
     /// `open_with` and `open_document_with` import, decode and map under the caller's token: a canceled one refuses
