@@ -150,18 +150,19 @@ fn r60_b9_undo_restores_the_page_and_its_binding_together() {
     v.layout_apply(frame_on_page_1()).expect("editable after redo");
 }
 
-/// Item 6: a page delete never leaves a stale entry. A page a layout text frame sits on is refused typed
-/// `page_not_empty` with nothing changed, and the layout stays editable, also after save and reopen.
+/// Item 6: a page delete never leaves a stale entry. Lane SMB-LAYOUT-DELETE-CASCADE-1 (ledger 2026-11-12T17:43:00Z):
+/// a page a layout text frame sits on is deleted with the frame and its story in ONE step (no longer refused
+/// `page_not_empty`), and the layout stays editable, also after save and reopen.
 #[test]
 fn r60_b9_a_page_delete_never_leaves_the_layout_locked() {
     let scratch = Scratch::new("r60-b9-frame");
     let mut v = parented(&scratch);
     v.layout_apply(LayoutEdit::DrawFrame { page_id: "page-2".into(), x: 1.0, y: 1.0, w: 10.0, h: 10.0 }).unwrap();
     let depth = v.edit_json()["history"]["undo"].as_array().unwrap().len();
-    let e = v.delete_page("page-2").expect_err("a text frame sits on page-2");
-    assert!(e.contains("page_not_empty"), "a typed refusal: {e}");
-    assert_eq!(pages(&v), ["page-1", "page-2", "page-3"], "a refusal changes nothing");
-    assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), depth, "and adds no step");
+    v.delete_page("page-2").unwrap_or_else(|e| panic!("the page goes with its frame: {e}"));
+    assert_eq!(pages(&v), ["page-1", "page-3"]);
+    assert!(v.run().snapshot().unwrap().document().layers.is_empty(), "the frame went with its page");
+    assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), depth + 1, "in one step");
     v.layout_apply(frame_on_page_1()).expect("the layout stays editable");
     let saved = scratch.0.join("frame.handshake");
     v.save(&saved, false).unwrap();
@@ -206,11 +207,11 @@ fn r60_f2_a_page_key_at_the_last_u64_still_lets_page_add_mint() {
     assert_eq!((first.as_str(), second.as_str()), ("page-1", "page-2"));
 }
 
-/// Lead ruling 2026-11-11T10:39Z: deleting a text-frame layer that a thread or layout flow record names is
-/// refused typed `layer_bound_by_layout_records`, naming the record, before any change; the document is
-/// unchanged and the layout stays editable after save and reopen.
+/// Lead ruling 2026-11-11T10:39Z, superseded by lane SMB-LAYOUT-DELETE-CASCADE-1 (ledger 2026-11-11T10:39:51Z):
+/// deleting a text-frame layer that a thread names ends the thread at the frame before it in ONE step (no longer
+/// refused `layer_bound_by_layout_records`); undo restores it; the layout stays editable after save and reopen.
 #[test]
-fn r60_l1_a_threaded_text_frame_layer_delete_is_refused_typed_and_leaves_the_layout_editable() {
+fn r60_l1_a_threaded_text_frame_layer_delete_relinks_and_leaves_the_layout_editable() {
     let scratch = Scratch::new("r60-l1");
     let mut v = open(&package(&scratch.0, "threaded.handshake"));
     v.layout_apply(frame_on_page_1()).unwrap();
@@ -220,10 +221,15 @@ fn r60_l1_a_threaded_text_frame_layer_delete_is_refused_typed_and_leaves_the_lay
     v.layout_apply(LayoutEdit::Thread { from: a.clone(), to: b.clone() }).unwrap();
     let before = v.run().snapshot().unwrap().document().clone();
     let depth = v.edit_json()["history"]["undo"].as_array().unwrap().len();
-    let refused = v.delete_layer(&b).expect_err("a threaded frame layer is bound by the thread record");
-    assert!(refused.contains("layer_bound_by_layout_records") && refused.contains(&a), "typed, naming the record: {refused}");
-    assert_eq!(v.run().snapshot().unwrap().document(), &before, "nothing changed");
-    assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), depth, "no step");
+    v.delete_layer(&b).unwrap_or_else(|e| panic!("the thread ends at {a}: {e}"));
+    let next_of_a = |v: &Viewer| v.run().snapshot().unwrap().document().layers.iter().find(|l| l.layer_id == a).and_then(|l| l.text_frame.as_ref()).and_then(|f| f.next_text_frame.clone());
+    assert_eq!(next_of_a(&v), None, "the thread ends at the frame before the deleted one");
+    assert_eq!(v.edit_json()["history"]["undo"].as_array().unwrap().len(), depth + 1, "one step");
+    v.undo().unwrap();
+    let mut restored = v.run().snapshot().unwrap().document().clone();
+    restored.revision = before.revision;
+    assert_eq!(restored, before, "undo restores the frame and the thread");
+    v.redo().unwrap();
     let saved = scratch.0.join("threaded-saved.handshake");
     v.save(&saved, false).unwrap();
     let mut back = open(&saved);
