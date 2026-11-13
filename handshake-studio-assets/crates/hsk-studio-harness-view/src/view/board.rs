@@ -3,38 +3,44 @@
 //! ([`BoardCommand`], ids `board.*`), egui-free and drawing nothing on screen. Every mutating command is ONE
 //! undo step; reads change nothing.
 //!
-//! Model (Folio `board.rs`): a board is an artboard; a document is in whiteboard mode when its vector
-//! records list a board (`document.new` with profile `board` lists its first artboard; the first node
-//! created on an artboard of any document lists it in the same step), and then every artboard is a board
-//! (`board.add` is `artboard.add`). A board node is a layer of kind `sticky`, `shape_with_text`, `section`
-//! or `connector` whose `Payload::Vector` path is its drawing (composite `board`), with its additional
-//! fields in the vector records' `board_nodes` and its text an area-text story bound inside its own path.
-//! Every write is the vector entry and the layers' paths in one step (`Run::restructure_and_entry` for a
-//! create or delete, `Run::set_vector_paths_and_entry` for an edit); a story is written to the `text`
-//! entry first under a fresh id, so an undo returns the binding to the old story and the old text.
+//! Model (Folio `board.rs`): whiteboard mode is written once, when `document.new` or `new --profile board`
+//! creates the document (harness-core, the artboard options entry: `Run::whiteboard_mode`; review F4 of
+//! e4d033aa, lead ruling option B); a document without it never becomes a whiteboard, and a board command on it
+//! is refused `not_whiteboard_document`. A board is an artboard of a whiteboard document (`board.add` is
+//! `artboard.add`). A board node is a layer of kind `sticky`, `shape_with_text`, `section` or `connector` whose
+//! `Payload::Vector` paths are its drawing (composite `board`): the outline first (a shape's interior lines
+//! second), with its additional fields in the vector records' `board_nodes` and its text an area-text story bound
+//! inside its outline. A redraw, a move and a reroute replace the node's path records in place (review F2):
+//! the step's entry snapshot keeps the old geometry, so nothing grows with edits.
 //!
-//! Connectors ([STU-WB-108]): endpoints resolve against the current bounds of their nodes; a move of a node
-//! by `board.node.move` reroutes every connector attached to it in the same step, and a read reports the
-//! route resolved now (`route_current` says whether the drawing matches it: a move by another tool redraws
-//! the connector at the next board edit). A connector whose endpoint node is gone is `broken`: it keeps its
-//! last route and drawing and reads report `connector_endpoint_node_unresolvable` (severity warning,
-//! [STU-WB-142]); a command naming such a node is refused with that code.
+//! Connectors ([STU-WB-108]): endpoints resolve against the current bounds of their nodes; a board move, an
+//! arrange transform (`Viewer::board_after_transform`) and a resize reroute every attached connector in the same
+//! step. A read reports the route resolved now (`route_current`: the drawing matches it). A connector whose
+//! endpoint node is gone is `broken` (it keeps its last route and drawing; `connector_endpoint_node_unresolvable`,
+//! warning, [STU-WB-142]); one whose ends meet is `unroutable` (`connector_route_degenerate`, warning; it keeps
+//! its drawing and never blocks a move, review F5) until its nodes separate.
 //!
-//! Studio readings, declared (FigJam behaviour UNVERIFIED, D5): sticky sizes (240 square, 480 wide, taller
-//! for longer text), shape sizes from the text width, text at the top of its node, a section's members
-//! are the nodes whose centre lies in it and move with it, a section's name is its label story,
-//! `section_contents_hidden` is stored and read but not drawn, `CURVED` and the six unmapped Plugin API
-//! shapes are refused typed, a connector does not move by itself, `author_name` defaults to the actor's
-//! account id. Out of scope: stamps, highlights, washi tape, tables, code blocks, media, link unfurls,
-//! widgets, facilitation, templates, the board GUI (OD-4), PDF and CSV export.
+//! Generic layer operations (review F1, F6): a layer delete drops a node's record and text binding in its own
+//! step (`Viewer::board_records_after_delete`); pathfinder, Create Outlines and Outline Stroke refuse a board node
+//! `board_node_not_vector_editable`; align, distribute and transform keep the node's text on its outline and
+//! reroute its connectors.
+//!
+//! Studio readings, declared (FigJam behaviour UNVERIFIED, D5): sticky sizes (240 square, 480 wide, taller for
+//! more lines), shape sizes from the text width, shape text centred, sticky and section text at the top, a
+//! section's members are the stickies and shapes whose centre lies in it and move with it (nested sections stay),
+//! a section's name is its label story (the layer keeps its creation name), `section_contents_hidden` is stored
+//! and read but not drawn, `CURVED` and six Plugin API shapes refused typed, a connector does not move by itself
+//! and keeps its creation colour and width, no resize command (a shape's size follows its text upward),
+//! `author_name` defaults to the actor's account id. Out of scope: stamps, highlights, washi tape, tables, code
+//! blocks, media, link unfurls, widgets, facilitation, templates, the board GUI (OD-4), PDF and CSV export.
 #![deny(clippy::arithmetic_side_effects)]
 use super::Viewer;
 use super::text;
-use super::vector::{self, VectorEntry, VectorStyle};
+use super::vector::{VectorEntry, VectorStyle};
 use hsk_studio_composite::board::{self as geo, BoardEnd, BoardRect};
 use hsk_studio_folio::{
-    self as folio, Payload, StudioBoard, StudioBoardNode, StudioBoardNodeFields, StudioBoardPoint, StudioConnectorCap, StudioConnectorEndpoint, StudioConnectorLineType, StudioDevStatus,
-    StudioDocument, StudioShapeType,
+    self as folio, Payload, StudioBoardNode, StudioBoardNodeFields, StudioBoardPoint, StudioConnectorCap, StudioConnectorEndpoint, StudioConnectorLineType, StudioDevStatus, StudioDocument,
+    StudioShapeType,
 };
 use hsk_studio_nib::anchor_path::AnchorPath;
 use hsk_studio_nib::{OwnedPath, PathPoint};
@@ -65,6 +71,8 @@ pub const MAX_NODE_SIDE: f64 = 100_000.0;
 pub const EXPORT_MARGIN: f64 = 32.0;
 /// Default size of a new board (document units).
 pub const BOARD_DEFAULT_SIZE: [f64; 2] = [1920.0, 1080.0];
+/// Most lines of one sticky or shape text (Studio-declared).
+pub const MAX_TEXT_LINES: usize = 64;
 const STICKY_FILL: [u8; 3] = [255, 235, 153];
 const SHAPE_FILL: [u8; 3] = [196, 224, 255];
 const SHAPE_STROKE: [u8; 3] = [51, 51, 51];
@@ -78,7 +86,7 @@ const MAX_ROUTE_POINTS: usize = 64;
 /// A typed board command ([STU-WB-134]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum BoardCommand {
-    /// `board.add`: a new board (an artboard of a whiteboard-mode document).
+    /// `board.add`: a new board (an artboard of a whiteboard document).
     Add { name: Option<String>, size: Option<[f64; 2]>, at: Option<[f64; 2]> },
     /// `board.read`: the boards and the nodes (of `board`, or all).
     Read { board: Option<String> },
@@ -156,10 +164,14 @@ fn side_ok(v: f64) -> bool {
     v.is_finite() && v > 0.0 && v <= MAX_NODE_SIDE
 }
 
-/// One line of 1..=4096 bytes (the area-text story rule of the viewer).
-fn text_ok(t: &str) -> Result<(), String> {
-    if t.is_empty() || t.len() > text::MAX_STORY_BYTES || t.contains(['\n', '\r', '\u{2028}']) || t.chars().any(char::is_control) {
-        return Err(refused("board_text_invalid", format!("one line of 1..={} bytes", text::MAX_STORY_BYTES)));
+/// 1..=4096 bytes of story text: one line, or with `lines` at most [`MAX_TEXT_LINES`] lines split at `\n`
+/// (a sticky's or a shape's text is an ordinary story, review F12); no other control character.
+fn text_ok(t: &str, lines: bool) -> Result<(), String> {
+    let breaks = t.matches('\n').count();
+    let other = t.chars().any(|c| c.is_control() && c != '\n') || t.contains(['\u{2028}', '\u{2029}']);
+    if t.is_empty() || t.len() > text::MAX_STORY_BYTES || other || (breaks > 0 && !lines) || breaks >= MAX_TEXT_LINES {
+        let shape = if lines { format!("at most {MAX_TEXT_LINES} lines") } else { "one line".to_owned() };
+        return Err(refused("board_text_invalid", format!("{shape} of 1..={} bytes", text::MAX_STORY_BYTES)));
     }
     Ok(())
 }
@@ -236,13 +248,33 @@ fn route_points(r: &[[f64; 2]]) -> Vec<StudioBoardPoint> {
 enum Unresolved {
     /// Endpoints whose node the document no longer holds: `(endpoint, node id)`.
     Broken(Vec<(&'static str, String)>),
+    /// Both ends meet: the route is one point (review F5).
+    Degenerate,
     Geometry(String),
 }
 
-/// The editing context: the document, the vector entry and its board records.
+/// The editing context: the document, the vector entry and its board records, and whiteboard mode.
 struct Ctx {
     doc: StudioDocument,
     entry: VectorEntry,
+    whiteboard: bool,
+}
+
+/// Bounds of every vector layer of `doc` (computed once per command; review F9), with `moved` offsets.
+fn rects_of(doc: &StudioDocument, entry: &VectorEntry, moved: &BTreeMap<String, [f64; 2]>) -> BTreeMap<String, BoardRect> {
+    let mut out = BTreeMap::new();
+    for l in &doc.layers {
+        if let Payload::Vector { path_ids } = &l.payload
+            && let Some(mut r) = bounds_of_paths(entry, path_ids)
+        {
+            if let Some(d) = moved.get(&l.layer_id) {
+                r.x += d[0];
+                r.y += d[1];
+            }
+            out.insert(l.layer_id.clone(), r);
+        }
+    }
+    out
 }
 
 impl Ctx {
@@ -280,25 +312,13 @@ impl Ctx {
         self.entry.records.area_texts.iter().find(|a| a.container_layer_id == id).map(|a| a.text_id.clone())
     }
 
-    fn boards(&self) -> bool {
-        !self.entry.records.boards.is_empty()
+    fn rects(&self, moved: &BTreeMap<String, [f64; 2]>) -> BTreeMap<String, BoardRect> {
+        rects_of(&self.doc, &self.entry, moved)
     }
 
-    /// Bounds of every attachable node now (vector layers of the document), with `moved` offsets.
-    fn rects(&self, moved: &BTreeMap<String, [f64; 2]>) -> BTreeMap<String, BoardRect> {
-        let mut out = BTreeMap::new();
-        for l in &self.doc.layers {
-            if let Payload::Vector { path_ids } = &l.payload
-                && let Some(mut r) = bounds_of_paths(&self.entry, path_ids)
-            {
-                if let Some(d) = moved.get(&l.layer_id) {
-                    r.x += d[0];
-                    r.y += d[1];
-                }
-                out.insert(l.layer_id.clone(), r);
-            }
-        }
-        out
+    /// `not_whiteboard_document` unless the document is a whiteboard (review F4).
+    fn whiteboard_only(&self) -> Result<(), String> {
+        if self.whiteboard { Ok(()) } else { Err(refused("not_whiteboard_document", "create the document with profile board")) }
     }
 }
 
@@ -340,26 +360,31 @@ fn connector_route(start: &StudioConnectorEndpoint, end: &StudioConnectorEndpoin
         return Err(Unresolved::Geometry("endpoint".into()));
     };
     let route = geo::route(a, b, line).map_err(|e| Unresolved::Geometry(e.code().into()))?;
+    if route.len() < 2 {
+        return Err(Unresolved::Degenerate);
+    }
     if route.len() > MAX_ROUTE_POINTS {
         return Err(Unresolved::Geometry("route_too_long".into()));
     }
     Ok(route)
 }
 
-/// The size a node of `kind` takes for text `width` (points).
-fn fitted_size(fields: &StudioBoardNodeFields, text_width: f64, asked: [Option<f64>; 2]) -> [f64; 2] {
+/// The size a node of `fields` takes for its text, given each line's advance (points).
+fn fitted_size(fields: &StudioBoardNodeFields, line_widths: &[f64], asked: [Option<f64>; 2]) -> [f64; 2] {
     let line = TEXT_PT * 1.3;
+    let widest = line_widths.iter().copied().fold(0.0, f64::max);
+    let count = f64::from(u32::try_from(line_widths.len().max(1)).unwrap_or(u32::MAX));
     match fields {
         StudioBoardNodeFields::Sticky { is_wide_width, .. } => {
             let w = if *is_wide_width { STICKY_WIDE } else { STICKY_SIDE };
-            let lines = (text_width / (w - 2.0 * TEXT_INSET)).ceil().max(1.0);
+            let lines: f64 = line_widths.iter().map(|lw| (lw / (w - 2.0 * TEXT_INSET)).ceil().max(1.0)).sum::<f64>().max(1.0);
             [w, (lines * line + 2.0 * TEXT_INSET).max(STICKY_SIDE)]
         }
         StudioBoardNodeFields::ShapeWithText { shape_type, .. } => {
-            // 5 % and 4 points of slack over the one-line advance: the area layout breaks a line that
+            // 5 % and 4 points of slack over the widest line's advance: the area layout breaks a line that
             // fits only exactly.
             let fit = geo::text_fit(shape_type);
-            [asked[0].unwrap_or(SHAPE_MIN[0]).max((text_width * 1.05 + 4.0 + 2.0 * SHAPE_TEXT_INSET) * fit), asked[1].unwrap_or(SHAPE_MIN[1]).max((line + 2.0 * SHAPE_TEXT_INSET) * fit)]
+            [asked[0].unwrap_or(SHAPE_MIN[0]).max((widest * 1.05 + 4.0 + 2.0 * SHAPE_TEXT_INSET) * fit), asked[1].unwrap_or(SHAPE_MIN[1]).max((count * line + 2.0 * SHAPE_TEXT_INSET) * fit)]
         }
         _ => [asked[0].unwrap_or(SHAPE_MIN[0]), asked[1].unwrap_or(SHAPE_MIN[1])],
     }
@@ -376,11 +401,14 @@ fn outline(fields: &StudioBoardNodeFields, rect: &BoardRect) -> Result<OwnedPath
     .map_err(geo_refusal)
 }
 
-/// Where a node's text starts: a shape centres one line vertically (its outline is widest near the middle:
+/// Where a node's text starts: a shape centres its lines vertically (its outline is widest near the middle:
 /// a diamond's or a triangle's top holds no line), a sticky and a section start at the top (Studio reading).
-fn text_baseline(fields: &StudioBoardNodeFields, rect: &BoardRect) -> (folio::StudioFirstBaseline, f64) {
+fn text_baseline(fields: &StudioBoardNodeFields, rect: &BoardRect, lines: usize) -> (folio::StudioFirstBaseline, f64) {
     match fields {
-        StudioBoardNodeFields::ShapeWithText { .. } => (folio::StudioFirstBaseline::Fixed, ((rect.h - 2.0 * SHAPE_TEXT_INSET - TEXT_PT * 1.3) / 2.0).max(0.0) + TEXT_PT * 0.8),
+        StudioBoardNodeFields::ShapeWithText { .. } => {
+            let block = TEXT_PT * 1.3 * f64::from(u32::try_from(lines.max(1)).unwrap_or(u32::MAX));
+            (folio::StudioFirstBaseline::Fixed, ((rect.h - 2.0 * SHAPE_TEXT_INSET - block) / 2.0).max(0.0) + TEXT_PT * 0.8)
+        }
         _ => (folio::StudioFirstBaseline::Ascent, 0.0),
     }
 }
@@ -408,7 +436,13 @@ impl Viewer {
     fn board_ctx(&self) -> Result<Ctx, String> {
         let doc = self.run.snapshot().ok_or_else(|| refused("nothing_open", "no document"))?.document().clone();
         let entry = self.vector_entry()?;
-        Ok(Ctx { doc, entry })
+        let whiteboard = self.run.whiteboard_mode().map_err(|code| refused(code, "artboard options"))?;
+        Ok(Ctx { doc, entry, whiteboard })
+    }
+
+    /// `canceled` when the run's token is (review F9).
+    fn board_cancel_check(&self) -> Result<(), String> {
+        self.cancel.check().map_err(|_| refused("canceled", "board"))
     }
 
     fn board_inner(&mut self, command: BoardCommand) -> Result<Value, String> {
@@ -417,9 +451,12 @@ impl Viewer {
             BoardCommand::Add { name, size, at } => self.board_add(name, size, at),
             BoardCommand::Read { board } => self.board_read(board.as_deref()),
             BoardCommand::NodeRead { node } => {
+                self.board_cancel_check()?;
                 let c = self.board_ctx()?;
                 let rec = c.node(&node)?;
-                Ok(self.node_json(&c, &rec, &self.text_overset()))
+                let rects = c.rects(&BTreeMap::new());
+                let te = self.text_entry().ok();
+                Ok(self.node_json(&c, &rec, &rects, &self.text_overset(), te.as_ref()))
             }
             BoardCommand::CreateSticky { board, at, text, author_visible, author_name, is_wide_width, fill } => {
                 let author_name = author_name.unwrap_or_else(|| self.run.actor().account_id().to_owned());
@@ -486,7 +523,7 @@ impl Viewer {
             }
             BoardCommand::SetSection { node, name, contents_hidden, dev_status } => {
                 if let Some(n) = &name {
-                    text_ok(n)?;
+                    text_ok(n, false)?;
                 }
                 if !matches!(self.board_ctx()?.node(&node)?.node, StudioBoardNodeFields::Section { .. }) {
                     return Err(refused("board_node_kind_mismatch", "not a section"));
@@ -505,10 +542,12 @@ impl Viewer {
             }
             BoardCommand::SetConnector { node, start, end, line_type, caps } => self.set_connector(&op, &node, start, end, line_type, caps),
             BoardCommand::SetText { node, text } => {
-                text_ok(&text)?;
-                if matches!(self.board_ctx()?.node(&node)?.node, StudioBoardNodeFields::Connector { .. }) {
-                    return Err(refused("board_node_kind_mismatch", "a connector has no text in this build"));
-                }
+                let section = match self.board_ctx()?.node(&node)?.node {
+                    StudioBoardNodeFields::Connector { .. } => return Err(refused("board_node_kind_mismatch", "a connector has no text in this build")),
+                    StudioBoardNodeFields::Section { .. } => true,
+                    _ => false,
+                };
+                text_ok(&text, !section)?;
                 self.edit_node_text(&op, &node, Some(&text), |_| Ok(()))
             }
             BoardCommand::SetFill { node, fill } => {
@@ -534,32 +573,9 @@ impl Viewer {
         }
     }
 
-    /// Lists `board` in the entry's boards (whiteboard mode, module docs).
-    fn ensure_board(entry: &mut VectorEntry, board: &str) {
-        if !entry.records.boards.iter().any(|b| b.artboard_id == board) {
-            entry.records.boards.push(StudioBoard { artboard_id: board.to_owned() });
-        }
-    }
-
-    /// `document.new` with profile `board`: lists the new document's first artboard as its board.
-    /// Not an undo step (the new document has no history).
-    pub(super) fn register_new_board(&mut self) -> Result<(), String> {
-        let c = self.board_ctx()?;
-        let first = c.doc.artboards.first().map(|a| a.artboard_id.clone()).ok_or_else(|| refused("board_unknown", "the new document holds no artboard"))?;
-        if !vector::entry_persistable() {
-            return Err(refused("vector_entry_not_persistable", "the session holds no vector entry token"));
-        }
-        let mut entry = c.entry;
-        Self::ensure_board(&mut entry, &first);
-        let bytes = entry.to_bytes(&c.doc.document_id)?;
-        self.run.set_document_entry(vector::ENTRY, Some(bytes)).map_err(|e| refused("board_entry", e))
-    }
-
     fn board_add(&mut self, name: Option<String>, size: Option<[f64; 2]>, at: Option<[f64; 2]>) -> Result<Value, String> {
         let c = self.board_ctx()?;
-        if !c.boards() {
-            return Err(refused("not_a_board_document", "create the document with profile board, or a board node first"));
-        }
+        c.whiteboard_only()?;
         let name = name.unwrap_or_else(|| format!("Board {}", c.doc.artboards.len().saturating_add(1)));
         let [w, h] = size.or_else(|| c.doc.artboards.first().map(|a| [a.bounds.width.value, a.bounds.height.value])).unwrap_or(BOARD_DEFAULT_SIZE);
         let ok = self.run.add_artboard(&name, w, h, at);
@@ -568,7 +584,10 @@ impl Viewer {
         Ok(json!({"board_id": id, "name": name, "revision": revision}))
     }
 
+    /// `board.read` (review F9): the bounds of every vector layer and the overset of every story are taken
+    /// once, and the token is checked before the read and per node.
     fn board_read(&self, board: Option<&str>) -> Result<Value, String> {
+        self.board_cancel_check()?;
         let c = self.board_ctx()?;
         if let Some(b) = board
             && !c.doc.artboards.iter().any(|a| a.artboard_id == b)
@@ -576,28 +595,27 @@ impl Viewer {
             return Err(refused("board_unknown", b));
         }
         let active = self.active_artboard(&c.doc).map(|a| a.artboard_id.clone());
-        let mode = c.boards();
+        let present: std::collections::BTreeSet<&str> = c.doc.layers.iter().map(|l| l.layer_id.as_str()).collect();
         let boards: Vec<Value> = c
             .doc
             .artboards
             .iter()
-            .filter(|_| mode)
+            .filter(|_| c.whiteboard)
             .map(|a| {
-                let count = c.entry.records.board_nodes.iter().filter(|n| n.board_id == a.artboard_id && c.doc.layers.iter().any(|l| l.layer_id == n.layer_id)).count();
+                let count = c.entry.records.board_nodes.iter().filter(|n| n.board_id == a.artboard_id && present.contains(n.layer_id.as_str())).count();
                 json!({"board_id": a.artboard_id, "name": a.name, "bounds": [a.bounds.x.value, a.bounds.y.value, a.bounds.width.value, a.bounds.height.value], "active": active.as_deref() == Some(a.artboard_id.as_str()), "nodes": count})
             })
             .collect();
+        let rects = c.rects(&BTreeMap::new());
         let overset = self.text_overset();
-        let nodes: Vec<Value> = c
-            .entry
-            .records
-            .board_nodes
-            .iter()
-            .filter(|n| board.is_none_or(|b| n.board_id == b) && c.doc.layers.iter().any(|l| l.layer_id == n.layer_id))
-            .map(|n| self.node_json(&c, n, &overset))
-            .collect();
+        let te = self.text_entry().ok();
+        let mut nodes: Vec<Value> = Vec::new();
+        for n in c.entry.records.board_nodes.iter().filter(|n| board.is_none_or(|b| n.board_id == b) && present.contains(n.layer_id.as_str())) {
+            self.board_cancel_check()?;
+            nodes.push(self.node_json(&c, n, &rects, &overset, te.as_ref()));
+        }
         let issues: Vec<Value> = nodes.iter().flat_map(|n| n["issues"].as_array().cloned().unwrap_or_default()).collect();
-        Ok(json!({"whiteboard_mode": mode, "boards": boards, "nodes": nodes, "issues": issues}))
+        Ok(json!({"whiteboard_mode": c.whiteboard, "boards": boards, "nodes": nodes, "issues": issues}))
     }
 
     /// Overset glyphs of every live story as the window draws it (story id -> count); a story the
@@ -606,25 +624,27 @@ impl Viewer {
         self.vector_text_reports().unwrap_or_default().into_iter().map(|s| (s.report.text_id.clone(), s.report.outcome.as_ref().ok().map(|d| d.overset_count))).collect()
     }
 
-    /// The reading of one node (module docs); `text_overset` is the glyphs its text does not fit.
-    fn node_json(&self, c: &Ctx, n: &StudioBoardNode, overset: &BTreeMap<String, Option<usize>>) -> Value {
+    /// The reading of one node (module docs); `rects` are the bounds of every vector layer now, `overset` the
+    /// glyphs each story does not fit and `te` the text entry. A connector reads its stroke and no fill
+    /// ([STU-WB-106]; its caps are filled in its stroke colour).
+    fn node_json(&self, c: &Ctx, n: &StudioBoardNode, rects: &BTreeMap<String, BoardRect>, overset: &BTreeMap<String, Option<usize>>, te: Option<&text::TextEntry>) -> Value {
         let layer = c.doc.layers.iter().find(|l| l.layer_id == n.layer_id);
-        let rect = c.rect(&n.layer_id);
+        let rect = rects.get(&n.layer_id);
         let style = c.style(&n.layer_id);
+        let connector = matches!(n.node, StudioBoardNodeFields::Connector { .. });
         let text_id = c.text_id(&n.layer_id);
-        let entry = self.text_entry().ok();
-        let text = text_id.as_ref().and_then(|id| entry.as_ref()?.stories.iter().find(|s| &s.story_id == id).and_then(text::story_text).map(str::to_owned));
+        let text = text_id.as_ref().and_then(|id| te?.stories.iter().find(|s| &s.story_id == id).and_then(text::story_text).map(str::to_owned));
         let mut v = json!({
             "node_id": n.layer_id, "kind": n.node.kind(), "board_id": n.board_id, "name": layer.map(|l| l.name.clone()),
-            "visible": layer.map(|l| l.visible), "bounds": rect.as_ref().map(rect_json), "fill": rgb_json(style.and_then(|s| s.fill)),
-            "stroke": rgb_json(style.and_then(|s| s.stroke)), "text": text, "text_overset": text_id.as_ref().and_then(|id| overset.get(id).copied().flatten()), "text_id": text_id,
+            "visible": layer.map(|l| l.visible), "bounds": rect.map(rect_json), "fill": if connector { Value::Null } else { rgb_json(style.and_then(|s| s.fill)) },
+            "stroke": rgb_json(style.and_then(|s| s.stroke)), "stroke_width": style.map(|s| s.stroke_width), "text": text,
+            "text_overset": text_id.as_ref().and_then(|id| overset.get(id).copied().flatten()), "text_id": text_id,
             "fields": serde_json::to_value(&n.node).unwrap_or(Value::Null), "issues": [],
         });
         match &n.node {
             StudioBoardNodeFields::Connector { connector_line_type, connector_start, connector_end, last_route, .. } => {
-                let rects = c.rects(&BTreeMap::new());
                 let last: Vec<[f64; 2]> = last_route.iter().map(|p| [p.x, p.y]).collect();
-                match connector_route(connector_start, connector_end, *connector_line_type, &rects) {
+                match connector_route(connector_start, connector_end, *connector_line_type, rects) {
                     Ok(route) => {
                         v["state"] = json!("attached");
                         v["route_current"] = json!(route == last);
@@ -638,6 +658,11 @@ impl Viewer {
                             .map(|(end, node)| json!({"code": "connector_endpoint_node_unresolvable", "severity": "warning", "node_id": n.layer_id, "endpoint": end, "endpoint_node_id": node}))
                             .collect();
                     }
+                    Err(Unresolved::Degenerate) => {
+                        v["state"] = json!("unroutable");
+                        v["route"] = json!(last);
+                        v["issues"] = json!([{"code": "connector_route_degenerate", "severity": "warning", "node_id": n.layer_id}]);
+                    }
                     Err(Unresolved::Geometry(code)) => {
                         v["state"] = json!("unroutable");
                         v["route"] = json!(last);
@@ -646,16 +671,15 @@ impl Viewer {
                 }
             }
             StudioBoardNodeFields::Section { .. } => {
-                v["members"] = json!(Self::section_members(c, &n.layer_id, &BTreeMap::new()));
+                v["members"] = json!(Self::section_members(c, &n.layer_id, rects));
             }
             _ => {}
         }
         v
     }
 
-    /// Non-section, non-connector nodes of the section's board whose centre lies in the section.
-    fn section_members(c: &Ctx, section: &str, moved: &BTreeMap<String, [f64; 2]>) -> Vec<String> {
-        let rects = c.rects(moved);
+    /// Stickies and shapes of the section's board whose centre lies in the section (on `rects`).
+    fn section_members(c: &Ctx, section: &str, rects: &BTreeMap<String, BoardRect>) -> Vec<String> {
         let (Some(rec), Some(r)) = (c.record(section), rects.get(section)) else { return Vec::new() };
         c.entry
             .records

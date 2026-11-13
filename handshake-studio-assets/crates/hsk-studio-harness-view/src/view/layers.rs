@@ -252,7 +252,8 @@ impl Viewer {
         // raster records keyed to the deleted layers leave in the delete's own undo step.
         let raster = self.raster_records_after_delete(&gone);
         if self.layout_bound(doc, &gone) {
-            let entry = self.records_after_delete(&gone).map(|bytes| (super::vector::ENTRY, bytes));
+            // Lane SMB-BOARD-1 (review F1): a deleted board node's record and text binding go in this step too.
+            let entry = self.board_records_after_delete(&gone, self.records_after_delete(&gone)).map(|bytes| (super::vector::ENTRY, bytes));
             let ok = self.run.delete_layout_layers("delete_layer", "layer.delete_layout_layers", &[layer_id.to_string()], entry);
             let revision = self.after_edit(ok, format!("deleted {layer_id}"))?;
             self.raster_records_into_delete_step(raster)?;
@@ -280,7 +281,8 @@ impl Viewer {
         let writes: Vec<PlacementWrite> = order.iter().map(|id| PlacementWrite { layer_id: id.clone(), to: None, create: None }).collect();
         // Lane SMB-DS-COMPONENTS-AUTHOR-1 (F5): the component and instance records keyed to a deleted
         // layer go in the same undo step.
-        let revision = match self.records_after_delete(&order) {
+        // Lane SMB-BOARD-1 (review F1): so do a deleted board node's record and text binding.
+        let revision = match self.board_records_after_delete(&order, self.records_after_delete(&order)) {
             Some(bytes) => {
                 let ok = self.run.restructure_and_entry("delete_layer", &writes, super::vector::ENTRY, bytes);
                 self.after_edit(ok, format!("deleted {layer_id}"))?

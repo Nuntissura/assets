@@ -208,6 +208,8 @@ impl Viewer {
             super::live_filters::transform_live_filters(&mut entry.records, layer_id, m, op)?;
             writes.push((layer_id.clone(), ids));
         }
+        // Lane SMB-BOARD-1 (review F6): a board node's text follows its outline and its connectors reroute.
+        self.board_after_transform(&doc, &mut entry, &writes)?;
         self.commit_paths(op, &writes, &entry)
     }
 

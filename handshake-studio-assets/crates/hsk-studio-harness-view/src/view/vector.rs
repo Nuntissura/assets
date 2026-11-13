@@ -1764,6 +1764,8 @@ impl Viewer {
     pub fn create_outlines(&mut self, layer_id: &str) -> Result<String, String> {
         let r = (|| {
             let op = "create_outlines";
+            // Lane SMB-BOARD-1 (review F6): a board node is not rewritten into plain paths.
+            self.board_refuse_vector_rewrite(op, &[layer_id.to_owned()])?;
             let doc = self.vdoc()?;
             let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| format!("{op}: no layer {layer_id}"))?;
             match layer.payload.clone() {
@@ -2663,6 +2665,8 @@ impl Viewer {
     }
 
     fn pathfinder_inner(&mut self, op: PathfinderOp, layer_ids: &[String]) -> Result<Vec<String>, String> {
+        // Lane SMB-BOARD-1 (review F6): a board node is not rewritten into plain paths.
+        self.board_refuse_vector_rewrite("pathfinder", layer_ids)?;
         let mut operands: Vec<(u64, String, PathRecord)> = Vec::new();
         let mut parent: Option<Parent> = None;
         for id in layer_ids {
@@ -2730,6 +2734,8 @@ impl Viewer {
     /// the stroke colour, no stroke). One transaction. Returns the layer id (unchanged).
     pub fn outline_stroke_layer(&mut self, layer_id: &str) -> Result<String, String> {
         let r = (|| {
+            // Lane SMB-BOARD-1 (review F6): a board node is not rewritten into plain paths.
+            self.board_refuse_vector_rewrite("outline_stroke", &[layer_id.to_owned()])?;
             let record = self.vector_path(layer_id)?;
             let colour = record.style.stroke.ok_or("outline_stroke: the layer has no stroke")?;
             let owned = record.path.to_owned_path().map_err(|e| e.code().to_string())?;
