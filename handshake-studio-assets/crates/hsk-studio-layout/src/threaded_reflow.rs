@@ -209,9 +209,7 @@ pub struct LayoutProposal {
 /// coordinates (`None` = frame top, whose first baseline is the frame's first-baseline offset).
 /// `first` is that offset once the column's first line fixed it (STU-LAY-120 kinds other than
 /// `fixed` take the metric of the column's first line); `None` = not yet fixed. `extra` is kept at
-/// or above `-(line * height)` (`floored`); `gaps` is the signed paragraph space (STU-TYP-185) added
-/// in this column without that floor, summed like every sum, so space that overflows in one column
-/// stays `invalid_geometry` (tests/indent_spacing.rs hostile_indent_and_space_values_give_typed_answers).
+/// or above `-(line * height)` (`floored`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Cursor {
     pos: usize,
@@ -219,7 +217,6 @@ struct Cursor {
     line: usize,
     band: Option<f64>,
     extra: f64,
-    gaps: f64,
     first: Option<f64>,
 }
 impl Cursor {
@@ -230,7 +227,6 @@ impl Cursor {
             line: 0,
             band: None,
             extra: 0.0,
-            gaps: 0.0,
             first: None,
         }
     }
@@ -473,7 +469,6 @@ fn next_slot(
                     col: cur.col + 1,
                     line: 0,
                     extra: 0.0,
-                    gaps: 0.0,
                     first: None,
                     ..cur
                 }
@@ -909,7 +904,6 @@ fn balance_band(f: &Frame<'_>, band: Option<f64>, lines: &mut [Line], meta: &[Me
                 line: row,
                 band,
                 extra,
-                gaps: 0.0,
                 first: None,
             },
             m.height,
@@ -1031,7 +1025,7 @@ fn break_target(
     let from = &thread[last.pos];
     match target {
         BreakTarget::Column if last.col + 1 < from.column_count.max(1) => Ok((
-            Cursor { pos: last.pos, col: last.col + 1, line: 0, band: after.band, extra: 0.0, gaps: 0.0, first: None },
+            Cursor { pos: last.pos, col: last.col + 1, line: 0, band: after.band, extra: 0.0, first: None },
             0,
         )),
         BreakTarget::Column | BreakTarget::Frame => next_frame.ok_or(BreakOverset::NoTarget),
@@ -1181,9 +1175,8 @@ fn compose_flow(
                 // The paragraph space; a paragraph at a column top takes none, and a push past the
                 // column bottom lands at the next column's top (`next_slot` resets `extra`). A
                 // negative gap lifts the paragraph at most to the column's first baseline, before an
-                // anchor's push below; the column's signed sum (`gaps`) is still checked finite.
+                // anchor's push below (`floored`).
                 if cursor.line > 0 && gap != 0.0 {
-                    cursor.gaps = sum(cursor.gaps, gap)?;
                     cursor = floored(Cursor { extra: sum(cursor.extra, gap)?, ..cursor }, p.line_height_pt);
                 }
                 // Above-line anchored objects push the paragraph down (anchors module); a push that
@@ -1201,7 +1194,6 @@ fn compose_flow(
                             line: 0,
                             band: if s.pos == cursor.pos { cursor.band } else { None },
                             extra: pre[pi],
-                            gaps: 0.0,
                             first: None,
                         };
                     }
@@ -1254,7 +1246,6 @@ fn compose_flow(
                             line: 0,
                             band: Some(sum(bottom, larger(before, gap))?),
                             extra: 0.0,
-                            gaps: 0.0,
                             first: None,
                         };
                     } else {
@@ -1673,7 +1664,6 @@ fn compose_flow(
                     line: 0,
                     band: Some(top),
                     extra: 0.0,
-                    gaps: 0.0,
                     first: None,
                 }
             }

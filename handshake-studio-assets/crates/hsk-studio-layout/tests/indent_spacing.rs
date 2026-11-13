@@ -495,12 +495,23 @@ fn hostile_indent_and_space_values_give_typed_answers() {
             }
         }
     }
-    // Sums past f64::MAX: both sides of the measure, the first line on the left indent, and space
-    // accumulated in one column.
-    for settings in [indents(-max, -max, 0.0), indents(-max, 0.0, -max), space(-max, 0.0)] {
+    // Sums past f64::MAX: both sides of the measure and the first line on the left indent.
+    for settings in [indents(-max, -max, 0.0), indents(-max, 0.0, -max)] {
         for composer in composers() {
             assert_eq!(run(frame(120.0, 100.0), &s, &styles(std::slice::from_ref(&settings)), composer), Err(LayoutError::InvalidGeometry), "{settings:?} {composer:?}");
         }
+    }
+    // -MAX space before on every paragraph (rule 4a, lane SMB-FIX-NEGATIVE-SPACE-1: this case was
+    // invalid_geometry only because negative space accumulated without bound): each gap lifts its
+    // paragraph at most to the column's first baseline (STU-TYP-185 reading, InDesign parity
+    // UNVERIFIED, D5), so no baseline is above the first line's; the three one-line paragraphs all
+    // land there and fit, so the overset is None.
+    for composer in composers() {
+        let p = run(frame(120.0, 100.0), &s, &styles(&[space(-max, 0.0)]), composer).unwrap();
+        let top = lines(&p)[0].baseline_y_pt;
+        assert!(finite(&p) && lines(&p).iter().all(|l| l.baseline_y_pt >= top), "{composer:?}: {p:?}");
+        assert_eq!(lines(&p).iter().map(|l| l.baseline_y_pt).collect::<Vec<_>>(), vec![10.0, 10.0, 10.0], "{composer:?}");
+        assert_eq!(p.overset, None, "{composer:?}");
     }
     // Alternating +MAX / -MAX space: each gap is finite (MAX - MAX) or a push off the frame.
     let alt = story(&[("aa\n", Some(1)), ("bb\n", Some(2)), ("cc\n", Some(1)), ("dd", Some(2))]);
