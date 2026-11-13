@@ -19,8 +19,8 @@
 //! Lane SMB-WEB-SITE-2 ([STU-WEB-090] to [STU-WEB-093], [STU-WEB-096] to [STU-WEB-099], [STU-WEB-113],
 //! [STU-WEB-118]): `web.change_link` (change-link-site-wide), `web.template_regions`, `web.template_instance`,
 //! `web.instance_param`, `web.instance_repeat`, `web.template_update`, `web.library_item_insert`,
-//! `web.library_item_update`, `web.snippet`, `web.snippets`, `web.snippet_insert`, and the optional site-record
-//! fields of `web.site`. No spec command id is verified for these rows either; they follow the `web.*` naming. Their
+//! `web.library_item_update`, `web.snippet`, `web.snippets`, `web.snippet_insert`, `web.synchronize`
+//! ([STU-WEB-119]) and the optional site-record fields of `web.site`. No spec command id is verified for these rows either; they follow the `web.*` naming. Their
 //! parameters, outcomes and refusals: the module manual of `web_commands::web_site`.
 
 use super::super::ValueType;
@@ -132,5 +132,13 @@ pub(super) const ROWS: &[CommandEntry] = &[
         false,
         true,
         &[p("folder_path", ValueType::String).opt(), p("snippet_name", ValueType::String).opt(), TRIGGER, p("offset", ValueType::Number), p("end", ValueType::Number).opt()],
+    ),
+    entry(
+        "web.synchronize",
+        "web_command",
+        "Synchronize",
+        false,
+        false,
+        &[TARGET_ID.opt(), p("direction", ValueType::Enumerated), p("files", ValueType::List).opt(), p("dependents", ValueType::Enumerated).opt(), p("apply", ValueType::Boolean).opt()],
     ),
 ];

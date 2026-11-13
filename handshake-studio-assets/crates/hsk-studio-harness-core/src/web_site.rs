@@ -190,6 +190,19 @@
 //!   at `offset`, a `wrap` snippet wraps `offset..end`, a `trigger` replaces the trigger word just before `offset`
 //!   (`snippet_trigger_not_at_offset` otherwise), one named history step. The shipped 647-snippet baseline is not
 //!   loaded (NOT_PROVEN: no corpus).
+//! - **`web.synchronize`** `{target_id?, direction: put|get|both, files?, dependents?: prompt|include|exclude,
+//!   apply?}` ([STU-WEB-119]; a `local_or_network` target only, else `transport_unsupported`): compares the site and
+//!   the target folder file by file (size and modification time; times within 2 s are the same) and lists one action
+//!   per file for review (`hsk.studio.web.sync_plan@1`: `put`, `get`, `same`, `conflict` (same time, other size),
+//!   `local_newer`, `remote_newer`, `none`, `denied_link` (a path through a link on either side), with both sides'
+//!   size and time, counts per action). `files` limits it to those site files; the files they load (images, style
+//!   sheets, scripts; not page links) are `dependents`, listed only (`prompt`, the default), added (`include`) or left
+//!   out (`exclude`). With `apply` every `put`/`get` is copied as its own atomic write with the source's time kept,
+//!   with a per-file receipt (`hsk.studio.web.sync_receipt@1`: path, action, outcome, bytes, SHA-256, transfer mode);
+//!   a failed file refuses `sync_failed` with the receipt after the others, a cancel refuses `canceled` with the
+//!   receipt so far. No deletion either way (declared). Site lock; a job admitted as `read` for a review, `export` to
+//!   apply a put, `edit` to apply a get or both; refused `target_inside_site`, `target_root_missing` (get, both),
+//!   `document_unsaved` (a get onto the open document's unsaved edits); an open document a get wrote is reopened.
 //! - **Site record** ([STU-WEB-113]): `web.site` also takes `testing_target` (a remote-target record, the target
 //!   rules), `server_model_id` (the eight of [STU-WEB-124], `server_model_unknown`), `preprocessor_config`
 //!   `{source_root, output_root, output_style, source_maps}`, `framework_pin` `{framework_version: 3.4.1|4.4.1|5.3.8
@@ -218,7 +231,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The commands admitted as jobs (module docs).
-pub(super) const ADMITTED: [&str; 7] = ["web.export", "web.publish", "web.site_report", "web.move_file", "web.change_link", "web.template_update", "web.library_item_update"];
+pub(super) const ADMITTED: [&str; 8] = ["web.export", "web.publish", "web.site_report", "web.move_file", "web.change_link", "web.template_update", "web.library_item_update", "web.synchronize"];
 /// `web.site_report`'s job action: the session's read class (lane SMB-WEB-SITE-2; it was `export` before `read`
 /// existed).
 pub(super) const REPORT_ACTION: Action = Action::Read;
@@ -1709,6 +1722,16 @@ impl WebHost {
             "web.snippet" => self.snippet(label, p, ctx),
             "web.snippets" => self.snippets(),
             "web.snippet_insert" => self.snippet_insert(label, p, ctx, cancel),
+            "web.synchronize" => {
+                let plan = self.sync_checks(p)?;
+                // A review only reads; applying writes the target (put) or the site too (get, both).
+                let action = match (plan.apply, plan.direction) {
+                    (false, _) => Action::Read,
+                    (true, "put") => Action::Export,
+                    (true, _) => Action::Edit,
+                };
+                self.admitted(action, JobOn::Site, ctx, cancel, |host| host.synchronize(&plan, ctx, cancel))
+            }
             _ => no("unknown_command", row.command_id),
         }
     }
@@ -2097,8 +2120,9 @@ fn template_of(doc: &WebDoc, id: &str) -> R<Template> {
                     _ if matches!(f.parent.as_deref(), Some("table" | "tbody" | "thead" | "tfoot")) => RegionKind::RepeatingTable,
                     _ => RegionKind::Repeating,
                 };
-                let key = if f.kind == Mk::TBeginIf { "cond" } else { "name" };
-                t.regions.push((f.start, json!({key: f.name, "kind": kind.as_str(), "line": f.line, "span": [f.start, m.span.end]})));
+                let mut row = json!({"kind": kind.as_str(), "line": f.line, "span": [f.start, m.span.end]});
+                row[if f.kind == Mk::TBeginIf { "cond" } else { "name" }] = json!(f.name);
+                t.regions.push((f.start, row));
                 let part = match f.kind {
                     Mk::TBeginEditable => Part::Editable { name: f.name, body: f.parts },
                     Mk::TBeginIf => Part::If { cond: f.name, body: f.parts },
@@ -3359,6 +3383,237 @@ impl WebHost {
             _ => return no("parameter_invalid", "end"),
         };
         self.edit(label, SourcePatch::new(&doc, edits), ctx, cancel)
+    }
+}
+
+// ----- synchronisation (lane SMB-WEB-SITE-2; [STU-WEB-119]) -------------------------------------------------------
+
+/// Modification times closer than this are the same time (file systems keep times at different granularities).
+const SYNC_MTIME_TOLERANCE_MS: u64 = 2000;
+
+/// `web.synchronize`'s request, checked before admission (module docs).
+pub(super) struct SyncPlan {
+    target_id: String,
+    root_path: String,
+    direction: &'static str,
+    dependents: &'static str,
+    files: Option<Vec<String>>,
+    apply: bool,
+}
+
+/// A regular file's size and modification time (milliseconds since the epoch).
+fn file_stat(path: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file)?;
+    let ms = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))?;
+    Some((meta.len(), ms))
+}
+
+/// The action for one file ([STU-WEB-119]), from size and modification time: `put`, `get`, `same`, `conflict` (the
+/// same time, another size), `local_newer` (a get leaves it), `remote_newer` (a put leaves it) or `none`.
+fn sync_action(direction: &str, local: Option<(u64, u64)>, remote: Option<(u64, u64)>) -> &'static str {
+    let newer = |a: (u64, u64), b: (u64, u64)| a.1 > b.1.saturating_add(SYNC_MTIME_TOLERANCE_MS);
+    match (local, remote) {
+        (None, None) => "none",
+        (Some(_), None) => {
+            if direction == "get" {
+                "none"
+            } else {
+                "put"
+            }
+        }
+        (None, Some(_)) => {
+            if direction == "put" {
+                "none"
+            } else {
+                "get"
+            }
+        }
+        (Some(l), Some(r)) if newer(l, r) => {
+            if direction == "get" {
+                "local_newer"
+            } else {
+                "put"
+            }
+        }
+        (Some(l), Some(r)) if newer(r, l) => {
+            if direction == "put" {
+                "remote_newer"
+            } else {
+                "get"
+            }
+        }
+        (Some(l), Some(r)) if l.0 == r.0 => "same",
+        _ => "conflict",
+    }
+}
+
+fn stat_json(stat: Option<(u64, u64)>) -> Value {
+    stat.map_or(Value::Null, |(bytes, ms)| json!({"bytes": bytes, "modified_ms": ms}))
+}
+
+impl WebHost {
+    /// `web.synchronize`'s checks before admission (no I/O): the target and the options.
+    fn sync_checks(&self, p: &P<'_>) -> R<SyncPlan> {
+        let site = self.site.as_ref().ok_or(No("no_site", String::new(), None))?;
+        let target = match p.opt_text("target_id")? {
+            Some(id) => site.targets.iter().find(|t| t.target_id == id).ok_or(No("no_such_target", bounded(id), None))?,
+            None => {
+                let mut local = site.targets.iter().filter(|t| t.transport == "local_or_network");
+                match (local.next(), local.next()) {
+                    (Some(t), None) => t,
+                    (None, _) => return no("no_such_target", "local_or_network"),
+                    (Some(_), Some(_)) => return no("parameter_missing", "target_id"),
+                }
+            }
+        };
+        if target.transport != "local_or_network" {
+            return no("transport_unsupported", target.transport);
+        }
+        let direction = match p.text("direction")? {
+            "put" => "put",
+            "get" => "get",
+            "both" => "both",
+            _ => return no("parameter_invalid", "direction"),
+        };
+        let dependents = match p.opt_text("dependents")? {
+            None | Some("prompt") => "prompt",
+            Some("include") => "include",
+            Some("exclude") => "exclude",
+            Some(_) => return no("parameter_invalid", "dependents"),
+        };
+        let files = match p.0.get("files") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(items)) if !items.is_empty() && items.len() <= MAX_EXPORT_FILES => Some(items.iter().map(|v| site_path(v.as_str().unwrap_or(""))).collect::<R<Vec<_>>>()?),
+            Some(_) => return no("parameter_invalid", "files"),
+        };
+        Ok(SyncPlan { target_id: target.target_id.clone(), root_path: target.root_path.clone(), direction, dependents, files, apply: p.flag("apply")? })
+    }
+
+    /// `web.synchronize` ([STU-WEB-119], module docs): the action list for review, or (`apply`) each action applied
+    /// as its own transaction with a per-file receipt.
+    fn synchronize(&mut self, plan: &SyncPlan, ctx: &CommandContext, cancel: &CancellationToken) -> R<Value> {
+        let (site, root) = self.site_root()?;
+        let remote = PathBuf::from(checked_path(&plan.root_path)?);
+        let (remote_at, root_at) = (resolved(&remote), resolved(&root));
+        if remote_at.starts_with(&root_at) || root_at.starts_with(&remote_at) {
+            return no("target_inside_site", &plan.root_path);
+        }
+        let _lock = site_lock(&site.local_root, ctx)?;
+        let local = walk(&root, cancel)?.files;
+        let far = if remote.is_dir() {
+            walk(&remote, cancel)?.files
+        } else if plan.direction == "put" {
+            Files::default()
+        } else {
+            return no("target_root_missing", &plan.root_path);
+        };
+        // The files to compare: the whole site and target, or the chosen files and (dependents) what they load.
+        let mut dependents: Vec<String> = Vec::new();
+        let selected: BTreeSet<String> = match &plan.files {
+            None => local.files.iter().chain(&far.files).cloned().collect(),
+            Some(files) => {
+                let set = SiteSet::load(&root, None, cancel)?;
+                let chosen: BTreeSet<String> = files.iter().cloned().collect();
+                let mut deps = BTreeSet::new();
+                for src in set.sources.iter().filter(|s| chosen.contains(&s.id)) {
+                    for e in &src.edges {
+                        if let Reach::File(id) = &e.reach
+                            && !chosen.contains(id)
+                            && e.loads != Some(Loads::of(Load::Document))
+                        {
+                            deps.insert(id.clone());
+                        }
+                    }
+                }
+                dependents = deps.iter().cloned().collect();
+                let mut out = chosen;
+                if plan.dependents == "include" {
+                    out.extend(deps);
+                }
+                out
+            }
+        };
+        let mut rows: Vec<(String, &'static str, Option<(u64, u64)>, Option<(u64, u64)>)> = Vec::new();
+        for id in selected.iter().filter(|id| !reserved(id)) {
+            cancel.check().map_err(|_| No("canceled", String::new(), None))?;
+            let segments = split_path(id);
+            let l = local.files.contains(id).then(|| file_stat(&join(&root, id))).flatten();
+            let r = far.files.contains(id).then(|| file_stat(&join(&remote, id))).flatten();
+            // Never through a link or junction on either side.
+            let action = if local.through_link(&segments) || far.through_link(&segments) { "denied_link" } else { sync_action(plan.direction, l, r) };
+            rows.push((id.clone(), action, l, r));
+        }
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, action, ..) in &rows {
+            let n = counts.entry(*action).or_insert(0);
+            *n = n.saturating_add(1);
+        }
+        let listed: Vec<Value> = rows.iter().take(MAX_ROWS).map(|(id, action, l, r)| json!({"path": id, "action": action, "local": stat_json(*l), "remote": stat_json(*r)})).collect();
+        if !plan.apply {
+            return Ok(json!({
+                "schema": "hsk.studio.web.sync_plan@1", "site_id": site.site_id, "target_id": plan.target_id, "direction": plan.direction, "applied": false,
+                "actions": listed, "truncated": rows.len().saturating_sub(MAX_ROWS), "counts": counts,
+                "dependents": dependents, "dependents_option": plan.dependents,
+            }));
+        }
+        // A get never overwrites the open document's unsaved edits.
+        let open_id = self.open_view().and_then(|o| std::fs::canonicalize(&root).ok().and_then(|c| id_in(&c, o.path)));
+        let dirty = self.doc.as_ref().is_some_and(|d| self.saved_sha256.as_deref() != Some(d.sha256_hex()));
+        if let Some(id) = &open_id
+            && dirty
+            && rows.iter().any(|(p, action, ..)| p == id && *action == "get")
+        {
+            return no("document_unsaved", "web.save first");
+        }
+        let mut files = Vec::new();
+        let (mut transferred, mut failed, mut total) = (0usize, 0usize, 0u64);
+        let mut first_failure: Option<String> = None;
+        let mut reopened = None;
+        for (id, action, ..) in rows.iter().filter(|r| matches!(r.1, "put" | "get")) {
+            if cancel.check().is_err() {
+                let receipt = json!({"schema": "hsk.studio.web.sync_receipt@1", "site_id": site.site_id, "target_id": plan.target_id, "files": files, "complete": false});
+                return Err(No("canceled", String::new(), Some(json!({"receipt": receipt}))));
+            }
+            let (src, dst) = if *action == "put" { (join(&root, id), join(&remote, id)) } else { (join(&remote, id), join(&root, id)) };
+            let modified = std::fs::symlink_metadata(&src).and_then(|m| m.modified()).ok();
+            let result = read_bounded(&src, super::MAX_ASSET_BYTES).and_then(|bytes| {
+                total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+                if total > MAX_EXPORT_BYTES {
+                    return no("sync_too_large", id);
+                }
+                super::write_replacing(&dst, &bytes)?;
+                Ok(bytes)
+            });
+            match result {
+                Ok(bytes) => {
+                    // The source's time on the copy, so the next comparison reads them as the same.
+                    let kept = modified.is_some_and(|t| std::fs::File::options().write(true).open(&dst).and_then(|f| f.set_modified(t)).is_ok());
+                    transferred = transferred.saturating_add(1);
+                    if *action == "get" && open_id.as_deref() == Some(id.as_str()) {
+                        reopened = String::from_utf8(bytes.clone()).ok();
+                    }
+                    files.push(json!({"path": id, "action": action, "outcome": "transferred", "bytes": bytes.len(), "sha256": sha256_hex(&bytes), "transfer_mode": super::transfer_mode(id).0, "time_kept": kept}));
+                }
+                Err(No(code, ..)) => {
+                    failed = failed.saturating_add(1);
+                    first_failure.get_or_insert_with(|| id.clone());
+                    files.push(json!({"path": id, "action": action, "outcome": "failed", "code": code}));
+                }
+            }
+        }
+        if let Some(text) = reopened
+            && let Ok(doc) = parse(&text, 1, &Limits::default(), &CancellationToken::default())
+        {
+            self.reopen_written(&doc);
+        }
+        let receipt = json!({
+            "schema": "hsk.studio.web.sync_receipt@1", "site_id": site.site_id, "target_id": plan.target_id, "direction": plan.direction,
+            "files": files, "transferred": transferred, "failed": failed, "complete": failed == 0, "counts": counts, "dependents": dependents,
+        });
+        if let Some(path) = first_failure {
+            return Err(No("sync_failed", bounded(&path), Some(json!({"receipt": receipt}))));
+        }
+        Ok(json!({"receipt": receipt, "web": self.state_json()}))
     }
 }
 
