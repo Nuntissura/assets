@@ -110,7 +110,8 @@
 //! `a_template_update_propagates_and_reports_drift`) and this module's unit tests.
 //!
 //! - **Spellings.** A reference's path is percent-decoded before it resolves (a decoded separator, `%`, control
-//!   character or bad escape never resolves: it stays denied). A move rewrites every reference that reaches the moved
+//!   character or bad escape never resolves: it stays denied; the engine itself denies `%2E`, `%2F` and `%5C` as
+//!   `ambiguous_path` before the site sees them). A move rewrites every reference that reaches the moved
 //!   file in any spelling: exact, another letter case (`case_mismatch`) or percent-encoded. A template or library item
 //!   cannot be moved yet (`move_template_or_library_item`: instances name them by root path in comments).
 //! - **`web.change_link`** `{from, to}` (change-link-site-wide, [STU-WEB-118]): every reference reaching `from` in any
@@ -3750,7 +3751,7 @@ mod tests {
     /// escape or non-UTF-8 byte never does.
     #[test]
     fn an_encoded_separator_never_resolves() {
-        assert_eq!(decoded_path("img/hero%2Epng").as_deref(), Some("img/hero.png"));
+        assert_eq!(decoded_path("img/her%6F.png").as_deref(), Some("img/hero.png"));
         assert_eq!(decoded_path("plain.html").as_deref(), Some("plain.html"));
         for hostile in ["a%2Fb", "a%2fb", "a%5Cb", "a%25b", "a%0Ab", "a%zz", "a%2", "a%E2%82"] {
             assert_eq!(decoded_path(hostile), None, "{hostile}");

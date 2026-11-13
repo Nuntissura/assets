@@ -137,7 +137,7 @@ fn the_site_report_is_admitted_as_a_read() {
 #[test]
 fn change_link_rewrites_every_spelling_site_wide() {
     let dir = Scratch::new("change-link");
-    let index = "<!DOCTYPE html><html><head><title>i</title></head><body>\n<a href=\"old.html\">1</a> <a href=\"Old.html#top\">2</a> <a href=\"old%2Ehtml?q=1\">3</a> <a href=\"news.html\">4</a>\n</body></html>";
+    let index = "<!DOCTYPE html><html><head><title>i</title></head><body>\n<a href=\"old.html\">1</a> <a href=\"Old.html#top\">2</a> <a href=\"ol%64.html?q=1\">3</a> <a href=\"news.html\">4</a>\n</body></html>";
     dir.write("site/index.html", index.as_bytes());
     dir.write("site/pages/p.html", b"<!DOCTYPE html><html><head><title>p</title></head><body><a href=\"../old.html\">o</a></body></html>");
     dir.write("site/news.html", PAGE.as_bytes());
@@ -173,7 +173,7 @@ fn change_link_rewrites_every_spelling_site_wide() {
 #[test]
 fn a_move_rewrites_case_mismatched_and_percent_encoded_spellings() {
     let dir = Scratch::new("move-spellings");
-    dir.write("site/index.html", b"<!DOCTYPE html><html><head><title>i</title></head><body><a href=\"thanks.html\">a</a> <a href=\"Thanks.html\">b</a> <a href=\"thanks%2Ehtml#top\">c</a></body></html>");
+    dir.write("site/index.html", b"<!DOCTYPE html><html><head><title>i</title></head><body><a href=\"thanks.html\">a</a> <a href=\"Thanks.html\">b</a> <a href=\"th%61nks.html#top\">c</a></body></html>");
     dir.write("site/thanks.html", PAGE.as_bytes());
     with_run(|run| {
         define(run, &dir);
@@ -207,7 +207,7 @@ const TEMPLATE: &str = "<!DOCTYPE html>
 <!-- TemplateBeginIf cond=\"showNews\" --><p class=\"news\">News</p><!-- TemplateEndIf -->
 <!-- TemplateBeginIf cond=\"showAside\" --><aside><!-- TemplateBeginEditable name=\"aside\" -->Aside<!-- TemplateEndEditable --></aside><!-- TemplateEndIf -->
 <ul><!-- TemplateBeginRepeat name=\"items\" --><li><!-- TemplateBeginEditable name=\"item\" -->Item<!-- TemplateEndEditable --></li><!-- TemplateEndRepeat --></ul>
-<table><!-- TemplateBeginRepeat name=\"rows\" --><tr><td><!-- TemplateBeginEditable name=\"cell\" -->Cell<!-- TemplateEndEditable --></td></tr><!-- TemplateEndRepeat --></table>
+<table><!-- TemplateBeginRepeat name=\"rows\" --><tr><td><!-- TemplateBeginEditable name=\"cell\" --><span>Cell</span><!-- TemplateEndEditable --></td></tr><!-- TemplateEndRepeat --></table>
 <p><!-- TemplatePassthroughExpr expr=\"<?php echo $user; ?>\" --></p>
 </body>
 </html>
@@ -289,15 +289,19 @@ fn a_template_instance_carries_all_five_region_kinds() {
         assert_eq!(refused(run, "web.instance_param", json!({"name": "showAside", "value": "yes"})), "parameter_invalid");
         assert_eq!(refused(run, "web.instance_param", json!({"name": "nope", "value": "true"})), "template_param_missing");
 
-        // Repeat entries: add a table row, move it first, remove the only list item.
+        // Repeat entries: add a table row, edit the first row's cell, move that row last, remove the only list item.
         cmd(run, "web.instance_repeat", json!({"region": "rows", "op": "add"}));
-        cmd(run, "web.instance_repeat", json!({"region": "rows", "op": "move", "index": 1, "to": 0}));
+        assert_eq!(refused(run, "web.instance_repeat", json!({"region": "rows", "op": "move", "index": 1, "to": 0})), "nothing_to_change", "two equal rows");
+        let span = key_of_tag(run, "span");
+        cmd(run, "web.set_text", json!({"key": span, "text": "First"}));
+        cmd(run, "web.instance_repeat", json!({"region": "rows", "op": "move", "index": 0, "to": 1}));
         cmd(run, "web.instance_repeat", json!({"region": "items", "op": "remove", "index": 0}));
         assert_eq!(refused(run, "web.instance_repeat", json!({"region": "items", "op": "remove", "index": 0})), "parameter_invalid");
         assert_eq!(refused(run, "web.instance_repeat", json!({"region": "main", "op": "add"})), "template_region_missing");
         assert_eq!(refused(run, "web.instance_repeat", json!({"region": "rows", "op": "spin"})), "parameter_invalid");
         let repeated = source(run);
         assert_eq!(repeated.matches("<tr><td>").count(), 2, "{repeated}");
+        assert!(repeated.find("<span>Cell</span>") < repeated.find("<span>First</span>"), "the edited row moved last, its content kept: {repeated}");
         assert!(repeated.contains("<ul><!-- InstanceBeginRepeat name=\"items\" --><!-- InstanceEndRepeat --></ul>"), "{repeated}");
         cmd(run, "web.save", json!({"overwrite": true}));
         cmd(run, "web.open", json!({"path": s(&dir.at("site/page.html"))}));
