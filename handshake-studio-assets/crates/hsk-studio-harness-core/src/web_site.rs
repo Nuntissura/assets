@@ -272,6 +272,15 @@
 //!   candidate); recorded only: publish, lint and preprocessors do not read these fields yet.
 //! - **Jobs** (`site_work_is_admitted_with_its_action`): every command of `ADMITTED` asks the bound port once before
 //!   any work and refuses `overloaded` with nothing written when it is saturated.
+//! - **R60-a3 probe leads (SMB-WEB-SITE-1)**: a reference in a page with a `<base href>` that is a site path resolves
+//!   against the base's folder (the engine denies it `base_href`; the site resolves it as a browser does), so the
+//!   report and a move see it, and a rewrite spells it from that folder; a base that is a URL leaves them denied
+//!   (`a_move_rewrites_references_under_a_base_href`). Pages and style sheets the walk cannot read by name
+//!   (`name_not_portable`, `name_not_utf8`) are never scanned or rewritten: every site-wide writer's receipt lists them
+//!   as `not_scanned` and says complete=false (`pages_the_walk_skips_make_the_receipt_incomplete`). A move that updates
+//!   `recipe.file` updates the recipe values its history steps hold, so undo then redo keeps the moved value
+//!   (`redo_after_a_move_keeps_the_moved_recipe_file`). `web.save` onto a file named like the site lock (any letter
+//!   case) refuses `save_onto_site_lock` before it takes the lock (`a_save_onto_the_site_lock_file_is_refused`).
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
     MANIFEST_FILE, MAX_EXPORT_BYTES, MAX_EXPORT_FILES, MAX_RECORD_BYTES, MAX_ROWS, MAX_SEGMENTS, No, P, R, RECEIPT_FILE, Recipe, SIDECAR_SUFFIX, WebHost, actor_json, bounded, checked_path,
@@ -495,6 +504,8 @@ struct Edge {
     fragment: Option<String>,
     /// The reference's path starts at the root (`/...`).
     rooted: bool,
+    /// The folder a `<base href>` re-targets the reference to (probe lead (1)); `None`: the document's own folder.
+    base: Option<Vec<String>>,
 }
 
 /// A parsed document or style sheet.
@@ -844,9 +855,50 @@ fn edges_of(files: &Files, src: &Source, cancel: &CancellationToken) -> Result<V
                 reach,
                 source: r.source,
                 reference: r.reference,
+                base: None,
             }
         })
-        .collect())
+        .collect::<Vec<_>>())
+    .map(|mut edges| {
+        based(files, src, &mut edges);
+        edges
+    })
+}
+
+/// R60-a3 probe lead (1): the engine denies every relative reference of a document with a `<base href>`
+/// (`base_href`). When the first `base` element's href is a site path, each of those references resolves against the
+/// base's folder instead, as a browser reads it, and the edge records that folder (`base`) so a rewrite spells from
+/// it. A base that is a URL (scheme, `//`) or no site path leaves them denied (they are not the site's files).
+fn based(files: &Files, src: &Source, edges: &mut [Edge]) {
+    let is_base = |e: &Edge| matches!(&e.reach, Reach::Denied("base_href")) && src.doc.local_name(e.node).as_deref() == Some("base") && matches!(&e.source, AssetSource::Attribute(a) if a.eq_ignore_ascii_case("href"));
+    let Some(base) = edges.iter().find(|e| is_base(e)).and_then(|e| base_folder(&dir_of(&src.id), &e.reference)) else { return };
+    let port = SitePort { files, dir: base.clone(), me: src.id.clone(), url: format!("/{}", src.id) };
+    for e in edges.iter_mut().filter(|e| matches!(&e.reach, Reach::Denied("base_href"))) {
+        if src.doc.local_name(e.node).as_deref() == Some("base") {
+            continue;
+        }
+        if e.reference.split(['?', '#']).next().unwrap_or("").is_empty() {
+            continue;
+        }
+        if let Some(reach) = port.reach(&e.reference, Loads::of(Load::Document)) {
+            e.reach = reach;
+            e.base = Some(base.clone());
+        }
+    }
+}
+
+/// The folder a `<base href>` names, resolved from the document's folder (a path ending in `/` is the folder, else
+/// its parent); `None` for a URL or a path that is not the site's.
+fn base_folder(doc_dir: &[String], href: &str) -> Option<Vec<String>> {
+    let path = href.trim_matches(ASCII_WS).split(['?', '#']).next().unwrap_or("");
+    if path.is_empty() || has_scheme(path) || path.starts_with("//") {
+        return None;
+    }
+    let (mut segments, folder) = segments_of(doc_dir, &decoded_path(path)?)?;
+    if !folder {
+        segments.pop();
+    }
+    Some(segments)
 }
 
 impl SiteSet {
@@ -1059,6 +1111,16 @@ pub(super) fn site_lock(local_root: &str, ctx: &CommandContext) -> R<SiteLock> {
         }
         Err(_) => no("site_lock_failed", LOCK_FILE),
     }
+}
+
+/// R60-a3 probe lead (4): a save onto a file named like the site lock (any letter case) refuses
+/// `save_onto_site_lock`: the save would replace the lock record with the document, and the guard, no longer finding
+/// its nonce, would leave the site locked. Called by `web.save` before it takes the lock.
+pub(super) fn save_target_allowed(path: &Path) -> R<()> {
+    if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case(LOCK_FILE)) {
+        return no("save_onto_site_lock", LOCK_FILE);
+    }
+    Ok(())
 }
 
 /// A root-relative path parameter of one file: `None` names why it is refused.
@@ -1496,6 +1558,7 @@ impl WebHost {
         let moved_files = set.files.moved(&from, &to);
         let planned = rewrites(&set, &moved_files, &from, &to, site.link_base, true, cancel)?;
         let left = left_denied(&set, &from);
+        let unscanned = not_scanned(&set);
         cancel.check().map_err(|_| No("canceled", String::new(), None))?;
         // The receipt: per changed file, every change with its byte ranges before and after.
         let (changed, mut writes) = receipt_rows(&set, &planned)?;
@@ -1505,8 +1568,8 @@ impl WebHost {
         let receipt = |complete: bool, restored: &[String], failed: Option<&str>, restore_failed: &[String]| {
             json!({
                 "schema": "hsk.studio.web.move_receipt@1", "site_id": site.site_id, "from": from, "to": to, "site_relative_link_base": site.link_base,
-                "changed": changed, "complete": complete && left.is_empty(), "restored": restored, "failed": failed, "restore_failed": restore_failed, "recipe_file": recipe_file,
-                "left_denied": left,
+                "changed": changed, "complete": complete && left.is_empty() && unscanned.is_empty(), "restored": restored, "failed": failed, "restore_failed": restore_failed, "recipe_file": recipe_file,
+                "left_denied": left, "not_scanned": unscanned,
             })
         };
         // Writes: referring files, the moved file's new bytes, then the rename; a failure restores what was written.
@@ -1550,6 +1613,17 @@ impl WebHost {
         if let (Some(file), Some(recipe)) = (&recipe_file, self.recipe.as_mut()) {
             recipe.file = file.clone();
         }
+        // R60-a3 probe lead (3): the recipe values the history steps hold move too, so undo and redo never bring the
+        // old entry document back.
+        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if let super::Change::Recipe { before, after } = &mut step.change {
+                for r in [before, after].into_iter().flatten() {
+                    if r.file == from {
+                        r.file.clone_from(&to);
+                    }
+                }
+            }
+        }
         Ok(json!({"receipt": receipt(true, &[], None, &[]), "web": self.state_json()}))
     }
 }
@@ -1572,10 +1646,12 @@ fn plan(src: &Source, from: &str, to: &str, link_base: &str, moving: bool) -> R<
         let not = || No("reference_not_rewritable", bounded(&format!("{}:{}", src.id, e.line)), None);
         let path = e.reference.get(..path_len).unwrap_or("");
         let new_path = match &e.reach {
-            r if reaches(r, from) => spell(link_base, &dir, &split_path(to), false),
+            // Probe lead (1): a reference under a `<base href>` is spelled from the base's folder.
+            r if reaches(r, from) => spell(link_base, e.base.as_deref().unwrap_or(&dir), &split_path(to), false),
             Reach::External | Reach::Inline | Reach::SameDocument => continue,
-            // Review F2: in the moved file, every relative reference by path arithmetic on its own bytes.
-            _ if moving && !e.rooted && !has_scheme(path) => rebased(link_base, &old_dir, &dir, path, from, to).ok_or_else(not)?,
+            // Review F2: in the moved file, every relative reference by path arithmetic on its own bytes (one under a
+            // base keeps it: the base itself is re-based, so it still names the same folder).
+            _ if moving && e.base.is_none() && !e.rooted && !has_scheme(path) => rebased(link_base, &old_dir, &dir, path, from, to).ok_or_else(not)?,
             _ => continue,
         };
         let new_ref = format!("{new_path}{}", e.reference.get(path_len..).unwrap_or(""));
@@ -1766,6 +1842,12 @@ fn left_denied(set: &SiteSet, from: &str) -> Vec<Value> {
     out
 }
 
+/// Pages and style sheets the walk cannot read by name (a space, a non-ASCII or reserved character; R60-a3 probe lead
+/// (2)): never scanned, so never rewritten; listed as `not_scanned` so the receipt says complete=false.
+fn not_scanned(set: &SiteSet) -> Vec<Value> {
+    set.skipped.iter().filter(|(id, reason)| *reason != "link" && role(id) != Role::Other).take(MAX_ROWS).map(|(id, reason)| json!({"file": id, "reason": reason})).collect()
+}
+
 /// Writes each file through the atomic writer in order and stops at the first failure: the ids written and the one
 /// that failed.
 fn write_each(root: &Path, writes: &[(String, String)]) -> (Vec<String>, Option<String>) {
@@ -1909,6 +1991,7 @@ impl WebHost {
         }
         let planned = rewrites(&set, &set.files, from, to, site.link_base, false, cancel)?;
         let left = left_denied(&set, from);
+        let unscanned = not_scanned(&set);
         if planned.is_empty() {
             return Err(No("nothing_to_change", bounded(from), Some(json!({"left_denied": left}))));
         }
@@ -1917,8 +2000,8 @@ impl WebHost {
         let receipt = |complete: bool, restored: &[String], failed: Option<&str>, restore_failed: &[String]| {
             json!({
                 "schema": "hsk.studio.web.change_link_receipt@1", "site_id": site.site_id, "from": from, "to": to, "site_relative_link_base": site.link_base,
-                "changed": changed, "complete": complete && left.is_empty(), "restored": restored, "failed": failed, "restore_failed": restore_failed,
-                "left_denied": left,
+                "changed": changed, "complete": complete && left.is_empty() && unscanned.is_empty(), "restored": restored, "failed": failed, "restore_failed": restore_failed,
+                "left_denied": left, "not_scanned": unscanned,
             })
         };
         let (written, failure) = write_each(&root, &writes);
@@ -3175,10 +3258,11 @@ impl WebHost {
         }
         // One transaction per instance: each is one atomic write; a failure stops before the next (`written` names
         // the instances whose transaction completed).
+        let unscanned = not_scanned(&set);
         let receipt = |complete: bool, written: &[&str], failed: Option<&str>| {
             json!({
                 "schema": "hsk.studio.web.template_receipt@1", "site_id": site.site_id, "template": template, "instances": rows, "updated": updated, "drifted": drifted,
-                "complete": complete, "written": written, "failed": failed,
+                "complete": complete && unscanned.is_empty(), "written": written, "failed": failed, "not_scanned": unscanned,
             })
         };
         let mut written: Vec<&str> = Vec::new();
@@ -3300,10 +3384,11 @@ impl WebHost {
             return Err(No("library_markup_invalid", bounded(first), Some(json!({"documents": malformed.iter().take(MAX_ROWS).collect::<Vec<_>>()}))));
         }
         cancel.check().map_err(|_| No("canceled", String::new(), None))?;
+        let unscanned = not_scanned(&set);
         let receipt = |complete: bool, restored: &[String], failed: Option<&str>, restore_failed: &[String]| {
             json!({
                 "schema": "hsk.studio.web.library_receipt@1", "site_id": site.site_id, "item": item, "changed": changed,
-                "complete": complete, "restored": restored, "failed": failed, "restore_failed": restore_failed,
+                "complete": complete && unscanned.is_empty(), "restored": restored, "failed": failed, "restore_failed": restore_failed, "not_scanned": unscanned,
             })
         };
         let (written, failure) = write_each(&root, &writes);

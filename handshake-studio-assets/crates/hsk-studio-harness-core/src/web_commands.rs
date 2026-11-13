@@ -566,6 +566,7 @@ impl WebHost {
             Some(path) => PathBuf::from(checked_path(path)?),
             None => self.path.clone().ok_or(No("parameter_missing", "path".into(), None))?,
         };
+        web_site::save_target_allowed(&path)?;
         if path.exists() && !p.flag("overwrite")? {
             return no("overwrite_required", &path.to_string_lossy());
         }
