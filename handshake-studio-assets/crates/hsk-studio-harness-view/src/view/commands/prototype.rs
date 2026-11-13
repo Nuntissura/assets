@@ -356,4 +356,52 @@ mod tests {
         assert!(names(&dir).is_empty(), "nothing written, no temp");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Lane SMB-PROTOTYPE-PLAY-CANCEL-1 (STU-PRO-138, STU-ARC-013, HBR-HOST-004): a cancel raised after admission
+    /// (inside the port's ask) is seen by the render itself, which refuses `canceled` before any frame is rendered
+    /// (`before the render`, not the pre-write check's `before the write`); the job settles once `canceled`, nothing
+    /// is written.
+    #[test]
+    fn a_cancel_after_admission_is_refused_by_the_render_and_nothing_is_written() {
+        let dir = scratch("canceled-render");
+        let mut v = viewer();
+        let port = Arc::new(Port { cancel_on_admit: Some(v.cancel.clone()), ..Port::default() });
+        start(&mut v, &port);
+        let path = dir.join("frame.png");
+        let e = capture(&mut v, &path).unwrap_err();
+        assert_eq!((e.code.as_str(), &e.detail), ("canceled", &json!({"message": "before the render"})), "{e:?}");
+        assert_eq!(port.asks.load(Ordering::SeqCst), 1);
+        let counts = v.job_counts();
+        assert_eq!((counts.admitted, counts.canceled, counts.failed, counts.completed, counts.released, counts.in_flight), (1, 1, 0, 0, 1, 0), "{counts:?}");
+        assert!(names(&dir).is_empty(), "nothing written, no temp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Lane SMB-PROTOTYPE-PLAY-CANCEL-1: a capture without a path renders under the viewer's token too: once it is
+    /// set the render refuses `canceled` before rendering; nothing is admitted.
+    #[test]
+    fn a_canceled_token_refuses_a_capture_without_a_path_at_the_render() {
+        let mut v = viewer();
+        let port = Arc::new(Port::default());
+        start(&mut v, &port);
+        v.cancel.cancel();
+        let Value::Object(params) = json!({}) else { unreachable!() };
+        let e = v.run_command("prototype.capture_frame", &params).unwrap_err();
+        assert_eq!((e.code.as_str(), &e.detail), ("canceled", &json!({"message": "before the render"})), "{e:?}");
+        assert_eq!(port.asks.load(Ordering::SeqCst), 0, "a capture without a path is not admitted");
+        assert_eq!(v.job_counts().admitted, 0);
+    }
+
+    /// Lane SMB-PROTOTYPE-PLAY-CANCEL-1: `prototype.start_session` imports under the viewer's token: once it is set
+    /// the import refuses `canceled` and no session opens.
+    #[test]
+    fn a_canceled_token_refuses_start_session_at_the_import() {
+        let mut v = viewer();
+        v.cancel.cancel();
+        let fixture = format!("{}/../hsk-studio-interop-fig/tests/fixtures/fig-prototype-pages.fig", env!("CARGO_MANIFEST_DIR"));
+        let Value::Object(params) = json!({"path": fixture}) else { unreachable!() };
+        let e = v.run_command("prototype.start_session", &params).unwrap_err();
+        assert_eq!((e.code.as_str(), &e.detail), ("canceled", &json!({"message": "fig_import_refused"})), "{e:?}");
+        assert!(v.prototype.is_none(), "no session opens");
+    }
 }

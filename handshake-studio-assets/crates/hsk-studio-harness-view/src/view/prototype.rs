@@ -950,3 +950,39 @@ impl PrototypePlay {
         drawn
     }
 }
+
+/// Lane SMB-PROTOTYPE-PLAY-CANCEL-1 (STU-PRO-138, STU-ARC-013, HBR-HOST-004): the play's renders run under a token
+/// that can be canceled.
+#[cfg(test)]
+mod tests {
+    use super::PrototypePlay;
+    use hsk_studio_accord::CancellationToken;
+
+    /// The Operator prototype fixture (repository-relative, never machine-local).
+    fn fig() -> Vec<u8> {
+        std::fs::read(format!("{}/../hsk-studio-interop-fig/tests/fixtures/fig-prototype-pages.fig", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    }
+
+    fn canceled() -> CancellationToken {
+        let token = CancellationToken::default();
+        token.cancel();
+        token
+    }
+
+    /// A canceled token makes the play's render refuse `canceled` before rendering: nothing is rendered or cached,
+    /// and a warm cache is not served either.
+    #[test]
+    fn a_canceled_token_makes_the_render_refuse_canceled_before_rendering() {
+        let mut play = PrototypePlay::open(&fig(), None).unwrap();
+        play.cancel = canceled();
+        let e = play.render().unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "before the render"), "{e:?}");
+        assert!(play.rendered.is_empty() && play.smart_cache.is_none(), "nothing rendered or cached");
+        let mut warm = PrototypePlay::open(&fig(), None).unwrap();
+        warm.render().unwrap();
+        assert!(!warm.rendered.is_empty(), "the screen is cached");
+        warm.cancel = canceled();
+        let e = warm.render().unwrap_err();
+        assert_eq!((e.code, e.detail.as_str()), ("canceled", "before the render"), "{e:?}");
+    }
+}
