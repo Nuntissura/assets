@@ -1,10 +1,21 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-024-decorative-transition-v1
-generation: 1
-phase: planned
+generation: 2
+phase: active
 owner: 01a17374-1d96-7e02-9aea-77b0f62f20dc
-changed_files: []
-proof: []
-blockers:
-- Publish the scoped WP predecessor and record dependency readiness before coding.
-next_action: Review and publish the exact WP predecessor, then allocate the private source file.
+changed_files:
+- product/kumihimo-vulkan/src/decorative_transition.rs
+proof:
+- kind: published_predecessor
+  revision: 21fe118387cb4faa1ad8ea19f159c05f7a70259a
+  observation: Independent reread verified five scoped paths.
+- kind: nonauthor_source_review
+  source_sha256: 8694e82e2671b0cb9928b24a3ee6ddcb554317c5373e8af96a05a9e745e439bb
+  observation: Independent source review cleared the exact private transition state.
+- kind: focused_tests
+  source_sha256: 8694e82e2671b0cb9928b24a3ee6ddcb554317c5373e8af96a05a9e745e439bb
+  test_output_sha256: d457b091b139ce752c62f1d7632e30947359a8f7901231a3e022ba47907aefdb
+  observation: Pinned rustc test compile and test run exited 0. Independently checked all three cases passed. Presenter
+    integration is separate.
+blockers: []
+next_action: Independently reread the exact published state and transition source.
