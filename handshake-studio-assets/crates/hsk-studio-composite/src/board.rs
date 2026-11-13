@@ -450,6 +450,26 @@ pub fn cap_size(width: f64) -> f64 {
     (width * 6.0).max(8.0)
 }
 
+/// The radius of an ERD zero ring at stroke `width`: its hole (the radius less one and a half strokes: the
+/// annulus is filled and both circles are stroked) stays at least half a stroke plus 2 units wide (review F8).
+pub fn erd_ring_radius(width: f64) -> f64 {
+    (cap_size(width) * 0.35).max(width * 2.0 + 2.0)
+}
+
+/// How far an ERD zero ring's centre sits behind the tip: past the crow's foot or bar (one cap size) with a
+/// 2-unit gap.
+pub fn erd_ring_back(width: f64) -> f64 {
+    cap_size(width) + erd_ring_radius(width) + 2.0
+}
+
+/// The stretch `(near, far)` behind the tip that the line leaves open for a cap's ring, if it has one.
+fn ring_gap(cap: StudioConnectorCap, width: f64) -> Option<(f64, f64)> {
+    matches!(cap, StudioConnectorCap::ErdZeroOrOne | StudioConnectorCap::ErdZeroOrMore).then(|| {
+        let (back, r) = (erd_ring_back(width), erd_ring_radius(width));
+        (back - r, back + r)
+    })
+}
+
 fn unit(from: [f64; 2], to: [f64; 2]) -> Option<[f64; 2]> {
     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
     let len = dx.hypot(dy);
@@ -467,12 +487,11 @@ fn cap(path: &mut OwnedPath, cap: StudioConnectorCap, t: [f64; 2], d: [f64; 2], 
         line(path, at(s, 0.0), at(0.0, 0.0));
         line(path, at(s, 0.0), at(0.0, -s / 2.0));
     };
-    let ring = |path: &mut OwnedPath, back: f64| {
-        let r = s * 0.3;
+    let ring = |path: &mut OwnedPath| {
+        let (r, back) = (erd_ring_radius(width), erd_ring_back(width));
         let c = [t[0] - d[0] * back, t[1] - d[1] * back];
         ellipse(path, c, r, r);
-        let inner = (r - width).max(r * 0.4);
-        ellipse(path, c, inner, inner);
+        ellipse(path, c, r - width, r - width);
     };
     match cap {
         StudioConnectorCap::None => {}
@@ -495,11 +514,11 @@ fn cap(path: &mut OwnedPath, cap: StudioConnectorCap, t: [f64; 2], d: [f64; 2], 
         }
         StudioConnectorCap::ErdZeroOrOne => {
             bar(path, s * 0.5);
-            ring(path, s * 1.3);
+            ring(path);
         }
         StudioConnectorCap::ErdZeroOrMore => {
             foot(path);
-            ring(path, s * 1.4);
+            ring(path);
         }
     }
 }
@@ -511,9 +530,37 @@ pub fn connector_drawing(points: &[[f64; 2]], start: StudioConnectorCap, end: St
         return Err(BoardGeometryError::Invalid);
     }
     let mut p = OwnedPath::new(FillRule::EvenOdd);
-    for w in points.windows(2) {
-        if w[0] != w[1] {
-            line(&mut p, pt(w[0]), pt(w[1]));
+    let last = points.len().saturating_sub(2);
+    for (i, w) in points.windows(2).enumerate() {
+        if w[0] == w[1] {
+            continue;
+        }
+        // A ring cap leaves its stretch of the end segment open (review F8: the ring stays hollow).
+        let mut cuts: Vec<(f64, f64)> = Vec::new();
+        let length = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
+        if i == last
+            && let Some((near, far)) = ring_gap(end, width)
+            && far < length
+        {
+            cuts.push((length - far, length - near));
+        }
+        if i == 0
+            && let Some((near, far)) = ring_gap(start, width)
+            && far < length
+        {
+            cuts.push((near, far));
+        }
+        cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let at = |k: f64| [w[0][0] + (w[1][0] - w[0][0]) * k / length, w[0][1] + (w[1][1] - w[0][1]) * k / length];
+        let mut from = 0.0;
+        for (a, b) in cuts {
+            if a > from {
+                line(&mut p, pt(at(from)), pt(at(a)));
+            }
+            from = from.max(b);
+        }
+        if from < length {
+            line(&mut p, pt(at(from)), pt(w[1]));
         }
     }
     if p.elements.is_empty() {
@@ -600,6 +647,15 @@ mod tests {
             hsk_studio_nib::anchor_path::AnchorPath::from_owned_path(&p).unwrap_or_else(|e| panic!("{c:?}: {e:?}"));
         }
         assert_eq!(connector_drawing(&[[0.0, 0.0]], StudioConnectorCap::None, StudioConnectorCap::None, 2.0), Err(BoardGeometryError::Invalid));
+        // F8: the ring's hole is at least 3 units at width 2, and the line leaves the ring open.
+        assert!(erd_ring_radius(2.0) - 1.5 * 2.0 >= 3.0);
+        let ring = connector_drawing(&[[0.0, 0.0], [100.0, 0.0]], StudioConnectorCap::None, StudioConnectorCap::ErdZeroOrMore, 2.0).unwrap();
+        let centre = 100.0 - erd_ring_back(2.0);
+        let crosses = ring.elements.windows(2).any(|e| match (e[0], e[1]) {
+            (PathElement::MoveTo(a), PathElement::LineTo(b)) => a.y == 0.0 && b.y == 0.0 && a.x.min(b.x) < centre && a.x.max(b.x) > centre,
+            _ => false,
+        });
+        assert!(!crosses, "no line segment crosses the ring centre");
         assert_eq!(connector_drawing(&[[0.0, 0.0], [0.0, 0.0]], StudioConnectorCap::None, StudioConnectorCap::None, 2.0), Err(BoardGeometryError::Invalid));
     }
 }
