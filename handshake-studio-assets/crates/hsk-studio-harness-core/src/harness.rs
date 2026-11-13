@@ -1601,6 +1601,12 @@ impl Run<'_> {
         ok
     }
 
+    /// RED STUB (lane SMB-BOARD-1, review F3 of e4d033aa): runs `f` and nothing else; the group step named
+    /// `command_id`, its record, the rollback and the nesting rule follow in the fix commit.
+    pub fn catalog_step(&mut self, _command_id: &'static str, f: impl FnOnce(&mut Self) -> bool) -> bool {
+        f(self)
+    }
+
     /// ONE entry-only history step of the typed command `command_id` (a RUN_COMMANDS id; lane
     /// SMB-DS-VARIABLES-AUTHOR-1, review F3, HOST INTEGRATION (3)-(5)): the session document entry `token`
     /// set to `bytes`; the record, the step's attribution and its label (the undo name) are `command_id`,
