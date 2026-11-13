@@ -11,7 +11,11 @@
 //! point per pixel, so a 1920 by 1080 px deck frames at 1920 by 1080.
 //!
 //! `board` (lane SMB-BOARD-1, [STU-WB-001], [STU-WB-120]): one artboard, the document's first board, at
-//! the stated size or [`BOARD_DEFAULT_SIZE`] (the viewer lists it as a board in the vector records).
+//! the stated size or [`BOARD_DEFAULT_SIZE`] (pixels, in the document's unit), and whiteboard mode, set once at
+//! creation in the [`ARTBOARD_OPTIONS_ENTRY`] entry ([`whiteboard_options_bytes`], written by
+//! `Run::new_document` for the command line and the viewer alike). Reading (lead ruling 2026-11-13, review F4
+//! option B): the mode lives in that document-level entry, not in a `StudioDocument` field (48 struct-literal
+//! sites); a document without it is not a whiteboard and never becomes one.
 //!
 //! Studio readings, declared (vendor parity UNVERIFIED, D5): a new artboard goes to the
 //! right of the others at [`ARTBOARD_GAP`]; a raster document starts transparent; ids are minted here
@@ -37,8 +41,11 @@ pub const MAX_ARTBOARDS: usize = 1000;
 pub const MAX_PAGES: usize = 9999;
 /// Longest artboard or spread name in bytes.
 pub const MAX_NAME_BYTES: usize = 1024;
-/// The size of a new board when none is stated (lane SMB-BOARD-1; Studio-declared), in document units.
+/// The size of a new board when none is stated (lane SMB-BOARD-1; Studio-declared), in pixels (converted to
+/// the document's unit).
 pub const BOARD_DEFAULT_SIZE: (f64, f64) = (1920.0, 1080.0);
+/// The top-level key of the [`ARTBOARD_OPTIONS_ENTRY`] entry that marks a whiteboard document ([STU-WB-001]).
+pub const WHITEBOARD_MODE_KEY: &str = "whiteboard_mode";
 /// The margins of a new page when they leave a positive margin box, in points.
 pub const DEFAULT_MARGIN_PT: f64 = 36.0;
 /// The session document entry holding [`ArtboardOptions`] (`hsk_studio_session::DOCUMENT_ENTRY_TOKENS`).
@@ -320,7 +327,7 @@ pub fn blank_document(spec: &NewDocument, document_id: &str) -> Result<folio::St
             }));
         }
         (DocumentProfile::Board, None) => {
-            let (w, h) = BOARD_DEFAULT_SIZE;
+            let (w, h) = (from_points(BOARD_DEFAULT_SIZE.0, unit), from_points(BOARD_DEFAULT_SIZE.1, unit));
             let token = unit_token(unit);
             let len = |value: f64| json!({"value": value, "unit": token});
             artboards.push(json!({
@@ -546,8 +553,10 @@ impl ArtboardOptionsEdit {
 }
 
 /// The body of the [`ARTBOARD_OPTIONS_ENTRY`] entry: `document_id` binds it, and an artboard the
-/// document no longer holds is inert (an undo brings it back live). Parsed strictly: an entry that does
-/// not parse is `artboard_options_invalid`, on read and on any write over it.
+/// document no longer holds is inert (an undo brings it back live). `artboard.delete` takes its row in its own
+/// step and `artboard.set_options` writes the live artboards' rows only, so the entry stays bounded by the
+/// live artboards over any number of add, set and delete cycles (R60-a3 probe lead, SMB-DOC-NEW-1). Parsed
+/// strictly: an entry that does not parse is `artboard_options_invalid`, on read and on any write over it.
 pub fn parse_options(bytes: &[u8], document_id: &str) -> Result<Vec<ArtboardOptions>, &'static str> {
     const BAD: &str = "artboard_options_invalid";
     if bytes.len() > MAX_OPTIONS_BYTES {
@@ -555,7 +564,12 @@ pub fn parse_options(bytes: &[u8], document_id: &str) -> Result<Vec<ArtboardOpti
     }
     let value: Value = serde_json::from_slice(bytes).map_err(|_| BAD)?;
     let o = value.as_object().ok_or(BAD)?;
-    if o.len() != 3 || o.get("schema").and_then(Value::as_str) != Some(ARTBOARD_OPTIONS_SCHEMA) || o.get("document_id").and_then(Value::as_str) != Some(document_id) {
+    // Lane SMB-BOARD-1: a fourth key is only `whiteboard_mode: true`.
+    let marked = o.get(WHITEBOARD_MODE_KEY).is_some();
+    if marked && o.get(WHITEBOARD_MODE_KEY) != Some(&Value::Bool(true)) {
+        return Err(BAD);
+    }
+    if o.len() != if marked { 4 } else { 3 } || o.get("schema").and_then(Value::as_str) != Some(ARTBOARD_OPTIONS_SCHEMA) || o.get("document_id").and_then(Value::as_str) != Some(document_id) {
         return Err(BAD);
     }
     let rows = o.get("artboards").and_then(Value::as_array).ok_or(BAD)?;
@@ -573,6 +587,26 @@ pub fn parse_options(bytes: &[u8], document_id: &str) -> Result<Vec<ArtboardOpti
 
 /// The entry body of `rows`.
 pub fn options_bytes(rows: &[ArtboardOptions], document_id: &str) -> Result<Vec<u8>, &'static str> {
-    let wire = json!({"schema": ARTBOARD_OPTIONS_SCHEMA, "document_id": document_id, "artboards": rows.iter().map(ArtboardOptions::to_json).collect::<Vec<_>>()});
+    options_bytes_in_mode(rows, document_id, false)
+}
+
+/// The entry body of `rows`, marked as a whiteboard document when `whiteboard` (lane SMB-BOARD-1).
+pub fn options_bytes_in_mode(rows: &[ArtboardOptions], document_id: &str, whiteboard: bool) -> Result<Vec<u8>, &'static str> {
+    let mut wire = json!({"schema": ARTBOARD_OPTIONS_SCHEMA, "document_id": document_id, "artboards": rows.iter().map(ArtboardOptions::to_json).collect::<Vec<_>>()});
+    if whiteboard {
+        wire[WHITEBOARD_MODE_KEY] = Value::Bool(true);
+    }
     serde_json::to_vec(&wire).map_err(|_| "artboard_options_invalid")
+}
+
+/// Whether the entry body marks a whiteboard document; `artboard_options_invalid` when it does not parse.
+pub fn options_whiteboard_mode(bytes: &[u8], document_id: &str) -> Result<bool, &'static str> {
+    parse_options(bytes, document_id)?;
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| "artboard_options_invalid")?;
+    Ok(value.get(WHITEBOARD_MODE_KEY) == Some(&Value::Bool(true)))
+}
+
+/// The entry body of a new whiteboard document: no artboard options, the mode set ([STU-WB-001]).
+pub fn whiteboard_options_bytes(document_id: &str) -> Result<Vec<u8>, &'static str> {
+    options_bytes_in_mode(&[], document_id, true)
 }

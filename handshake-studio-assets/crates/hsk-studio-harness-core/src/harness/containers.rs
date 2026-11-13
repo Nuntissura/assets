@@ -475,6 +475,19 @@ impl Run<'_> {
             Err(code) => return refused(self, code),
         };
         let opened = Session::create_new(document, SessionConfig::new(self.context.actor().clone()), self.ports(), self.cancel);
+        // Lane SMB-BOARD-1 (review F4, lead ruling option B): a board document is a whiteboard from creation,
+        // for the command line and the viewer alike: the mode is the artboard options entry's, written before
+        // the document is published (no history step; nothing can return to a state without it).
+        let opened = match (opened, spec.profile == rules::DocumentProfile::Board) {
+            (Ok(mut session), true) => {
+                let marked = rules::whiteboard_options_bytes(&document_id).map_err(|code| code.to_owned()).and_then(|bytes| session.set_document_entry(rules::ARTBOARD_OPTIONS_ENTRY, Some(bytes), self.cancel).map_err(|e| e.code().to_owned()));
+                match marked {
+                    Ok(()) => Ok(session),
+                    Err(_) => return refused(self, "whiteboard_mode_unwritten"),
+                }
+            }
+            (opened, _) => opened,
+        };
         let ok = self.finish_open(OP, before, opened, false);
         if ok {
             let revision = self.revision().unwrap_or(0);
@@ -561,13 +574,23 @@ impl Run<'_> {
         let revision = session.document_revision();
         match session.submit_containers_as(&ctx, &submit, revision, cancel) {
             Ok(applied) => {
+                // The step's entry (an artboard delete's options row) comes back with its containers;
+                // refused: the container step stays applied and reported, never silently split.
+                let previous = match step.entry.as_ref().map(|e| self.swap_entry(e)) {
+                    Some(Ok(p)) => p,
+                    Some(Err(code)) => {
+                        let revision = self.revision();
+                        return self.push(op, before, Err(code), Some(applied.report), revision);
+                    }
+                    None => None,
+                };
                 if applied.changed && !applied.replayed {
                     let event = if undo { StudioBusinessEventId::HistoryUndone } else { StudioBusinessEventId::HistoryRedone };
                     self.emit_business_event(event, &ctx, applied.revision, &[]);
                 }
                 let detail = json!({"step": step.label, "previous_revision": applied.previous_revision, "revision": applied.revision, "correlation_id": applied.correlation_id, "changed": applied.changed});
                 let inverse = submit.inverse(submit.command_id.clone(), submit.correlation_id);
-                let next = HistoryStep { label: step.label, inverse: Value::Null, entry: None, timeline: None, group: None, sequences: None, containers: Some(inverse), layout: None, ctx, revision: applied.revision };
+                let next = HistoryStep { label: step.label, inverse: Value::Null, entry: previous, timeline: None, group: None, sequences: None, containers: Some(inverse), layout: None, ctx, revision: applied.revision };
                 if undo {
                     self.redo_stack.push(next);
                 } else {
@@ -646,8 +669,44 @@ impl Run<'_> {
     }
 
     /// `artboard.delete` ([STU-SHL-026] Delete Artboard). Refusals: `unknown_artboard`,
-    /// `artboard_not_empty`, `last_artboard` (module docs).
+    /// `artboard_not_empty`, `last_artboard` (module docs). The artboard's options row leaves the
+    /// `artboard_options` entry in the same step, and an undo brings it back (R60-a3 probe lead, SMB-DOC-NEW-1:
+    /// the entry stays bounded by the live artboards over any number of add, set and delete cycles).
     pub fn delete_artboard(&mut self, artboard: &str) -> bool {
+        let depth = self.undo_stack.len();
+        let ok = self.delete_artboard_container(artboard);
+        if ok && self.undo_stack.len() > depth {
+            self.drop_artboard_options_into_last_step(artboard);
+        }
+        ok
+    }
+
+    /// Removes `artboard`'s row from the options entry and gives the last undo step the entry before it,
+    /// so undo and redo swap the entry with that step's containers. An entry without the row is left as it
+    /// is; one that does not parse is left for its reader to refuse; a refused write leaves the row inert,
+    /// as it was before this rule (the step is never split).
+    fn drop_artboard_options_into_last_step(&mut self, artboard: &str) {
+        let cancel = self.cancel;
+        let Some(session) = self.session.as_mut() else { return };
+        let document_id = session.snapshot().document().document_id.clone();
+        let Some(previous) = session.document_entry(rules::ARTBOARD_OPTIONS_ENTRY).map(<[u8]>::to_vec) else { return };
+        let Ok(mut rows) = rules::parse_options(&previous, &document_id) else { return };
+        let Ok(whiteboard) = rules::options_whiteboard_mode(&previous, &document_id) else { return };
+        let count = rows.len();
+        rows.retain(|o| o.artboard_id != artboard);
+        if rows.len() == count {
+            return;
+        }
+        let Ok(bytes) = rules::options_bytes_in_mode(&rows, &document_id, whiteboard) else { return };
+        if session.set_document_entry(rules::ARTBOARD_OPTIONS_ENTRY, Some(bytes), cancel).is_err() {
+            return;
+        }
+        if let Some(step) = self.undo_stack.last_mut() {
+            step.entry = Some(EntryRestore { token: rules::ARTBOARD_OPTIONS_ENTRY.to_string(), bytes: Some(previous) });
+        }
+    }
+
+    fn delete_artboard_container(&mut self, artboard: &str) -> bool {
         self.container_edit("delete_artboard", "artboard.delete", |document, artboards, _| {
             let at = artboards.iter().position(|a| a.artboard_id == artboard).ok_or("unknown_artboard")?;
             if layer_names_node(document, artboard) {
@@ -1033,6 +1092,16 @@ impl Run<'_> {
         ok
     }
 
+    /// [STU-WB-001] whether the open document is a whiteboard (lane SMB-BOARD-1): its artboard options entry
+    /// carries the mode, set once at creation. `not_open`; `artboard_options_invalid` when the entry does not parse.
+    pub fn whiteboard_mode(&self) -> Result<bool, &'static str> {
+        let session = self.session.as_ref().ok_or("not_open")?;
+        match session.document_entry(rules::ARTBOARD_OPTIONS_ENTRY) {
+            Some(bytes) => rules::options_whiteboard_mode(bytes, &session.snapshot().document().document_id),
+            None => Ok(false),
+        }
+    }
+
     /// The options of the document's artboards in document order, the spec's defaults for one never
     /// set. `artboard_options_invalid` when the entry does not parse.
     pub fn artboard_options(&self) -> Result<Vec<ArtboardOptions>, &'static str> {
@@ -1067,7 +1136,8 @@ impl Run<'_> {
             return self.push(OP, before, Err("not_open"), None, None);
         };
         let document_id = session.snapshot().document().document_id.clone();
-        if !session.snapshot().document().artboards.iter().any(|a| a.artboard_id == artboard) {
+        let live: BTreeSet<String> = session.snapshot().document().artboards.iter().map(|a| a.artboard_id.clone()).collect();
+        if !live.contains(artboard) {
             return self.own_op(OP, before, Err("unknown_artboard"));
         }
         let previous = session.document_entry(rules::ARTBOARD_OPTIONS_ENTRY).map(<[u8]>::to_vec);
@@ -1076,6 +1146,14 @@ impl Run<'_> {
                 Some(bytes) => rules::parse_options(bytes, &document_id)?,
                 None => Vec::new(),
             };
+            // Lane SMB-BOARD-1: the whiteboard mode of the entry stays.
+            let whiteboard = match &previous {
+                Some(bytes) => rules::options_whiteboard_mode(bytes, &document_id)?,
+                None => false,
+            };
+            // R60-a3 probe lead (SMB-DOC-NEW-1): the entry holds the live artboards' rows only (an inert
+            // row an older build left comes back with an undo of this step).
+            rows.retain(|o| live.contains(&o.artboard_id));
             let at = rows.iter().position(|o| o.artboard_id == artboard);
             let current = at.map_or_else(|| ArtboardOptions::new(artboard), |i| rows[i].clone());
             let next = edit.apply(&current)?;
@@ -1084,7 +1162,7 @@ impl Run<'_> {
                 Some(i) => rows[i] = next.clone(),
                 None => rows.push(next.clone()),
             }
-            Ok::<_, &'static str>((rules::options_bytes(&rows, &document_id)?, next, changed))
+            Ok::<_, &'static str>((rules::options_bytes_in_mode(&rows, &document_id, whiteboard)?, next, changed))
         })();
         let (bytes, next, changed) = match written {
             Ok(done) => done,
