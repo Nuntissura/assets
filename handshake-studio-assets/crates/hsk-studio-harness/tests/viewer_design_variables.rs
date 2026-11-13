@@ -89,8 +89,21 @@ fn primitive_and_alias(v: &mut Viewer, collection: &str, light: &str, dark: &str
     (primitive, semantic)
 }
 
-/// [STU-DS-123], [STU-DS-133], [STU-DS-162]: every mutating command is ONE undo step named by its op;
-/// undo restores the vector entry byte for byte and redo brings the records back.
+/// Review F3 (HOST INTEGRATION (3)-(5)): the command's own record names its catalog id, its history step is
+/// named and attributed by that id (the undo name is the catalog id), and its business event is
+/// STUDIO_VARIABLE_SET; review F7: every mutating result carries the STU-DS-123 `advisory` key.
+fn assert_committed_as(v: &Viewer, id: &str, result: &Value) {
+    assert_eq!(newest_label(v), id, "the undo name is the catalog id");
+    let step = v.run().history()["undo_steps"].as_array().and_then(|s| s.last()).cloned().unwrap_or_default();
+    assert_eq!(step["command_id"], id, "the step is attributed to the row: {step}");
+    let record = v.run().ops().last().cloned().unwrap_or_default();
+    assert_eq!((record["op"].as_str(), record["command_id"].as_str()), (Some(id), Some(id)), "{record}");
+    assert_eq!(record["business_events"][0]["event"], "STUDIO_VARIABLE_SET", "{record}");
+    assert!(result.get("advisory").is_some(), "{id}: the result carries the advisory key: {result}");
+}
+
+/// [STU-DS-123], [STU-DS-133], [STU-DS-162]: every mutating command is ONE undo step named by its catalog
+/// id; undo restores the vector entry byte for byte and redo brings the records back.
 #[test]
 fn every_mutating_variable_command_is_one_named_undo_step() {
     let mut v = design_doc();
@@ -100,7 +113,7 @@ fn every_mutating_variable_command_is_one_named_undo_step() {
     let collection = text(&made, "collection_id");
     assert!(collection.starts_with("SVCL-"), "{made}");
     assert_eq!(undo_depth(&v), depth + 1);
-    assert!(newest_label(&v).starts_with("variable_collection_create"), "{}", newest_label(&v));
+    assert_committed_as(&v, "variable_collection.create", &made);
     // STU-DS-123: a collection is created with one mode named `Mode 1`.
     let state = variables(&v);
     assert_eq!(state["collections"][0]["modes"], json!([{"mode_id": text(&made, "mode_id"), "name": "Mode 1"}]), "{state}");
@@ -117,7 +130,7 @@ fn every_mutating_variable_command_is_one_named_undo_step() {
         let before = undo_depth(&v);
         let r = ok(&mut v, id, params);
         assert_eq!(undo_depth(&v), before + 1, "{id}: one step");
-        assert!(newest_label(&v).starts_with(&id.replace('.', "_")), "{id}: {}", newest_label(&v));
+        assert_committed_as(&v, id, &r);
         if id == "variable.create" {
             variable = text(&r, "variable_id");
         }
@@ -131,8 +144,9 @@ fn every_mutating_variable_command_is_one_named_undo_step() {
         ("variable.remove_code_syntax", json!({"variable": variable, "platform": "iOS"})),
     ] {
         let before = undo_depth(&v);
-        ok(&mut v, id, params);
+        let r = ok(&mut v, id, params);
         assert_eq!(undo_depth(&v), before + 1, "{id}: one step");
+        assert_committed_as(&v, id, &r);
         after_each.push(vector_bytes(&v));
     }
     let state = variables(&v);
@@ -178,6 +192,7 @@ fn an_alias_resolves_for_a_consumer_through_its_containers_explicit_mode() {
     let depth = undo_depth(&v);
     let set = ok(&mut v, "node.set_explicit_variable_mode_for_collection", json!({"node": card, "collection": collection, "mode": dark}));
     assert_eq!(undo_depth(&v), depth + 1);
+    assert_committed_as(&v, "node.set_explicit_variable_mode_for_collection", &set);
     assert_eq!(set["rebound"], 0, "no bound property in this document: nothing to re-resolve ({set})");
     for node in [&inside, &card] {
         let r = resolve(&mut v, node);
@@ -193,7 +208,8 @@ fn an_alias_resolves_for_a_consumer_through_its_containers_explicit_mode() {
     refused(&mut v, "node.set_explicit_variable_mode_for_collection", json!({"node": card, "collection": collection, "mode": "no-such-mode"}), "variable_mode_unknown");
     refused(&mut v, "variable.resolve_for_consumer", json!({"variable": semantic, "node": "SLYR-019abcde-0000-7000-8000-00000000ffff"}), "node_unknown");
     // Clearing is one step back to the inherited (default) mode; clearing again is typed.
-    ok(&mut v, "node.clear_explicit_variable_mode_for_collection", json!({"node": card, "collection": collection}));
+    let cleared = ok(&mut v, "node.clear_explicit_variable_mode_for_collection", json!({"node": card, "collection": collection}));
+    assert_committed_as(&v, "node.clear_explicit_variable_mode_for_collection", &cleared);
     assert_eq!(resolve(&mut v, &inside)["mode_id"], light.as_str());
     refused(&mut v, "node.clear_explicit_variable_mode_for_collection", json!({"node": card, "collection": collection}), "explicit_mode_absent");
     v.undo().unwrap();
@@ -263,6 +279,7 @@ fn removing_a_mode_or_a_collection_takes_its_values_and_explicit_modes_in_one_st
     let depth = undo_depth(&v);
     let removed = ok(&mut v, "variable_collection.remove_mode", json!({"collection": collection, "mode": dark}));
     assert_eq!(undo_depth(&v), depth + 1);
+    assert_committed_as(&v, "variable_collection.remove_mode", &removed);
     assert_eq!(removed["explicit_modes_cleared"], 1, "{removed}");
     let state = variables(&v);
     for var in state["variables"].as_array().unwrap() {
@@ -278,13 +295,15 @@ fn removing_a_mode_or_a_collection_takes_its_values_and_explicit_modes_in_one_st
     v.undo().unwrap();
     // The collection removed: its variables and explicit modes go in the same step.
     let gone = ok(&mut v, "variable_collection.remove", json!({"collection": collection}));
+    assert_committed_as(&v, "variable_collection.remove", &gone);
     assert_eq!((gone["variables_removed"].as_u64(), gone["explicit_modes_cleared"].as_u64()), (Some(2), Some(1)), "{gone}");
     assert_eq!(variables(&v)["variables"], json!([]));
     refused(&mut v, "variable.resolve_for_consumer", json!({"variable": primitive, "node": shape}), "variable_unknown");
     v.undo().unwrap();
     assert_eq!(vector_bytes(&v), before);
     // A variable nothing aliases is removed in one step.
-    ok(&mut v, "variable.remove", json!({"variable": semantic}));
+    let removed = ok(&mut v, "variable.remove", json!({"variable": semantic}));
+    assert_committed_as(&v, "variable.remove", &removed);
     assert_eq!(variables(&v)["collections"][0]["variable_ids"], json!([primitive]));
 }
 
@@ -333,4 +352,118 @@ fn variables_survive_save_and_reopen() {
     // A new mode takes the default mode's value of every variable (Studio reading, UNVERIFIED D5).
     let var = variables(&w)["variables"].as_array().unwrap().iter().find(|x| x["variable_id"] == primitive.as_str()).unwrap().clone();
     assert_eq!(var["values_by_mode"].as_object().unwrap().len(), 3, "{var}");
+}
+
+fn node_records(v: &Viewer) -> Vec<Value> {
+    let entry: Value = serde_json::from_slice(&vector_bytes(v)).unwrap();
+    entry["design"]["nodes"].as_array().cloned().unwrap_or_default()
+}
+
+fn explicit_modes_of(v: &Viewer, node: &str) -> Value {
+    node_records(v).into_iter().find(|n| n["node"]["node_id"] == node).map_or(Value::Null, |n| n["explicit_variable_modes"].clone())
+}
+
+fn children_of(v: &Viewer, parent: &str) -> Vec<(String, String)> {
+    v.run().snapshot().unwrap().document().layers.iter().filter(|l| serde_json::to_value(&l.parent).unwrap()["node_id"] == parent).map(|l| (l.layer_id.clone(), l.kind.clone())).collect()
+}
+
+/// Review F6: an artboard's explicit modes go in the artboard delete's own undo step, and undo brings both
+/// back (lead common ruling on deleted objects' records).
+#[test]
+fn deleting_an_artboard_takes_its_explicit_modes_in_the_same_step() {
+    let mut v = design_doc();
+    let (collection, _, dark) = tokens(&mut v);
+    let board = v.add_artboard("Board", 200.0, 100.0, Some([0.0, 0.0])).unwrap();
+    v.add_artboard("Other", 200.0, 100.0, Some([300.0, 0.0])).unwrap();
+    ok(&mut v, "node.set_explicit_variable_mode_for_collection", json!({"node": board, "collection": collection, "mode": dark}));
+    let before = vector_bytes(&v);
+    let depth = undo_depth(&v);
+    v.delete_artboard(&board).unwrap();
+    assert_eq!(undo_depth(&v), depth + 1, "the artboard and its records go in one step");
+    assert_eq!(explicit_modes_of(&v, &board), Value::Null, "no record of a deleted artboard stays: {:?}", node_records(&v));
+    v.undo().unwrap();
+    assert_eq!(vector_bytes(&v), before, "undo brings the explicit modes back");
+    assert_eq!(explicit_modes_of(&v, &board)[&collection], dark.as_str());
+    v.redo().unwrap();
+    assert_eq!(explicit_modes_of(&v, &board), Value::Null);
+}
+
+/// Review F6: a duplicated container keeps its explicit modes, in the duplicate's one undo step (Figma
+/// behaviour UNVERIFIED, D5).
+#[test]
+fn a_duplicated_container_keeps_its_explicit_modes() {
+    let mut v = design_doc();
+    let (collection, light, dark) = tokens(&mut v);
+    let (_, semantic) = primitive_and_alias(&mut v, &collection, &light, &dark);
+    let shape = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [50.0, 50.0], false).unwrap();
+    let card = v.group_layers(&[shape], "Card").unwrap();
+    ok(&mut v, "node.set_explicit_variable_mode_for_collection", json!({"node": card, "collection": collection, "mode": dark}));
+    let depth = undo_depth(&v);
+    let copy = v.duplicate_layer(&card).unwrap();
+    assert_eq!(undo_depth(&v), depth + 1, "one step");
+    assert_eq!(explicit_modes_of(&v, &copy)[&collection], dark.as_str(), "{:?}", node_records(&v));
+    let inner = children_of(&v, &copy)[0].0.clone();
+    let r = ok(&mut v, "variable.resolve_for_consumer", json!({"variable": semantic, "node": inner}));
+    assert_eq!(r["mode_id"], dark.as_str(), "the copy's content resolves in the copied mode: {r}");
+    v.undo().unwrap();
+    assert_eq!(explicit_modes_of(&v, &copy), Value::Null, "undo takes the copy's record with the copy");
+}
+
+/// Review F6: an explicit mode set on a container inside an instance (a copy of a definition group) moves to
+/// the copy a sync draws in its place, in the sync's own undo step; undo brings the old copy and its mode back.
+#[test]
+fn a_sync_moves_an_explicit_mode_to_the_copy_that_replaces_its_container() {
+    let mut v = design_doc();
+    let (collection, light, dark) = tokens(&mut v);
+    let (_, semantic) = primitive_and_alias(&mut v, &collection, &light, &dark);
+    let a = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [50.0, 50.0], false).unwrap();
+    let b = v.draw_shape(ShapeKind::Ellipse, [60.0, 10.0], [90.0, 40.0], false).unwrap();
+    let inner = v.group_layers(&[a], "Inner").unwrap();
+    v.select(None);
+    let component = text(&ok(&mut v, "component.create_from_selection", json!({"layers": [inner, b], "name": "Card"})), "component_id");
+    let frame = text(&ok(&mut v, "component.create_instance", json!({"component": component, "x": 300, "y": 10})), "layer_id");
+    let copy_group = |v: &Viewer| children_of(v, &frame).into_iter().find(|(_, k)| k == "group").map(|(id, _)| id).expect("a copy of the inner group");
+    let old = copy_group(&v);
+    ok(&mut v, "node.set_explicit_variable_mode_for_collection", json!({"node": old, "collection": collection, "mode": dark}));
+    let depth = undo_depth(&v);
+    ok(&mut v, "component.sync_instances", json!({"component": component}));
+    assert_eq!(undo_depth(&v), depth + 1);
+    let new = copy_group(&v);
+    assert_ne!(new, old, "the sync drew a new copy");
+    assert_eq!(explicit_modes_of(&v, &new)[&collection], dark.as_str(), "the mode moved to the new copy: {:?}", node_records(&v));
+    assert_eq!(explicit_modes_of(&v, &old), Value::Null, "nothing is left on the deleted copy");
+    let leaf = children_of(&v, &new)[0].0.clone();
+    assert_eq!(ok(&mut v, "variable.resolve_for_consumer", json!({"variable": semantic, "node": leaf}))["mode_id"], dark.as_str());
+    v.undo().unwrap();
+    assert_eq!(copy_group(&v), old);
+    assert_eq!(explicit_modes_of(&v, &old)[&collection], dark.as_str(), "undo brings the old copy and its mode back");
+}
+
+/// An alias into another collection resolves in that collection's mode as the consumer sees it
+/// ([STU-DS-026], [STU-DS-132]: each collection's mode is chosen independently).
+#[test]
+fn an_alias_into_another_collection_resolves_in_that_collections_mode() {
+    let mut v = design_doc();
+    let (primitives, light, dark) = tokens(&mut v);
+    let brand = text(&ok(&mut v, "variable_collection.create", json!({"name": "Brand", "mode_name": "Acme"})), "collection_id");
+    let (blue, _) = primitive_and_alias(&mut v, &primitives, &light, &dark);
+    let alias = ok(&mut v, "variable.create_alias", json!({"variable": blue}));
+    let accent = text(&ok(&mut v, "variable.create", json!({"collection": brand, "name": "brand/accent", "resolved_type": "COLOR", "value": alias})), "variable_id");
+    let shape = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [50.0, 50.0], false).unwrap();
+    let card = v.group_layers(&[shape.clone()], "Card").unwrap();
+    let r = ok(&mut v, "variable.resolve_for_consumer", json!({"variable": accent, "node": shape}));
+    assert_eq!((r["value"].clone(), r["collection_id"].as_str()), (colour(0.0, 0.0, 1.0), Some(brand.as_str())), "{r}");
+    ok(&mut v, "node.set_explicit_variable_mode_for_collection", json!({"node": card, "collection": primitives, "mode": dark}));
+    let r = ok(&mut v, "variable.resolve_for_consumer", json!({"variable": accent, "node": shape}));
+    assert_eq!(r["value"], colour(0.5, 0.5, 1.0), "the alias target is read in its own collection's mode: {r}");
+    assert_eq!(r["chain"], json!([accent, blue]));
+}
+
+/// Review F7, [STU-DS-123]: the UserManual states the advisory threshold and the design entry's state bound.
+#[test]
+fn the_manual_states_the_variable_advisory_threshold_and_the_sync_bound() {
+    let limits = hsk_studio_harness_core::manual::DRIVE_LIMITS;
+    let threshold = hsk_studio_harness::view::design::variables::VARIABLE_VALUE_ADVISORY.to_string();
+    assert!(limits.iter().any(|l| l.contains("variables_times_modes_over_threshold") && l.contains(&threshold)), "{limits:?}");
+    assert!(limits.iter().any(|l| l.contains("design_state_over_cap") && l.contains("component.sync_instances")), "{limits:?}");
 }

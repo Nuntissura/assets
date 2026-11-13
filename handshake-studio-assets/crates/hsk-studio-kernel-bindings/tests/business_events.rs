@@ -58,7 +58,7 @@ fn variants_without_a_producer_are_listed_not_faked() {
             "STUDIO_EFFECT_APPLIED",
             "STUDIO_STYLE_APPLIED",
             "STUDIO_COMPONENT_PUBLISHED",
-            "STUDIO_VARIABLE_SET",
+            // Lane SMB-DS-VARIABLES-AUTHOR-1 (review F3): the variable rows produce STUDIO_VARIABLE_SET.
             "STUDIO_PROTOTYPE_EDITED",
             "STUDIO_EXPORT_RENDERED",
         ]

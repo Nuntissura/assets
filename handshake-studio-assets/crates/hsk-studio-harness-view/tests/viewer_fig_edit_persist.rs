@@ -211,15 +211,18 @@ fn edited_instance_survives_save_and_reopen() {
     let path = s.0.join("edited.handshake");
     v.save(&path, false).unwrap();
     let mut w = reopen(&path);
-    // Lead ruling P3 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): the save leaves out the states of
-    // superseded contents (the variant switch's state, superseded by the override's), built on a copy; the
-    // session keeps its entry for undo, and the reopen reads byte for byte what was saved.
+    // Lead ruling P3 (2026-11-13, lane SMB-DS-VARIABLES-AUTHOR-1): the save leaves out the variant switch's
+    // state (its copies were deleted by the override's redraw), built on a copy; the session keeps its entry
+    // for undo. Independent expectation (review F8): each instance layer keeps exactly its newest state.
     assert_eq!(entry(&v).unwrap(), bytes, "the save never changes the in-session entry");
-    let mut saved: folio::StudioDesignStateRecords = serde_json::from_slice(&bytes).unwrap();
-    let held = saved.instances.len();
-    saved.instances.retain(|st| st.content_signature == children(&v, &st.layer_id));
-    assert!(saved.instances.len() < held, "the session held a superseded state");
-    assert_eq!(entry(&w).unwrap(), serde_json::to_vec(&saved).unwrap(), "the pruned entry is saved and reopened byte-identical");
+    let held: folio::StudioDesignStateRecords = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(held.instances.iter().filter(|st| st.layer_id == inst).count(), 2, "the session holds the switch's and the override's states");
+    let reopened: folio::StudioDesignStateRecords = serde_json::from_slice(&entry(&w).unwrap()).unwrap();
+    for layer in [&inst, &other] {
+        let newest: Vec<_> = held.instances.iter().rev().filter(|st| &st.layer_id == layer).take(1).collect();
+        let kept: Vec<_> = reopened.instances.iter().filter(|st| &st.layer_id == layer).collect();
+        assert_eq!(kept, newest, "{layer}: its newest state only");
+    }
     assert_eq!(children(&w, &inst), children(&v, &inst));
     let after = w.instance_view(&inst).unwrap();
     assert_eq!(after.state, "edited", "{:?}", after.error);

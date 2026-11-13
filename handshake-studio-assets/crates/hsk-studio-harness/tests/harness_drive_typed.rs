@@ -515,7 +515,13 @@ fn variable_authoring_runs_through_the_process() {
     let (mut s, _) = Live::open(&package, "lane-v", &dir.0);
     let made = s.ok("variable_collection.create", json!({"name":"Tokens","mode_name":"Light"}));
     assert_eq!(made["attribution"]["actor"]["account_id"], "lane-v", "{made}");
-    assert!(undo_name(&made).starts_with("variable_collection_create"), "{made}");
+    // Review F3: the undo name is the catalog id; the command's record names it, with the caller's actor,
+    // and its business event is STUDIO_VARIABLE_SET.
+    assert_eq!(undo_name(&made), "variable_collection.create", "{made}");
+    let record = made["state"]["ops"].as_array().and_then(|o| o.last()).cloned().unwrap_or_default();
+    assert_eq!((record["op"].as_str(), record["command_id"].as_str()), (Some("variable_collection.create"), Some("variable_collection.create")), "{record}");
+    assert_eq!(record["actor"]["account_id"], "lane-v", "{record}");
+    assert_eq!(record["business_events"][0]["event"], "STUDIO_VARIABLE_SET", "{record}");
     let collection = made["detail"]["result"]["collection_id"].as_str().expect("a collection id").to_string();
     let dark = s.ok("variable_collection.add_mode", json!({"collection":collection,"name":"Dark"}))["detail"]["result"]["mode_id"].as_str().unwrap().to_string();
     let created = s.ok("variable.create", json!({"collection":collection,"name":"space/m","resolved_type":"FLOAT","value":{"type":"FLOAT","value":16},"scopes":["GAP","WIDTH_HEIGHT"]}));

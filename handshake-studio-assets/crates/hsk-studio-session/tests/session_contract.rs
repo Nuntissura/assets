@@ -3246,9 +3246,10 @@ fn document_entries_save_reopen_and_stay_bounded() {
 }
 
 /// Lane SMB-DS-VARIABLES-AUTHOR-1 (lead ruling P3, 2026-11-13): `save_to_with_entry` writes one entry
-/// replaced in a COPY of the held entries; the session's entries and revision are untouched, it stays
-/// dirty only when the written entry differs, the reopen holds the written entry, and a plain save is
-/// byte-identical to what it was (the same session saved twice by `save_to` writes the same bytes).
+/// replaced in a COPY of the held entries; the session's entries and revision are untouched, it is clean
+/// after the save even when the written entry differs (lead Q3: the difference is undo-reachable history,
+/// which is never saved), the reopen holds the written entry, and a plain save is byte-identical to what it
+/// was (the same session saved twice by `save_to` writes the same bytes).
 #[test]
 fn save_to_with_entry_writes_a_copy_and_leaves_the_session_entries_alone() {
     bounded_case("save_to_with_entry_writes_a_copy", || {
@@ -3268,14 +3269,14 @@ fn save_to_with_entry_writes_a_copy_and_leaves_the_session_entries_alone() {
         session.save_to_with_entry(&same, "design", b"{\"whole\":true}".to_vec(), &token()).unwrap();
         assert_eq!(fs::read(&same).unwrap(), fs::read(&plain).unwrap(), "the held entry written through the copy is the plain save");
         assert!(!session.is_dirty(), "equal entry: clean after the save");
-        // Differs: the file holds the replacement, the session its own entry and revision, and stays dirty.
+        // Differs: the file holds the replacement, the session its own entry and revision, and is clean.
         let revision = session.document_revision();
         let path = fixture.dir.join("pruned.handshake");
         session.save_to_with_entry(&path, "design", b"{\"pruned\":true}".to_vec(), &token()).unwrap();
         assert_eq!(session.document_entry("design"), Some(&b"{\"whole\":true}"[..]), "the session keeps its entry");
         assert_eq!(session.document_entry("selection"), Some(&b"sel"[..]));
         assert_eq!(session.document_revision(), revision, "no new revision");
-        assert!(session.is_dirty(), "the session's entry differs from the saved one");
+        assert!(!session.is_dirty(), "clean: the pruned difference is undo-reachable history, never saved");
         let reopened = Session::open_path(&path, SessionConfig::new(actor_context()), ports(&frames), &token()).unwrap();
         assert_eq!(reopened.document_entry("design"), Some(&b"{\"pruned\":true}"[..]), "the reopen holds the written entry");
         assert_eq!(reopened.document_entry("selection"), Some(&b"sel"[..]));
