@@ -231,3 +231,64 @@ fn a_refused_target_keeps_a_destination_folder_that_already_existed() {
     assert!(out.is_dir(), "a folder that already existed is never removed");
     assert!(listing(&out).is_empty(), "nothing left behind: {:?}", listing(&out));
 }
+
+/// Admits the first `admits` asks, refuses every later one; counts asks and releases.
+struct Budgeted {
+    admits: u64,
+    asks: AtomicU64,
+    released: AtomicU64,
+}
+impl JobPort for Budgeted {
+    fn admit(&self, _scope: &JobScope<'_>, _cost: Cost) -> Result<JobTicket, JobRefused> {
+        let n = self.asks.fetch_add(1, Ordering::SeqCst) + 1;
+        if n <= self.admits { Ok(JobTicket(n)) } else { Err(JobRefused { retry_after_ms: 5 }) }
+    }
+    fn release(&self, _ticket: JobTicket) {
+        self.released.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Focused: a target that fails after its ask (the second write to one path without replace is
+/// `destination_exists`) settles once and releases its ticket, and no checkpoint temp is left; the first settles
+/// `completed` into the report's `job`.
+#[test]
+fn a_target_failing_after_its_ask_settles_once_and_leaves_no_temp() {
+    let s = Scratch::new("after-ask");
+    let input = s.input();
+    let out = s.0.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let h = harness();
+    let cancel = CancellationToken::default();
+    let mut run = h.run(asset_local_test_context(), &cancel);
+    assert!(run.open_path(&input));
+    let port = Arc::new(OneSlot::default());
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let path = out.join("x.png");
+    targets.write(&mut run, &target("png", &out), &path, false).unwrap();
+    assert_eq!(targets.reports[0].1["job"]["outcome"], "completed", "{}", targets.reports[0].1);
+    assert_eq!(targets.write(&mut run, &target("png", &out), &path, false), Err("destination_exists".to_string()));
+    assert_eq!(port.counts(), (2, 0, 2), "asks, refusals, releases: one ask per target, each released");
+    assert_eq!(listing(&out), ["x.png"], "no checkpoint temp is left");
+}
+
+/// Focused: the runner's second ask (a native target after an exporter target) refused is that target's typed
+/// `job_admission_refused(retry_after_ms=5)`, before its folder is made; the exporter target's file stays.
+#[test]
+fn a_refused_second_runner_ask_fails_the_native_target_before_its_folder_is_made() {
+    let s = Scratch::new("rehold");
+    let input = s.input();
+    let (a, b) = (s.0.join("a"), s.0.join("b"));
+    let port = Arc::new(Budgeted { admits: 2, asks: AtomicU64::new(0), released: AtomicU64::new(0) });
+    let mut targets = RecipeTargets::new(asset_local_test_context()).with_job_port(port.clone());
+    let report = run(&job(&input, vec![target("png", &a), target("handshake", &b)]), &mut targets, Some(port.clone()));
+    let outcomes: Vec<_> = report.receipts[0].targets.iter().map(|t| (t.outcome, t.code.clone(), t.path.is_some())).collect();
+    assert_eq!(
+        outcomes,
+        [("written", None, true), ("failed", Some("job_admission_refused(retry_after_ms=5)".to_string()), false)],
+        "{}",
+        report.to_json()
+    );
+    assert_eq!((port.asks.load(Ordering::SeqCst), port.released.load(Ordering::SeqCst)), (3, 2), "runner, png target, runner again (refused)");
+    assert_eq!(listing(&a), ["in.png"]);
+    assert!(!b.exists(), "no folder is made for a target whose ask was refused");
+}
