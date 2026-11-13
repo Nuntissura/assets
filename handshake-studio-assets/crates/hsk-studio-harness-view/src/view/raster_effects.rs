@@ -1092,7 +1092,7 @@ mod tests {
     /// nor refuses what it accepts at the edges (declared bounds included: pigment cites the same tables).
     #[test]
     fn table_hard_bounds_are_the_engines() {
-        let mut checked = 0;
+        let mut checked: u32 = 0;
         for spec in FILTER_SPECS {
             for p in spec.params.iter().filter(|p| numeric(p.ty).is_some()) {
                 for (side, b) in p.hard.iter().enumerate() {
@@ -1117,7 +1117,7 @@ mod tests {
                         assert!(!engine_accepts(spec.kind, &m), "{}.{} = {outside} should fail pigment", spec.kind, p.key);
                         assert!(!within_hard(p, outside), "{}.{} = {outside} should fail the table", spec.kind, p.key);
                     }
-                    checked += 1;
+                    checked = checked.saturating_add(1);
                 }
             }
         }
