@@ -347,8 +347,15 @@ fn leaves_run_catalog_commands_as_undo_steps_that_reach_save_and_export() {
     assert!(f.menu_bar().find("studio.object.ungroup").unwrap().availability.is_available(), "a group is selected");
     assert_eq!(invoke(&mut f, &aid("studio.object.ungroup")), ok("layer.ungroup"));
     assert_eq!(invoke(&mut f, &aid("studio.select.navigate_selection.first_object")), ok("layer.select"));
+    // The top layer (Sun) is hidden already: Hide Selection on it changes nothing, so walk down to a visible one.
+    let mut runs = 8u64;
+    while !f.rows().iter().find(|r| Some(r.layer_id.as_str()) == f.selected()).unwrap().visible {
+        assert_eq!(invoke(&mut f, &aid("studio.select.navigate_selection.next_object_below")), ok("layer.select"));
+        runs += 1;
+    }
+    let hidden = f.selected().unwrap().to_owned();
     assert_eq!(invoke(&mut f, &aid("studio.object.hide.hide_selection")), ok("layer.set_visible"));
-    assert!(!f.rows()[0].visible);
+    assert!(!f.rows().iter().find(|r| r.layer_id == hidden).unwrap().visible);
     assert_eq!(invoke(&mut f, &aid("studio.object.arrange.send_backward")), ok("layer.shift_layer"));
     let history = f.viewer().run().history();
     assert_eq!(history["undo"].as_array().unwrap().len(), undo0 + 6, "six mutations, six steps: {}", history["undo"]);
@@ -375,9 +382,9 @@ fn leaves_run_catalog_commands_as_undo_steps_that_reach_save_and_export() {
     assert!(std::fs::metadata(&png).unwrap().len() > 0);
     let g = GuiFrame::open(&out, 1280, 720, Some(1000)).unwrap();
     assert_eq!(g.rows().len(), rows);
-    // First Object twice, below, above, two duplicates, group, ungroup, hide, send backward, undo; the refused
-    // "above" at the top is not a run.
-    assert_eq!(f.menu_stats().runs, 11);
+    // First Object twice, below, above, two duplicates, group, ungroup, the walk down, hide, send backward, undo; the
+    // refused "above" at the top is not a run.
+    assert_eq!(f.menu_stats().runs, runs + 3);
     assert_eq!(f.menu_stats().refused, 1);
 }
 
@@ -628,12 +635,15 @@ fn an_open_menu_and_tip_on_the_ui_pass_match_the_cpu_painter() {
     let (max, n, outside) = gui::parity(&want, &got, w, pass.trace());
     println!("menu parity: max {max} differing {n} outside_aa {outside}");
     assert_eq!(outside, 0, "pixels outside the AA rects differ");
+    // Measured 2026-11-13 (8702ac57, debug, validation on): max 0, 0 differing pixels; the bound is the measurement.
+    assert_eq!(max, 0, "{n} px differ");
     drop(pass);
     drop(owner);
     let v = hsk_studio_vulkan::process_validation();
     println!("validation {} errors {} warnings {}", v.state, v.errors, v.warnings);
     if v.state == "on" {
         assert_eq!((v.errors, v.warnings), (0, 0), "{v:?}");
+        assert!(v.loader.iter().all(|n| hsk_studio_vulkan::is_expected_loader_note(&n.name, &n.text)), "{v:?}");
     } else {
         println!("NOT_PROVEN: validation layer state {}", v.state);
     }

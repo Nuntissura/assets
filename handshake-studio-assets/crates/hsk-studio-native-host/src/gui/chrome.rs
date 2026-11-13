@@ -88,11 +88,9 @@ pub fn menu_bar(b: &mut Builder<'_>, m: &MenuFacts<'_>) {
         .map(|(i, (t, id))| MenuTitle { id: id.as_str(), text: if m.abbreviated { preset::abbreviation(t) } else { t }, full: t, shown: i < m.shown })
         .collect();
     let hidden: Vec<String> = ids[m.shown.min(ids.len())..].to_vec();
-    // RED (SMB-GUI-MENU-1): the B5 static titles.
-    let _ = m.states;
-    let value = hidden_value(&hidden);
+    let value = format!("hidden={}", hidden.join(","));
     let chevron = (!hidden.is_empty()).then(|| (MORE_ID, value.as_str(), ui_icon("chev_down")));
-    widgets::menu_title_row(b, &titles, m.pad, chevron, REASON);
+    widgets::menu_title_row_states(b, &titles, m.states, m.pad, chevron);
     b.leaf(
         Node::new("shell.window-title", Role::Label)
             .label(m.title_full)

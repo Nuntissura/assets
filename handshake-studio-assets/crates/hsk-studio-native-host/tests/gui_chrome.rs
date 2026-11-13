@@ -99,8 +99,10 @@ fn frame_regions_panels_and_ids() {
     // rail bottom, browse 4 above the proxy).
     assert_eq!((node("studio.tool.family-browse").bounds.y0, node("studio.colour.proxy").bounds.y0), (978.0, 1014.0));
     // D-F1 (lead correction 2026-11-08): no frame control is drawn disabled; the unbuilt ones carry the reason as data.
-    assert!(all_nodes(&f).iter().filter(|n| !n.actions.is_empty()).all(|n| !n.disabled));
-    assert_eq!(node("menu.file").value.as_deref(), Some(NIY));
+    // B6 (SMB-GUI-MENU-1): menu titles open menus and carry their availability; the shell's own titles (GO, RUN,
+    // EDITORS, OPERATOR) are greyed with their reason (STU-SHL-052: titles included).
+    assert!(all_nodes(&f).iter().filter(|n| !n.actions.is_empty() && !n.author_id.starts_with("menu.")).all(|n| !n.disabled));
+    assert_eq!(node("menu.file").value.as_deref(), None);
     // D-F10: the visibility icons are text.tertiary in both states.
     let red = row_id(&layer(&f, "Red"));
     let t = f.panel_of(&red).unwrap().tree();
@@ -177,14 +179,15 @@ fn every_control_answers_and_static_ones_say_not_implemented_yet() {
             assert!(before.as_deref().is_some_and(|v| v.starts_with(NIY)), "{id}: the value states the reason first");
         }
     }
-    assert!(statics > 40, "{statics}");
+    // B6 (SMB-GUI-MENU-1): the nineteen menu titles open menus now; the other unbuilt controls stay static.
+    assert!(statics > 25, "{statics}");
     assert_eq!(f.statics(), statics);
     // Undo the layer commands the sweep made, so only the static ones are left to compare.
     let viewer_ops = f.viewer().run().ops().len();
     assert!(viewer_ops >= ops);
     let mut g = open(&s.0, 1920, 1080, 1000);
     let ops0 = g.viewer().run().ops().len();
-    for id in ["menu.file", "menu.operator", "shell.module-switch", "studio.tab.document.close", "studio.search", "studio.colour.proxy", "studio.rail.left.brushes", "studio.group.layers.menu"] {
+    for id in ["studio.tab.new", "studio.options.preset", "shell.module-switch", "studio.tab.document.close", "studio.search", "studio.colour.proxy", "studio.rail.left.brushes", "studio.group.layers.menu"] {
         click_on(&mut g, id);
         assert_eq!(g.last(), Some(&Outcome { command: "frame.static", code: NIY.into() }), "{id}");
     }
@@ -325,7 +328,8 @@ fn tree_checks_and_menu_titles_at_the_matrix() {
     }
     let narrow = open(&s.0, 640, 480, 1000);
     let more = narrow.node("shell.menu-bar.more").expect("chevron at 640");
-    assert!(more.value.as_deref().unwrap().starts_with("not_implemented_yet hidden="));
+    // B6: the chevron opens the list of the titles it hides; its value names them.
+    assert!(more.value.as_deref().unwrap().starts_with("hidden=menu."));
 }
 
 /// AC-COL-01 (flat chrome pixels are tokens outside the document, glyphs, icons, thumbnails, rounded chips and the
@@ -524,12 +528,13 @@ fn status_bar_fit_s1_and_page_keys_follow_the_active_tab() {
     let s = Scratch::new("chrome-status");
     let mut f = open(&s.0, 1024, 640, 1000);
     f.set_device("NVIDIA GeForce RTX 3090 (discrete_gpu), vulkan 1.4".into());
-    click_on(&mut f, "menu.file");
+    // B6: a menu title opens its menu; an unbuilt control says it is not built.
+    click_on(&mut f, "shell.module-switch");
     let xs: Vec<f32> = ["studio.status.hint", "studio.status.command", "studio.status.size", "studio.status.zoom"].iter().map(|id| f.node(id).unwrap().bounds.x0).collect();
     assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
     assert_eq!(f.node("studio.status.hint").unwrap().label.as_deref(), Some("Select"));
     let cmd = f.node("studio.status.command").unwrap();
-    assert!(matches!(&cmd.paint, Paint::Label { text, .. } if text == "FILE: not built in this host yet"), "{:?}", cmd.paint);
+    assert!(matches!(&cmd.paint, Paint::Label { text, .. } if text == "Switch module: not built in this host yet"), "{:?}", cmd.paint);
     assert!(f.clipped().is_empty(), "{:?}", f.clipped());
     assert!(f.node("studio.status.device").unwrap().bounds.is_empty(), "FIT-S1: the device readout drops first");
     assert_eq!(f.node("studio.status.chrome").unwrap().label.as_deref(), Some("cpu painter"));

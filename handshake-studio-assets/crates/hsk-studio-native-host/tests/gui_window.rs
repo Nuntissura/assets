@@ -220,7 +220,7 @@ fn frame_capture_1024x640_offscreen_equals_quiet_window() {
 }
 
 /// The edge state offscreen at 1024 x 640 after a script: a tool picked, a layer hidden, the Properties group on
-/// Masks, a menu title clicked (the status shows not_implemented_yet).
+/// Masks, an unbuilt control clicked (the status shows not_implemented_yet; B6 menu titles open menus).
 #[test]
 fn frame_capture_1024x640_edge_state_after_a_script() {
     let s = Scratch::new("frame-edge");
@@ -228,7 +228,7 @@ fn frame_capture_1024x640_edge_state_after_a_script() {
     let mut g = GuiFrame::open(&doc, 1024, 640, Some(1000)).unwrap();
     g.frame().unwrap();
     let red = g.rows().iter().find(|r| r.name == "Red").map(|r| row_id(&r.layer_id)).unwrap();
-    let (mx, my) = g.centre("menu.file").unwrap();
+    let (mx, my) = g.centre("shell.module-switch").unwrap();
     let mut steps = vec![Step::Invoke("studio.toolgroup.paint".into()), Step::Invoke(format!("{red}.visibility")), Step::Invoke("studio.tab.masks".into())];
     steps.extend(click(mx, my));
     let off = offscreen::run(&OffscreenArgs {

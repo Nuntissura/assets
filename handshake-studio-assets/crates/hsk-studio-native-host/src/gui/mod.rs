@@ -669,6 +669,7 @@ impl GuiFrame {
             })
             .unwrap_or_default();
         self.first_row = self.first_row.min(view::max_first(self.rows.len(), self.regions.body.h()));
+        self.menu_eval();
         self.bump_all();
         self.repaint = true;
     }
@@ -826,6 +827,7 @@ impl GuiFrame {
         };
         self.ui.pointer_move(tree, p);
         self.menu_hover();
+        self.dwell_reset();
     }
     /// The author_id of the disabled control under `p` in panel `i`, if any.
     fn disabled_at(&self, i: usize, p: Point) -> Option<String> {
@@ -1694,17 +1696,28 @@ impl GuiFrame {
         let tool = preset::RAIL[self.tool].face_tool;
         self.menu.state = MenuState::of(&self.viewer, self.menu.profile.clone(), Some(tool));
         let host = self.host_leaves();
+        let titles_before: Vec<Availability> = self.menu.bar.titles.iter().map(|t| t.availability.clone()).collect();
         self.menu.bar = menu_tree::menu_bar(&self.menu.state, &host);
+        let titles_changed = self.menu.bar.titles.iter().map(|t| &t.availability).ne(titles_before.iter());
         let mut authors = HashMap::new();
         for w in self.menu.bar.walk() {
             authors.insert(menu_tree::node_author_id(&w.node.id), w.node.id.clone());
         }
         self.menu.authors = authors;
+        let was_open = !self.menu.open.is_empty();
         let keep = self.menu.open.iter().take_while(|id| matches!(id.as_str(), MORE_MENU | LAYERS_CONTEXT) || self.menu.bar.find(id).is_some()).count();
         self.menu.open.truncate(keep);
         self.menu.first.truncate(keep);
         self.menu.stats.evaluations = self.menu.stats.evaluations.saturating_add(1);
-        self.menu_changed();
+        // Only what the evaluation changed rebuilds: the titles when a title's record changed, the popups while open
+        // (a tool pick or a tab switch changes neither in a closed frame).
+        self.menu.rev = self.menu.rev.wrapping_add(1);
+        if titles_changed {
+            self.bump(&[MENU]);
+        }
+        if was_open {
+            self.bump(&[POPUP]);
+        }
     }
 
     /// Each title's B6 state in STU-SHL-011 order.
@@ -1731,10 +1744,6 @@ impl GuiFrame {
 
     /// What `author` names on the menu surfaces, if anything.
     fn menu_target(&self, author: &str) -> Option<MenuTarget> {
-        // RED (SMB-GUI-MENU-1): no menu surface answers yet.
-        if !author.is_empty() {
-            return None;
-        }
         if author == chrome::MORE_ID {
             return Some(MenuTarget::More);
         }
@@ -1809,6 +1818,7 @@ impl GuiFrame {
         self.menu.open = path;
         self.menu.stats.opens = self.menu.stats.opens.saturating_add(1);
         self.menu_changed();
+        self.bump(&[MENU]);
     }
 
     fn open_menu(&mut self, path: Vec<String>) -> Outcome {
@@ -1831,11 +1841,14 @@ impl GuiFrame {
             self.hide_tip();
         }
         self.menu_changed();
+        self.bump(&[MENU]);
     }
 
+    /// The popups' content changed (open path, highlight, scroll): they rebuild; the titles rebuild only when the
+    /// open title changes (set_open, close_menus).
     fn menu_changed(&mut self) {
         self.menu.rev = self.menu.rev.wrapping_add(1);
-        self.bump(&[MENU, POPUP]);
+        self.bump(&[POPUP]);
     }
 
     fn set_hot(&mut self, h: String) {
@@ -1937,10 +1950,6 @@ impl GuiFrame {
     }
 
     fn context_at(&mut self, author_id: &str, at: Option<(f32, f32)>) -> Result<Outcome, &'static str> {
-        // RED (SMB-GUI-MENU-1): no context menu yet.
-        if !author_id.is_empty() {
-            return Err("menu_context_none");
-        }
         let rest = author_id.strip_prefix(ROW_PREFIX).ok_or("menu_context_none")?;
         let rest = rest.strip_suffix(".visibility").unwrap_or(rest);
         let layer = self.rows.iter().find(|r| r.layer_id.len() == rest.len() && r.layer_id.eq_ignore_ascii_case(rest)).map(|r| r.layer_id.clone()).ok_or("unknown_layer")?;
@@ -2258,23 +2267,13 @@ impl GuiFrame {
     /// release, on the control just operated, with tips off, or above the level cap. The tip stays while the pointer is
     /// on it (its remedy button is reachable).
     pub fn advance(&mut self, ms: u64) {
-        // RED (SMB-GUI-MENU-1): no dwell tips yet.
-        if ms < u64::MAX {
-            return;
-        }
         self.menu.clock_ms = self.menu.clock_ms.saturating_add(ms);
         let hovered = self.ui.hovered.clone();
         if hovered.as_deref().is_some_and(|h| self.panels[TIP].tree().find(h).is_some()) {
             return;
         }
         if hovered != self.menu.dwell_target {
-            self.menu.warm = self.menu.tip.as_ref().is_some_and(|t| !t.explicit);
-            self.menu.dwell_target = hovered.clone();
-            self.menu.dwell_ms = 0;
-            if self.menu.operated.is_some() && self.menu.operated != hovered {
-                self.menu.operated = None;
-            }
-            self.hide_dwell_tip();
+            self.dwell_reset();
         } else {
             self.menu.dwell_ms = self.menu.dwell_ms.saturating_add(ms);
         }
@@ -2299,14 +2298,26 @@ impl GuiFrame {
         self.bump(&[TIP]);
     }
 
+    /// The dwell starts again when the hovered control changes (a pointer move): a tip showing on the control left
+    /// warms the next one (L1 at once), the operated mark clears, a dwell tip hides. The tip itself keeps its control.
+    fn dwell_reset(&mut self) {
+        let hovered = self.ui.hovered.clone();
+        if hovered == self.menu.dwell_target || hovered.as_deref().is_some_and(|h| self.panels[TIP].tree().find(h).is_some()) {
+            return;
+        }
+        self.menu.warm = self.menu.tip.as_ref().is_some_and(|t| !t.explicit);
+        self.menu.dwell_target = hovered.clone();
+        self.menu.dwell_ms = 0;
+        if self.menu.operated.is_some() && self.menu.operated != hovered {
+            self.menu.operated = None;
+        }
+        self.hide_dwell_tip();
+    }
+
     /// The accessibility request for a tooltip (AC-REACH-05: "open L1 through the accessibility action"): shows the
     /// L0 (`level` 0) or L1 tip of `author_id` until hidden, also in an agent-driven session (it was asked for).
     /// `Err("unknown_author_id")` for an id with no labelled node.
     pub fn show_tip(&mut self, author_id: &str, level: u8) -> Result<TipRecord, &'static str> {
-        // RED (SMB-GUI-MENU-1): no tooltip yet.
-        if !author_id.is_empty() {
-            return Err("unknown_author_id");
-        }
         let level = level.min(1);
         let r = self.tip_record(author_id, level).ok_or("unknown_author_id")?;
         self.menu.tip = Some(TipOn { target: author_id.to_owned(), level, explicit: true });
