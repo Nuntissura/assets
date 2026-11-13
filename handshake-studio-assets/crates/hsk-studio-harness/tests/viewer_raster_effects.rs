@@ -16,6 +16,8 @@ use hsk_studio_harness::view::develop::DevelopExport;
 use hsk_studio_harness::view::export::ExportFormat;
 use hsk_studio_harness::view::place::{PlaceOptions, PlacementKind};
 use hsk_studio_harness::view::render::Prefer;
+use hsk_studio_harness::view::vector::ShapeKind;
+use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
 use hsk_studio_interop_tiff as tiff;
 use serde_json::{Map, Value, json};
 use std::io::Write;
@@ -699,6 +701,79 @@ fn adjustment_and_placed_layer_ids_are_never_minted_twice() {
     let p3 = place(&mut r);
     assert!(!held.contains(&third) && !held.contains(&p3), "{third} {p3} vs {held:?}");
     assert_eq!(ok(&mut r, "effect.read", json!({"layer": p3}))["filters"], json!([]));
+}
+
+// ---- stable identity of instance copies (lead ruling 2026-11-13 on design/instance.rs Redraw::mint, option A) ----
+
+/// A design document with a component of one rectangle and `n` instances of it: (viewer, component, instance
+/// frames).
+fn box_instances(n: usize) -> (Viewer, String, Vec<String>) {
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.new_document(&NewDocument::new(DocumentProfile::Design, None), None).unwrap();
+    let r = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [20.0, 20.0], false).unwrap();
+    v.select(None);
+    let component = row(&mut v, "component.create_from_selection", json!({"layers": [r], "name": "Box"})).unwrap()["component_id"].as_str().unwrap().to_string();
+    let frames = (0..n)
+        .map(|i| row(&mut v, "component.create_instance", json!({"component": component, "x": 200 + 30 * i, "y": 10})).unwrap()["layer_id"].as_str().unwrap().to_string())
+        .collect();
+    (v, component, frames)
+}
+
+/// The child layer ids of `frame` (its copies), in document order.
+fn copies(v: &Viewer, frame: &str) -> Vec<String> {
+    let doc = v.run().snapshot().unwrap().document();
+    doc.layers.iter().filter(|l| serde_json::to_value(&l.parent).unwrap()["node_id"] == frame).map(|l| l.layer_id.clone()).collect()
+}
+
+/// Stable identity: a sync redraws each copy of the same definition node in place, so its id never changes,
+/// through 300 syncs (and the copies render where they did).
+#[test]
+fn a_sync_keeps_the_ids_of_the_copies_of_the_same_definition_nodes() {
+    let (mut v, component, frames) = box_instances(2);
+    let before: Vec<Vec<String>> = frames.iter().map(|f| copies(&v, f)).collect();
+    assert!(before.iter().all(|c| c.len() == 1), "{before:?}");
+    let shown = frame(&mut v);
+    for i in 0..300 {
+        row(&mut v, "component.sync_instances", json!({"component": component})).unwrap_or_else(|e| panic!("sync {i}: {} {}", e.code, e.detail));
+        let now: Vec<Vec<String>> = frames.iter().map(|f| copies(&v, f)).collect();
+        assert_eq!(now, before, "sync {i} kept every copy id");
+    }
+    assert_eq!(frame(&mut v), shown, "the kept copies draw as before");
+}
+
+/// Stable identity keeps the retirement rule: after an instance is deleted, none of its ids (frame and copies)
+/// is minted for a later layer, whichever tool creates it.
+#[test]
+fn the_ids_of_a_deleted_instance_are_never_minted_again() {
+    let (mut v, component, frames) = box_instances(1);
+    let gone: Vec<String> = std::iter::once(frames[0].clone()).chain(copies(&v, &frames[0])).collect();
+    v.delete_layer(&frames[0]).unwrap();
+    let mut later = vec![v.new_raster_layer("raster").unwrap(), v.draw_shape(ShapeKind::Ellipse, [40.0, 40.0], [60.0, 60.0], false).unwrap()];
+    for _ in 0..3 {
+        let f = row(&mut v, "component.create_instance", json!({"component": component, "x": 300, "y": 10})).unwrap()["layer_id"].as_str().unwrap().to_string();
+        later.extend(copies(&v, &f));
+        later.push(f);
+        row(&mut v, "component.sync_instances", json!({"component": component})).unwrap();
+    }
+    let a = row(&mut v, "adjustment.create", json!({"adjustment": {"kind": "invert"}})).unwrap()["layer_id"].as_str().unwrap().to_string();
+    later.push(a);
+    assert!(later.iter().all(|id| !gone.contains(id)), "{later:?} reuses one of {gone:?}");
+}
+
+/// Reading (lane notes, lead ruling 2026-11-13): a record keyed to a copy survives a sync, because the copy
+/// keeps its id. Shown with a live filter stack applied to a copy (the definition authors none): after the sync
+/// the copy has its id and its stack. (A raster smart filter stack cannot be on an instance child: a native
+/// instance redraws group, vector and text definition layers only.)
+#[test]
+fn a_record_keyed_to_a_copy_survives_a_sync() {
+    let (mut v, component, frames) = box_instances(1);
+    let copy = copies(&v, &frames[0]).remove(0);
+    row(&mut v, "vector.live_filter_apply", json!({"layer": copy, "filter_kind": "hsk.studio.vector_effect.twist", "params": [{"type": "Real", "key": "twist_angle", "value": 40.0}]})).unwrap();
+    let read = |v: &mut Viewer| row(v, "vector.live_filter_read", json!({"layer": copy})).unwrap()["filters"].as_array().map_or(0, Vec::len);
+    assert_eq!(read(&mut v), 1);
+    row(&mut v, "component.sync_instances", json!({"component": component})).unwrap();
+    assert_eq!(copies(&v, &frames[0]), vec![copy.clone()], "the copy keeps its id");
+    assert_eq!(read(&mut v), 1, "the copy's live filter stack survives the sync");
 }
 
 // ---- the rows through the process (`command --stdin`) -----------------------------------------------------------
