@@ -24,6 +24,7 @@ mod photo;
 mod place;
 mod prototype;
 mod seed;
+mod variable;
 mod vector;
 mod waveform;
 
@@ -161,6 +162,8 @@ impl Viewer {
             "component" | "component_set" | "instance" => return component::run(self, id, f, before),
             // Lane SMB-LAYOUT-DELETE-CASCADE-1: autoflow and smart text reflow (rows of action/commands/layout_flow.rs).
             "layout" if layout_flow::owns(id) => return layout_flow::run(self, id, f),
+            // Lane SMB-DS-VARIABLES-AUTHOR-1: design variables and explicit modes ([STU-DS-132], [STU-DS-133]).
+            "variable" | "variable_collection" | "node" => return variable::run(self, id, f, before),
             "layout" => return layout::run(self, id, f),
             "panel" => return panel::run(self, id, f),
             "vector" => vector::run_vector(self, id, f)?,

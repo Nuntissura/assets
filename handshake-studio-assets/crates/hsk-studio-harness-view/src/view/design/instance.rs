@@ -1310,7 +1310,9 @@ impl Viewer {
         let bound = receipt.as_ref().map(|r| r.bindings.len());
         let entry = self.read_design_state(receipt.as_ref()).json();
         let components = self.components_json(receipt.as_ref());
-        json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry, "auto_layout": self.auto_layout_json(), "components": components})
+        // Lane SMB-DS-VARIABLES-AUTHOR-1: collections, variables, explicit modes and the STU-DS-123 advisory.
+        let variables = self.variables_json();
+        json!({"instance": instance, "instance_layers": bound, "last": self.design.last, "entry": entry, "auto_layout": self.auto_layout_json(), "components": components, "variables": variables})
     }
 }
 

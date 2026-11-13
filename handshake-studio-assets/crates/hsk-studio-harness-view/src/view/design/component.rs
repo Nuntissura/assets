@@ -199,7 +199,7 @@ fn mint_record_id(doc: &StudioDocument, prefix: &str, taken: &BTreeSet<String>) 
     mint_in(&doc.document_id, prefix, taken)
 }
 
-fn mint_in(document_id: &str, prefix: &str, taken: &BTreeSet<String>) -> String {
+pub(super) fn mint_in(document_id: &str, prefix: &str, taken: &BTreeSet<String>) -> String {
     let uuid = document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
     let stem = format!("{prefix}-{high}-{low}-7ede-a000-");
@@ -323,7 +323,7 @@ impl Ctx {
 /// Every set's VARIANT property definitions follow its `variant_group_properties` (Folio checks an
 /// instance's VARIANT value against a definition): one definition per group, its default the default
 /// member's value (else the group's first value), none for a group that is gone.
-fn variant_definitions(r: &mut StudioDesignRecords, doc: &StudioDocument) {
+pub(super) fn variant_definitions(r: &mut StudioDesignRecords, doc: &StudioDocument) {
     let components = r.components.clone();
     for s in &mut r.component_sets {
         let default = components.iter().find(|k| k.component_id == s.default_variant_id && parent_id(doc, &k.layer_id).as_deref() == Some(s.layer_id.as_str())).and_then(|k| k.variant_properties.clone()).unwrap_or_default();
@@ -388,7 +388,8 @@ pub(super) fn check_caps(d: &StudioDesignRecords) -> Result<(), String> {
     if d.nodes.len() > style::MAX_STYLES || d.paint_styles.len() > style::MAX_STYLES {
         return Err(refused("design_node_over_cap", format!("at most {} node entries and paint styles", style::MAX_STYLES)));
     }
-    Ok(())
+    // Lane SMB-DS-VARIABLES-AUTHOR-1: the variable records' caps, checked by every writer of the set.
+    super::variables::check_caps(d)
 }
 
 /// `id` and every layer under it in the order `duplicate_layer` copies them (pre-order, each stack
@@ -828,6 +829,8 @@ impl Viewer {
         d.component_instances.retain(|i| bound.get(&i.instance_id).is_none_or(|l| !gone.contains(l.as_str())));
         for n in d.nodes.iter_mut().filter(|n| gone.contains(n.node.node_id.as_str())) {
             n.component_property_references.clear();
+            // Lane SMB-DS-VARIABLES-AUTHOR-1: a deleted container's explicit variable modes go in the same step.
+            n.explicit_variable_modes.clear();
         }
         d.nodes.retain(|n| !gone.contains(n.node.node_id.as_str()) || !carries_nothing(n));
         let mut proj = doc.clone();

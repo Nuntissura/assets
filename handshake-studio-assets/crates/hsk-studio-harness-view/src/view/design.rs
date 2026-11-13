@@ -21,6 +21,7 @@ pub mod component;
 pub mod fig_import;
 pub mod instance;
 pub mod persist;
+pub mod variables;
 
 pub use component::ComponentCommand;
 pub use fig_import::{FigImportReport, is_design_file};

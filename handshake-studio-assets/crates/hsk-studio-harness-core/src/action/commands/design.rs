@@ -1,10 +1,19 @@
-//! Design rows of the command corpus: auto layout and grid records.
+//! Design rows of the command corpus: auto layout and grid records, and design variables.
 
-use super::{CommandEntry, ParamSpec, flag as b, index as i, number as n, one_of as o, output_path as out, path as file, record as r, text as t, typed};
+use super::{CommandEntry, ParamSpec, flag as b, index as i, list as l, number as n, one_of as o, output_path as out, path as file, record as r, text as t, typed};
 
 const SIZING: &str = "FIXED|HUG|FILL";
 const INSTANCE: &str = "Viewer::design_command";
 const TRACK_MOVE: &[ParamSpec] = &[t("container"), i("from_index"), i("to_index")];
+/// Lane SMB-DS-VARIABLES-AUTHOR-1 ([STU-DS-132], [STU-DS-133]): every variable row runs `Viewer::variable_command`.
+const VARIABLE: &str = "Viewer::variable_command";
+/// [STU-DS-125], closed.
+const RESOLVED_TYPES: &str = "BOOLEAN|COLOR|EASING|FLOAT|STRING|TIMING";
+/// [STU-DS-129], closed: a fourth platform is refused typed.
+const PLATFORMS: &str = "WEB|ANDROID|iOS";
+/// [STU-DS-128], closed.
+const SCOPES: &str = "ALL_SCOPES|ALL_FILLS|FRAME_FILL|SHAPE_FILL|TEXT_FILL|STROKE_COLOR|STROKE_FLOAT|EFFECT_COLOR|EFFECT_FLOAT|CORNER_RADIUS|GAP|WIDTH_HEIGHT|OPACITY|FONT_FAMILY|FONT_SIZE|FONT_STYLE|FONT_WEIGHT|LETTER_SPACING|LINE_HEIGHT|PARAGRAPH_INDENT|PARAGRAPH_SPACING|TEXT_CONTENT";
+const VALUE: &str = "a value record ([STU-DS-127]): {type, value} or {type: VARIABLE_ALIAS, id, resolved_type}";
 
 pub(super) const ROWS: &[CommandEntry] = &[
     typed("design.set_auto_layout_mode", "Viewer::set_auto_layout_mode", "Set auto layout mode", true, &[t("node"), o("mode", "NONE|HORIZONTAL|VERTICAL|GRID")]),
@@ -25,4 +34,20 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("design.instance.reset_override", INSTANCE, "Reset override", true, &[t("layer"), t("node_id"), t("field")]),
     typed("design.instance.reset_all", INSTANCE, "Reset all overrides", true, &[t("layer")]),
     typed("design.instance.swap_component", INSTANCE, "Swap component", true, &[t("layer"), t("component_id")]),
+    // Lane SMB-DS-VARIABLES-AUTHOR-1: collections, modes, variables, aliases, code syntax and explicit modes
+    // ([STU-DS-121..133]); one undo step per mutating row, the records in the vector entry's `design` member.
+    typed("variable_collection.create", VARIABLE, "Create variable collection", true, &[t("name"), t("mode_name").opt()]),
+    typed("variable_collection.add_mode", VARIABLE, "Add mode", true, &[t("collection"), t("name")]),
+    typed("variable_collection.rename_mode", VARIABLE, "Rename mode", true, &[t("collection"), t("mode"), t("name")]),
+    typed("variable_collection.remove_mode", VARIABLE, "Remove mode", true, &[t("collection"), t("mode")]),
+    typed("variable_collection.remove", VARIABLE, "Remove variable collection", true, &[t("collection")]),
+    typed("variable.create", VARIABLE, "Create variable", true, &[t("collection"), t("name"), o("resolved_type", RESOLVED_TYPES), r("value", VALUE), l("scopes").opt(), t("description").opt(), b("hidden_from_publishing").opt()]),
+    typed("variable.remove", VARIABLE, "Remove variable", true, &[t("variable")]),
+    typed("variable.set_value_for_mode", VARIABLE, "Set variable value", true, &[t("variable"), t("mode"), r("value", VALUE)]),
+    typed("variable.set_code_syntax", VARIABLE, "Set code syntax", true, &[t("variable"), o("platform", PLATFORMS), t("name")]),
+    typed("variable.remove_code_syntax", VARIABLE, "Remove code syntax", true, &[t("variable"), o("platform", PLATFORMS)]),
+    typed("variable.create_alias", VARIABLE, "Create variable alias", false, &[t("variable")]),
+    typed("variable.resolve_for_consumer", VARIABLE, "Resolve variable", false, &[t("variable"), t("node"), o("scope", SCOPES).opt()]),
+    typed("node.set_explicit_variable_mode_for_collection", VARIABLE, "Set variable mode", true, &[t("node"), t("collection"), t("mode")]),
+    typed("node.clear_explicit_variable_mode_for_collection", VARIABLE, "Clear variable mode", true, &[t("node"), t("collection")]),
 ];
