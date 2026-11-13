@@ -1,6 +1,7 @@
 //! View functions of the frame bands (SMB-GUI-FRAME-1 item 6): the menu bar, the document tab strip, the Context Bar,
 //! the Tool Rail, the collapsed Browse and Time & Results docks, the Inspect Dock groups, the Viewport frame with its
-//! rulers, the status bar and the observability nodes. Pure: facts in, nodes out; every fit decision (menu padding
+//! rulers, the status bar and the observability nodes; SMB-GUI-MENU-1 (build-order B6) adds the menu popups, the
+//! Layers context menu and the L0 and L1 tooltips ([`popups`], [`tip`]). Pure: facts in, nodes out; every fit decision (menu padding
 //! and abbreviations, tab and title ellipses, +N overflow, the rail chevron) is made before the build, with Text, by
 //! the frame. Every control the slice does not build keeps its normal look and carries the reason
 //! `not_implemented_yet` as data; a click answers with it (lead correction 2026-11-08: B6's greyed items are menus). Ids follow components.json and the mock (`menu.<title>`, `shell.module-switch`,
@@ -12,8 +13,9 @@ use hsk_studio_harness_view::view::LayerRow;
 use kumihimo_ui::display::{IconId, Side};
 use kumihimo_ui::icons;
 use kumihimo_ui::tokens::{ColorToken, TextToken};
-use kumihimo_ui::tree::{Action, Align, Axis, Builder, LayoutSpec, Node, Paint, Role, Size};
-use kumihimo_ui::widgets::{self, GroupHeader, MenuTitle, frame as fw};
+use kumihimo_ui::geom::Rect;
+use kumihimo_ui::tree::{Action, Align, Axis, Builder, LayoutSpec, Node, NodeAvailability, Paint, Role, Size};
+use kumihimo_ui::widgets::{self, GroupHeader, MenuRow, MenuTitle, TitleState, Tip, frame as fw};
 
 /// STU-SHL-051 NOT_IMPLEMENTED_YET (14:31909): the reason code of every unbuilt control.
 pub const NIY: &str = "not_implemented_yet";
@@ -52,7 +54,12 @@ pub struct MenuFacts<'a> {
     /// The window title as drawn (middle-ellipsized) and in full.
     pub title: &'a str,
     pub title_full: &'a str,
+    /// Each title's B6 state, in STU-SHL-011 order (availability, greyed, open).
+    pub states: &'a [TitleState],
 }
+
+/// The menu bar's chevron: it opens the list of the titles it hides.
+pub const MORE_ID: &str = "shell.menu-bar.more";
 
 pub fn menu_title_id(title: &str) -> String {
     format!("menu.{}", title.to_ascii_lowercase())
@@ -81,8 +88,10 @@ pub fn menu_bar(b: &mut Builder<'_>, m: &MenuFacts<'_>) {
         .map(|(i, (t, id))| MenuTitle { id: id.as_str(), text: if m.abbreviated { preset::abbreviation(t) } else { t }, full: t, shown: i < m.shown })
         .collect();
     let hidden: Vec<String> = ids[m.shown.min(ids.len())..].to_vec();
+    // RED (SMB-GUI-MENU-1): the B5 static titles.
+    let _ = m.states;
     let value = hidden_value(&hidden);
-    let chevron = (!hidden.is_empty()).then(|| ("shell.menu-bar.more", value.as_str(), ui_icon("chev_down")));
+    let chevron = (!hidden.is_empty()).then(|| (MORE_ID, value.as_str(), ui_icon("chev_down")));
     widgets::menu_title_row(b, &titles, m.pad, chevron, REASON);
     b.leaf(
         Node::new("shell.window-title", Role::Label)
@@ -500,4 +509,138 @@ pub fn status(b: &mut Builder<'_>, s: &StatusFacts<'_>) {
 pub fn observe(b: &mut Builder<'_>, dock_state: &str, tool: &str) {
     b.leaf(Node::new("studio.dock.state", Role::Label).label("Dock state").value(dock_state));
     b.leaf(Node::new("studio.tool.active", Role::Label).label("Active tool").value(tool));
+}
+
+// ---- B6: menu popups, the Layers context menu and tooltips (SMB-GUI-MENU-1).
+
+/// One popup row as the frame decided it (ids, texts and the availability record come from the menu tree).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PopupRow {
+    /// `menu.<command id>`, `menu.<id>.remedy`, or `studio.menu.more.<title>` in the chevron's list.
+    pub id: String,
+    pub label: String,
+    pub chord: Option<String>,
+    /// The reason text under a greyed row; None: enabled.
+    pub reason: Option<String>,
+    pub availability: Option<NodeAvailability>,
+    /// The reason line (STU-SHL-019 `<STATE> <CODE>: <text>[; remedy <id>]`) of a greyed row.
+    pub value: Option<String>,
+    pub submenu: bool,
+    pub open: bool,
+    pub hot: bool,
+    pub checked: bool,
+    pub shown: bool,
+    pub remedy: bool,
+    /// Top of the row, logical px (0 when not shown).
+    pub y: f32,
+}
+
+/// One open popup: its author id (`studio.menu.<title>[.<submenu>]`, `studio.ctx.layers`), label, box and rows; or,
+/// for a node with no children, one greyed line saying why (`empty`: id, label, reason text, reason line).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PopupLevel {
+    pub id: String,
+    pub label: String,
+    pub rect: Rect,
+    pub rows: Vec<PopupRow>,
+    pub empty: Option<(String, String, String, String)>,
+}
+
+/// Every open popup, left to right, and their union (the popup panel's viewport).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PopupFacts {
+    pub rect: Rect,
+    pub levels: Vec<PopupLevel>,
+}
+
+/// The popup panel: each popup in its column at its offset inside the union (cascades open at the parent's right
+/// edge; the frame moved them into the window).
+pub fn popups(b: &mut Builder<'_>, p: &PopupFacts) {
+    let (check, chevron) = (ui_icon("check"), ui_icon("chev_right"));
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fill, cross: Align::Start, ..LayoutSpec::default() }));
+    let mut x = p.rect.x0;
+    for l in &p.levels {
+        let lead = (l.rect.x0 - x).max(0.0);
+        if lead > 0.0 {
+            gap(b, lead, 0.0);
+        }
+        b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fixed(l.rect.w()), h: Size::Fill, cross: Align::Start, ..LayoutSpec::default() }));
+        let top = (l.rect.y0 - p.rect.y0).max(0.0);
+        if top > 0.0 {
+            gap(b, 0.0, top);
+        }
+        widgets::menu_popup_begin(b, &l.id, &l.label, l.rect.w(), l.rect.h());
+        if let Some((id, label, reason, line)) = &l.empty {
+            b.begin(
+                Node::new(id.as_str(), Role::Label)
+                    .label(label.as_str())
+                    .value(line.as_str())
+                    .flags(|f| f.disabled = true)
+                    .layout(LayoutSpec {
+                        axis: Axis::Column,
+                        w: Size::Fill,
+                        h: Size::Fixed(widgets::menu_row_h(true)),
+                        pad: [kumihimo_ui::tokens::size::MENU_GUTTER_ICON, 0.0, widgets::popup::PAD_R, 0.0],
+                        cross: Align::Start,
+                        ..LayoutSpec::default()
+                    }),
+            );
+            b.leaf(Node::deco().paint(Paint::Label { text: label.clone(), token: TextToken::Body, weight: 0, color: None, align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fixed(kumihimo_ui::tokens::size::MENU_ITEM_H)));
+            b.leaf(Node::deco().paint(Paint::Label { text: reason.clone(), token: TextToken::Caption, weight: 0, color: Some(ColorToken::TextTertiary), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fixed(widgets::popup::REASON_LINE)));
+            b.end();
+        }
+        for r in &l.rows {
+            let row = MenuRow {
+                id: &r.id,
+                label: &r.label,
+                chord: r.chord.as_deref(),
+                reason: r.reason.as_deref(),
+                availability: r.availability.clone(),
+                value: r.value.as_deref(),
+                submenu: r.submenu,
+                open: r.open,
+                hot: r.hot,
+                checked: r.checked,
+                shown: r.shown,
+                remedy: r.remedy,
+            };
+            widgets::menu_item(b, &row, check, chevron);
+        }
+        b.end();
+        b.end();
+        x = l.rect.x1;
+    }
+    b.end();
+}
+
+/// The tooltip's author id (components.json `tooltip_l0`, `tooltip_l1`) and its remedy button's.
+pub const TIP_ID: &str = "studio.tooltip";
+pub const TIP_REMEDY_ID: &str = "studio.tooltip.remedy";
+
+/// A tooltip as the frame placed it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TipFacts {
+    pub rect: Rect,
+    pub level: u8,
+    pub name: String,
+    pub chord: Option<String>,
+    pub summary: Option<String>,
+    pub reason: Option<String>,
+    pub remedy: Option<String>,
+    pub value: Option<String>,
+}
+
+/// The tooltip panel: one tip filling its box.
+pub fn tip(b: &mut Builder<'_>, t: &TipFacts) {
+    let tip = Tip {
+        id: TIP_ID,
+        level: t.level,
+        name: &t.name,
+        chord: t.chord.as_deref(),
+        summary: t.summary.as_deref(),
+        reason: t.reason.as_deref(),
+        remedy: t.remedy.as_deref().map(|l| (TIP_REMEDY_ID, l)),
+        value: t.value.as_deref(),
+    };
+    widgets::tooltip(b, &tip, t.rect.w(), t.rect.h());
 }

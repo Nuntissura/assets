@@ -147,3 +147,25 @@ pub fn raster_edges() -> Edges {
         slots: RAIL.len(),
     }
 }
+
+/// Studio Default chords by command id (components.json keyboard: PROVISIONAL, STU-SHL-045 not frozen), the chords
+/// [`super::GuiFrame`] binds. A menu row and an L0 tip resolve the chord here at render from the leaf's command id
+/// (STU-SHL-242: never baked into a label).
+pub const SHORTCUTS: [(&str, &str); 2] = [("history.undo", "Ctrl+Z"), ("history.redo", "Ctrl+Shift+Z")];
+
+/// The chord bound to `command_id` in the active set, if any.
+pub fn chord_of(command_id: &str) -> Option<&'static str> {
+    SHORTCUTS.iter().find(|(c, _)| *c == command_id).map(|(_, k)| *k)
+}
+
+/// The Layers context menu (STU-SHL-014: references to menu-bar leaf ids, never homes), in order.
+pub const LAYER_CONTEXT: [&str; 8] = [
+    "studio.object.layer.duplicate_layer",
+    "studio.object.layer.delete_layer",
+    "studio.object.hide.hide_selection",
+    "studio.object.arrange.bring_forward",
+    "studio.object.arrange.send_backward",
+    "studio.object.group",
+    "studio.object.ungroup",
+    "studio.object.layer.new",
+];
