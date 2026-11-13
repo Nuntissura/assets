@@ -109,6 +109,8 @@ pub struct VectorGlyph {
     pub glyph_id: u32,
     /// What the glyph stands for (ToUnicode, then glyph names), when known.
     pub unicode: Option<String>,
+    /// The `/ActualText` of the innermost marked-content span around the glyph (red skeleton: not read).
+    pub actual_text: Option<String>,
     /// Glyph space (1000 units per em) to user space.
     pub matrix: [f64; 6],
 }
@@ -498,7 +500,7 @@ impl<'a> Device<'a> for Recorder<'_> {
                     hayro_interpret::hayro_cmap::BfString::Char(c) => c.to_string(),
                     hayro_interpret::hayro_cmap::BfString::String(s) => s,
                 });
-                let info = VectorGlyph { font, glyph_id: g.glyph_id().to_u32(), unicode, matrix: t.as_coeffs() };
+                let info = VectorGlyph { font, glyph_id: g.glyph_id().to_u32(), unicode, actual_text: None, matrix: t.as_coeffs() };
                 match draw_mode {
                     GlyphDrawMode::Fill => self.draw(&outline, t, paint, VectorModeIn::Fill(FillRule::NonZero), Some(info)),
                     GlyphDrawMode::Stroke(props) => self.draw(&outline, t, paint, VectorModeIn::Stroke(props), Some(info)),

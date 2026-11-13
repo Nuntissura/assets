@@ -50,3 +50,19 @@ fn a_story_stored_without_a_paragraph_splits_too() {
     let e = replace_story_text(&empty(vec![]), None, 0, 0, "one\ntwo").unwrap();
     assert_eq!(spans(&e), [(0, 4, None), (4, 7, None)]);
 }
+
+/// Review Q7 (lead ruling): text inserted at byte 0 of a non-empty story joins the first character range, so
+/// the ranges still tile the stream and Folio accepts the edited story.
+#[test]
+fn text_inserted_at_byte_zero_joins_the_first_character_range() {
+    let s = StudioTextStory {
+        content: StoryContent::Inline { text_utf8: "world".into() },
+        paragraphs: vec![StoryParagraph { start: 0, end: 5, style_ref: None, paragraph_direction: None }],
+        character_ranges: vec![hsk_studio_folio::StoryRange { start: 0, end: 5, style_ref: style(), applied_language: Some("en_US".into()) }],
+        ..empty(vec![])
+    };
+    let e = replace_story_text(&s, None, 0, 0, "hello ").unwrap();
+    assert_eq!(e.character_ranges.iter().map(|r| (r.start, r.end, r.style_ref.clone(), r.applied_language.clone())).collect::<Vec<_>>(), [(0, 11, style(), Some("en_US".into()))]);
+    let checked = hsk_studio_folio::validate_text_story(&e, hsk_studio_folio::Budget::default(), &hsk_studio_accord::CancellationToken::default(), &hsk_studio_folio::Unresolved);
+    assert!(checked.is_ok(), "{checked:?}");
+}

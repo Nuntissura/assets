@@ -368,6 +368,12 @@ fn character_of(a: &StudioCharacterAttributes, size_pt: f64, script: [u8; 4], la
     (c, size)
 }
 
+/// The base direction of paragraph `p` (red skeleton: always left to right).
+fn paragraph_base_direction(st: &StudioTextStory, p: &folio::StoryParagraph, text: &str) -> ty::Direction {
+    let _ = (st, p, text);
+    ty::Direction::LeftToRight
+}
+
 /// The shaped copy of `text` (bytes relative to it): every span with a case mapping maps its
 /// characters one to one where the mapped character has the same UTF-8 length (a character whose
 /// case form differs in length, or is several characters, is kept).
@@ -569,11 +575,19 @@ struct Plan<'a> {
     languages_unresolved: u32,
     /// Spans per (script, shaping language): the itemization receipt.
     itemized: BTreeMap<(String, String), u32>,
+    /// Work charged while planning (red skeleton: not charged).
+    steps: u64,
+}
+impl<'a> Plan<'a> {
+    fn new(fonts: &'a [FontFile], fallback: usize) -> Self {
+        Self { fonts, fallback, used: BTreeSet::new(), substituted: BTreeMap::new(), characters: Vec::new(), not_rendered: BTreeMap::new(), languages_unresolved: 0, itemized: BTreeMap::new(), steps: 0 }
+    }
 }
 
 /// The paragraphs of `story` with their spans (module docs: character style, else paragraph
 /// style, else the bundled font; the resolved character attributes; one script per span).
-fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut Plan<'_>) -> Result<Vec<Planned>> {
+fn plan_story(st: &StudioTextStory, styles: &StudioTypeStyleRecords, plan: &mut Plan<'_>, cancel: &CancellationToken) -> Result<Vec<Planned>> {
+    let _ = cancel;
     let text = story_text(st);
     let total = text.len() as u64;
     let mut out = Vec::with_capacity(st.paragraphs.len());
@@ -820,11 +834,11 @@ impl Viewer {
         if text_bytes > MAX_EXPORT_TEXT_BYTES {
             return Err(LayoutExportRefusal::new("layout_text_over_budget", format!("{text_bytes} bytes of story text; at most {MAX_EXPORT_TEXT_BYTES}")));
         }
-        let mut plan = Plan { fonts, fallback, used: BTreeSet::new(), substituted: BTreeMap::new(), characters: Vec::new(), not_rendered: BTreeMap::new(), languages_unresolved: 0, itemized: BTreeMap::new() };
+        let mut plan = Plan::new(fonts, fallback);
         let mut plans = Vec::with_capacity(framed.len());
         for i in &framed {
             let st = doc.stories.get(*i).ok_or_else(|| LayoutExportRefusal::new("layout_internal", "story index"))?;
-            plans.push((*i, plan_story(st, &doc.styles, &mut plan)?));
+            plans.push((*i, plan_story(st, &doc.styles, &mut plan, cancel)?));
         }
         let Plan { used, substituted, characters, not_rendered, languages_unresolved, itemized, .. } = plan;
         let used: Vec<usize> = used.into_iter().collect();
@@ -1074,4 +1088,75 @@ fn refuse_existing(path: &Path, overwrite: bool) -> Result<()> {
         return Err(LayoutExportRefusal::new("overwrite_required", path.display().to_string()));
     }
     Ok(())
+}
+
+/// Lane SMB-TYPE-CHARACTER-ATTRIBUTES-1, review FIX_FIRST of 83cb89b8: the export's planning helpers.
+#[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)]
+mod tests {
+    use super::*;
+    use hsk_studio_folio::{StoryContent, StoryDirection, StoryParagraph, StoryParagraphDirection, StoryRange, StoryTextKind, StudioCharacterOverride, TextStorySchema};
+
+    fn story(text: &str, direction: StoryDirection, paragraph: Option<StoryParagraphDirection>) -> StudioTextStory {
+        let n = text.len() as u64;
+        StudioTextStory {
+            schema_id: TextStorySchema::V1,
+            story_id: PROBE_STORY.into(),
+            text_kind: StoryTextKind::Area,
+            story_direction: direction,
+            content: StoryContent::Inline { text_utf8: text.into() },
+            paragraphs: vec![StoryParagraph { start: 0, end: n, style_ref: None, paragraph_direction: paragraph }],
+            character_ranges: vec![StoryRange { start: 0, end: n, style_ref: None, applied_language: None }],
+        }
+    }
+
+    /// Review F12: the base direction is the paragraph's, else the story's, else the first strong character
+    /// (UAX #9 P2-P3), never a constant.
+    #[test]
+    fn paragraph_base_direction_comes_from_the_records_and_bidi_analysis() {
+        let (ltr, rtl) = (ty::Direction::LeftToRight, ty::Direction::RightToLeft);
+        for (text, direction, paragraph, want) in [
+            ("abc", StoryDirection::RightToLeft, None, rtl),
+            ("abc", StoryDirection::LeftToRight, Some(StoryParagraphDirection::RightToLeft), rtl),
+            ("\u{5d0}bc", StoryDirection::RightToLeft, Some(StoryParagraphDirection::LeftToRight), ltr),
+            ("123 \u{5d0}bc", StoryDirection::Unknown, None, rtl),
+            ("123 abc \u{5d0}", StoryDirection::Unknown, None, ltr),
+            ("123", StoryDirection::Unknown, None, ltr),
+        ] {
+            let s = story(text, direction, paragraph);
+            assert_eq!(paragraph_base_direction(&s, &s.paragraphs[0], text), want, "{text:?} {direction:?} {paragraph:?}");
+        }
+    }
+
+    /// Review Q6 (lead ruling): metrics_roman_only turns kerning off for CJK runs only; every other script is
+    /// Roman for this rule.
+    #[test]
+    fn metrics_roman_only_turns_kerning_off_for_cjk_runs_only() {
+        let a = StudioCharacterAttributes { kerning_mode: Some(StudioKerningMode::MetricsRomanOnly), ..StudioCharacterAttributes::default() };
+        for (script, off) in [(*b"Latn", false), (*b"Arab", false), (*b"Cyrl", false), (*b"Hani", true), (*b"Hira", true), (*b"Kana", true), (*b"Hang", true), (*b"Bopo", true)] {
+            let mut missing = BTreeMap::new();
+            let (c, _) = character_of(&a, 12.0, script, "und".into(), &mut missing);
+            assert_eq!(c.features.get(b"kern").copied(), off.then_some(0), "{}", String::from_utf8_lossy(&script));
+        }
+    }
+
+    /// Review F8: planning stops on a canceled token and its work over thousands of overrides stays bounded.
+    #[test]
+    fn plan_story_is_canceled_and_bounded() {
+        let fonts = [FontFile::bundled().expect("the bundled font")];
+        let text = "ab".repeat(2048);
+        let s = story(&text, StoryDirection::LeftToRight, None);
+        let mut styles = StudioTypeStyleRecords::new(PROBE_DOC);
+        styles.character_overrides = (0..4096u64)
+            .map(|i| StudioCharacterOverride { text_id: PROBE_STORY.into(), start: i, end: i + 1, attributes: StudioCharacterAttributes { tracking: Some((i % 5) as f64), ..StudioCharacterAttributes::default() } })
+            .collect();
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        let mut plan = Plan::new(&fonts, 0);
+        assert_eq!(plan_story(&s, &styles, &mut plan, &canceled).err().map(|e| e.code), Some("canceled"));
+        let mut plan = Plan::new(&fonts, 0);
+        let planned = plan_story(&s, &styles, &mut plan, &CancellationToken::default()).expect("planned");
+        assert_eq!(planned.len(), 1);
+        assert!(plan.steps > 0 && plan.steps <= 4096 * 64, "bounded work: {} steps", plan.steps);
+    }
 }

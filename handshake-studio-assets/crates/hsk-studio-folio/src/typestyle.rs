@@ -1207,6 +1207,26 @@ impl StudioTypeStyleRecords {
     }
 }
 
+/// Deepest `based_on` chain a resolution walks (red skeleton).
+pub const MAX_STYLE_CHAIN: usize = 64;
+
+/// One export's or read's character-attribute resolution (red skeleton: no legacy fold, no bound).
+pub struct CharacterResolver<'a> {
+    records: &'a StudioTypeStyleRecords,
+}
+impl<'a> CharacterResolver<'a> {
+    pub fn new(records: &'a StudioTypeStyleRecords, step_budget: u64) -> Self {
+        let _ = step_budget;
+        Self { records }
+    }
+    pub fn at(&mut self, text_id: &str, byte: u64, paragraph_style: Option<&str>, character_style: Option<&str>) -> Result<StudioCharacterAttributes> {
+        Ok(self.records.resolved_character(text_id, byte, paragraph_style, character_style))
+    }
+    pub fn steps(&self) -> u64 {
+        0
+    }
+}
+
 /// JSON schema (draft 2020-12) of the type-style record set.
 pub fn type_style_records_schema() -> schemars::Schema {
     schemars::generate::SchemaSettings::draft2020_12()

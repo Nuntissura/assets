@@ -2066,6 +2066,18 @@ impl PdfExport {
         Ok(())
     }
 
+    /// Opens a `/Span` marked-content sequence whose `/ActualText` is `text` (red skeleton: writes nothing).
+    pub fn begin_actual_text(&mut self, page: PageHandle, text: &str) -> Result<()> {
+        let _ = (page, text);
+        Ok(())
+    }
+
+    /// Closes the span [`Self::begin_actual_text`] opened (red skeleton: writes nothing).
+    pub fn end_actual_text(&mut self, page: PageHandle) -> Result<()> {
+        let _ = page;
+        Ok(())
+    }
+
     /// Shows glyphs like [`Self::show_glyphs`] (same inputs, same refusals), written as text runs:
     /// consecutive glyphs on one baseline share one text matrix and one `TJ` array, and the
     /// difference between the font program's advance (`/W`) and the caller's next position is a

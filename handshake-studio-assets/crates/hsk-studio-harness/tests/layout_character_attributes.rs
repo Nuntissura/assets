@@ -59,6 +59,30 @@ fn read(v: &mut Viewer, story: &str, start: u64, end: u64) -> Value {
     ok(v, "layout.character_attributes", json!({"story": story, "start": start, "end": end}))
 }
 
+/// The page-1 text a reader extracts: a glyph inside an ActualText span gives that span's text once, every
+/// other glyph its /ToUnicode text; whitespace dropped (spaces may or may not be drawn as glyphs).
+fn extracted(pdf: &Path) -> String {
+    let bytes = std::fs::read(pdf).unwrap();
+    let doc = read_vector_document(&bytes, 1 << 26, &CancellationToken::default()).unwrap();
+    let mut out = String::new();
+    let mut span: Option<String> = None;
+    for i in &doc.pages[0].items {
+        let VectorItem::Draw { glyph: Some(g), .. } = i else { continue };
+        match &g.actual_text {
+            Some(t) if span.as_ref() == Some(t) => {}
+            Some(t) => {
+                out.push_str(t);
+                span = Some(t.clone());
+            }
+            None => {
+                out.push_str(g.unicode.as_deref().unwrap_or("\u{fffd}"));
+                span = None;
+            }
+        }
+    }
+    out.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// (glyph id, baseline y) of every glyph drawn on page 1, in drawing order.
 fn glyphs(pdf: &Path) -> Vec<(u32, f64)> {
     let bytes = std::fs::read(pdf).unwrap();
@@ -110,7 +134,9 @@ fn character_attributes_are_typed_undoable_steps_that_survive_save_and_reopen() 
 
     // STU-TYP-222: one value where the range agrees, `mixed` with extents where it does not.
     let r = read(&mut v, &story, 0, 11);
-    assert_eq!(r["fields"]["tracking"], json!({"mixed": true, "values": [{"value": null, "extents": [[0, 5], [5, 6]]}, {"value": 50.0, "extents": [[6, 11]]}]}), "{r}");
+    // The read reports what the export draws: an unset field reads its default, marked `defaulted` (review F3).
+    assert_eq!(r["fields"]["tracking"], json!({"mixed": true, "values": [{"value": 0.0, "extents": [[0, 5], [5, 6]]}, {"value": 50.0, "extents": [[6, 11]]}]}), "{r}");
+    assert_eq!(r["defaulted"]["tracking"], json!({"mixed": true, "values": [{"value": true, "extents": [[0, 5], [5, 6]]}, {"value": false, "extents": [[6, 11]]}]}), "{r}");
     assert_eq!(r["fields"]["size"]["mixed"], true, "{r}");
     assert_eq!(r["applied_language"]["values"][0], json!({"value": "tr_TR", "extents": [[0, 5]]}), "{r}");
     assert_eq!(r["legacy_booleans"]["ligatures"]["values"][1]["value"], false, "liga 0 reads as ligatures off: {r}");
@@ -189,6 +215,10 @@ fn the_pdf_shapes_with_the_attributes_and_reports_what_it_does_not_draw() {
     let pdf = s.0.join("styled.pdf");
     let r = export(&mut v, &pdf);
     assert_eq!(r["lines"], 1, "{r}");
+    // Review F2 + lead ruling: the case-mapped span extracts as its source text through ActualText, and
+    // unrelated text (HELLO, typed in capitals) extracts exactly as typed.
+    assert_eq!(extracted(&pdf), "HelloHELLOworldoftype");
+    assert_eq!(extracted(&s.0.join("plain.pdf")), "HelloHELLOworldoftype");
     // Glyph ids in drawing order (the PDF text layer maps a glyph id to one character, so the capital
     // glyphs are compared by id, not read back as text). In the plain export the second H opens HELLO.
     let (before, after) = (glyphs(&s.0.join("plain.pdf")), glyphs(&pdf));
