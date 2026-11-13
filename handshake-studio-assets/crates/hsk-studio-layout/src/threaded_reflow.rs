@@ -24,6 +24,10 @@
 //! whatever its number, and the Adobe paragraph composer re-breaks only its last
 //! `PARA_TAIL_LINES + 1` lines); a negative value widens the last line at the set stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
 //! paragraph at a column top takes none (a push past the bottom lands at the next column's top);
+//! a negative gap lifts a paragraph at most to its column's first baseline and the rest of it is
+//! dropped, as at a column top (`floored`: also for a later line of smaller leading and where
+//! balancing re-adds the gap), so the lines that then do not fit are overset (lane
+//! SMB-FIX-NEGATIVE-SPACE-1; STU-TYP-185 states no bounds, so this floor is a Studio reading);
 //! `space_between_same_style` zeroes the gap between paragraphs of one style; span and split
 //! paragraphs take the larger of the flow record's and the attribute space; a break sentinel drops
 //! the pending space; balancing re-adds the space between lines of one column. Every sum is
@@ -204,7 +208,10 @@ pub struct LayoutProposal {
 /// extra vertical space (`extra`, split paragraphs). `band` is the y of the band top in frame
 /// coordinates (`None` = frame top, whose first baseline is the frame's first-baseline offset).
 /// `first` is that offset once the column's first line fixed it (STU-LAY-120 kinds other than
-/// `fixed` take the metric of the column's first line); `None` = not yet fixed.
+/// `fixed` take the metric of the column's first line); `None` = not yet fixed. `extra` is kept at
+/// or above `-(line * height)` (`floored`); `gaps` is the signed paragraph space (STU-TYP-185) added
+/// in this column without that floor, summed like every sum, so space that overflows in one column
+/// stays `invalid_geometry` (tests/indent_spacing.rs hostile_indent_and_space_values_give_typed_answers).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Cursor {
     pos: usize,
@@ -212,6 +219,7 @@ struct Cursor {
     line: usize,
     band: Option<f64>,
     extra: f64,
+    gaps: f64,
     first: Option<f64>,
 }
 impl Cursor {
@@ -222,9 +230,23 @@ impl Cursor {
             line: 0,
             band: None,
             extra: 0.0,
+            gaps: 0.0,
             first: None,
         }
     }
+}
+
+/// `cur` with `extra` raised to `-(line * height)` when it lies below: line `cur.line` of a paragraph
+/// of line height `height` then sits on its column's first baseline (`baseline_of`), never above it.
+/// Only a negative paragraph gap takes `extra` that low; the part the floor stops is dropped, as a
+/// column top drops the whole gap (Studio reading, lane SMB-FIX-NEGATIVE-SPACE-1; InDesign parity
+/// UNVERIFIED, D5; tests/fix_negative_space.rs). Above the floor nothing changes (no float write).
+fn floored(mut cur: Cursor, height: f64) -> Cursor {
+    let floor = -(cur.line as f64 * height);
+    if cur.extra < floor {
+        cur.extra = floor;
+    }
+    cur
 }
 #[derive(Clone, Copy, Debug)]
 struct Slot {
@@ -260,7 +282,8 @@ struct Meta {
     /// First-baseline offset of the line's frame for the line's paragraph (`frame_first`).
     first: Option<f64>,
     /// STU-TYP-185 paragraph space added above this line (its paragraph's first line, in the column
-    /// where the space was added); balancing re-adds it except at a column's first line.
+    /// where the space was added); balancing re-adds it except at a column's first line, a negative
+    /// one at most up to the column's first baseline (`floored`).
     gap: f64,
 }
 
@@ -370,9 +393,12 @@ fn widest_box(items: &[crate::paragraph::Item], breaks: &[LineBreak], k: usize) 
         .fold(0.0, f64::max)
 }
 
+/// Baseline of line `cur.line` of the column; never above the column's first baseline `base`
+/// (`floored` keeps `extra` within rounding of that; the guard makes it exact).
 fn baseline_of(cur: &Cursor, first: f64, height: f64, ascent: f64) -> f64 {
     let base = cur.band.map_or(first, |t| t + ascent);
-    base + cur.line as f64 * height + cur.extra
+    let baseline = base + cur.line as f64 * height + cur.extra;
+    if baseline < base { base } else { baseline }
 }
 
 /// First-baseline offset from the top of frame `f` when paragraph `p` sets the first line of a column
@@ -431,6 +457,9 @@ fn next_slot(
                 }
             },
         };
+        // A negative paragraph gap lifts a line at most to the column's first baseline, and the
+        // lines after it step down from there (`floored`).
+        cur = floored(cur, height);
         let mut baseline = baseline_of(&cur, first, height, ascent);
         let mut delta = 0.0;
         if snap && let Some((o, step)) = verticals.get(cur.pos).and_then(|v| v.grid) {
@@ -444,6 +473,7 @@ fn next_slot(
                     col: cur.col + 1,
                     line: 0,
                     extra: 0.0,
+                    gaps: 0.0,
                     first: None,
                     ..cur
                 }
@@ -871,14 +901,20 @@ fn balance_band(f: &Frame<'_>, band: Option<f64>, lines: &mut [Line], meta: &[Me
                 return false;
             }
         }
-        let cur = Cursor {
-            pos: 0,
-            col,
-            line: row,
-            band,
-            extra,
-            first: None,
-        };
+        // A negative gap re-added here lifts the line at most to the column's first baseline.
+        let cur = floored(
+            Cursor {
+                pos: 0,
+                col,
+                line: row,
+                band,
+                extra,
+                gaps: 0.0,
+                first: None,
+            },
+            m.height,
+        );
+        extra = cur.extra;
         // The column's first line fixes its first baseline (known: that line was placed there).
         let Some(first) = meta[col * k].first else {
             return false;
@@ -995,7 +1031,7 @@ fn break_target(
     let from = &thread[last.pos];
     match target {
         BreakTarget::Column if last.col + 1 < from.column_count.max(1) => Ok((
-            Cursor { pos: last.pos, col: last.col + 1, line: 0, band: after.band, extra: 0.0, first: None },
+            Cursor { pos: last.pos, col: last.col + 1, line: 0, band: after.band, extra: 0.0, gaps: 0.0, first: None },
             0,
         )),
         BreakTarget::Column | BreakTarget::Frame => next_frame.ok_or(BreakOverset::NoTarget),
@@ -1143,9 +1179,12 @@ fn compose_flow(
         match flow {
             ParaFlow::Single => {
                 // The paragraph space; a paragraph at a column top takes none, and a push past the
-                // column bottom lands at the next column's top (`next_slot` resets `extra`).
+                // column bottom lands at the next column's top (`next_slot` resets `extra`). A
+                // negative gap lifts the paragraph at most to the column's first baseline, before an
+                // anchor's push below; the column's signed sum (`gaps`) is still checked finite.
                 if cursor.line > 0 && gap != 0.0 {
-                    cursor.extra = sum(cursor.extra, gap)?;
+                    cursor.gaps = sum(cursor.gaps, gap)?;
+                    cursor = floored(Cursor { extra: sum(cursor.extra, gap)?, ..cursor }, p.line_height_pt);
                 }
                 // Above-line anchored objects push the paragraph down (anchors module); a push that
                 // falls into the next column or frame is re-applied at that column's top.
@@ -1162,6 +1201,7 @@ fn compose_flow(
                             line: 0,
                             band: if s.pos == cursor.pos { cursor.band } else { None },
                             extra: pre[pi],
+                            gaps: 0.0,
                             first: None,
                         };
                     }
@@ -1214,6 +1254,7 @@ fn compose_flow(
                             line: 0,
                             band: Some(sum(bottom, larger(before, gap))?),
                             extra: 0.0,
+                            gaps: 0.0,
                             first: None,
                         };
                     } else {
@@ -1632,6 +1673,7 @@ fn compose_flow(
                     line: 0,
                     band: Some(top),
                     extra: 0.0,
+                    gaps: 0.0,
                     first: None,
                 }
             }
