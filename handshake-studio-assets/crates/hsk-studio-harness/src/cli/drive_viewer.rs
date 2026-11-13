@@ -239,18 +239,9 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
         "resize_page" => plain(viewer.resize_page(a.text("page")?, a.number("width")?, a.number("height")?)),
         "delete_page" => plain(viewer.delete_page(a.text("page")?)),
         "go_to_page" => unit(viewer.go_to_page(a.text("page")?)),
-        // ---- layers ----
-        "new_raster_layer" => plain(viewer.new_raster_layer(a.text("name")?)),
-        "duplicate_layer" => plain(viewer.duplicate_layer(layer()?)),
-        "delete_layer" => plain(viewer.delete_layer(layer()?)),
-        "shift_layer" => plain(viewer.shift_layer(layer()?, a.flag("up")?)),
-        "ungroup" => plain(viewer.ungroup(a.text("group")?)),
-        "group_layers" => plain(viewer.group_layers(&a.list("layers")?, a.text("name")?)),
+        // ---- layers (new, duplicate, delete, shift, group, ungroup and select run in the menus' shared executor,
+        // view::menu_tree::run_catalog, which drive.rs calls first: lane SMB-GUI-MENU-1) ----
         "move_layer" => plain(viewer.move_layer(layer()?, a.place()?)),
-        "select" => {
-            viewer.select(a.opt("layer").map(str::to_string));
-            Ok(Value::Null)
-        }
         // ---- tools, selection, paint, fill ----
         "set_tool" => {
             let key = a.text("tool")?;
@@ -481,12 +472,7 @@ pub(super) fn call(viewer: &mut Viewer, row: &DriveViewer, params: &Params) -> R
             Ok(Value::Null)
         }
         // ---- project bin and sequences (lane SMB-PROJECT-BIN-1) ----
-        "project_new_sequence" => plain(viewer.project_new_sequence(a.text("name")?, a.text("preset_id")?)),
-        "project_add_tracks" => {
-            let kinds = ["video", "audio", "caption", "submix"];
-            let kind = crate::view::project::track_kind(kinds[a.token("kind", &kinds)?]).ok_or_else(|| invalid("kind", "video|audio|caption|submix"))?;
-            viewer.project_add_tracks(a.text("sequence_id")?, kind, &a.names("names")?).map(Into::into)
-        }
+        // project_new_sequence and project_add_tracks run in the menus' shared executor (lane SMB-GUI-MENU-1).
         "project_new_folder" => plain(viewer.project_new_folder(a.text("name")?, a.opt("parent"))),
         "project_move_items" => unit(viewer.project_move_items(&a.names("items")?, a.opt("folder"))),
         "project_remove_items" => unit(viewer.project_remove_items(&a.names("items")?)),

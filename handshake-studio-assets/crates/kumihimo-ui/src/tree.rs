@@ -81,6 +81,8 @@ pub enum Role {
     /// The B6 roles of components.json `menu_popup`, `context_menu`, `tooltip_l0` and `tooltip_l1` (SMB-GUI-MENU-1).
     Menu,
     Tooltip,
+    /// components.json menu_item variant `check`: a toggle row.
+    MenuItemCheckBox,
 }
 impl Role {
     pub fn name(self) -> &'static str {
@@ -109,6 +111,7 @@ impl Role {
             Role::Region => "Region",
             Role::Menu => "Menu",
             Role::Tooltip => "Tooltip",
+            Role::MenuItemCheckBox => "MenuItemCheckBox",
         }
     }
 }

@@ -746,11 +746,12 @@ fn availability_reaches_the_command_api_the_projection_and_accesskit_alike() {
         other => panic!("spectral display {other:?}"),
     }
     assert_eq!(v.menu_bar().audit(), vec![]);
-    // Redo after an undo-able step: INAPPLICABLE_HERE with Undo as remedy.
+    // Redo after an undo-able step: NOT_IN_THIS_DOCUMENT with no remedy (lead ruling Q3, lane SMB-GUI-MENU-1: Undo
+    // would discard the operator's last step, so it is not Redo's remedy).
     let first = v.layers()[0].layer_id.clone();
     v.set_visible(&first, false).unwrap();
     let redo = menu_node(&v, "studio.history.redo");
-    assert_eq!((redo["availability"]["availability_state"].as_str(), redo["availability"]["remedy_command_id"].as_str()), (Some("INAPPLICABLE_HERE"), Some("studio.history.undo")));
+    assert_eq!((redo["availability"]["availability_state"].as_str(), redo["availability"]["remedy_command_id"].as_str()), (Some("NOT_IN_THIS_DOCUMENT"), None));
     accesskit_reasons();
 }
 

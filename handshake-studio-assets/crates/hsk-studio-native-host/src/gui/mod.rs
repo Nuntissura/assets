@@ -37,7 +37,8 @@ use crate::scene::DocumentFacts;
 use crate::script::Step;
 use hsk_studio_accord::ActorContext;
 use hsk_studio_harness_view::view::menu_tree::descriptors::{Availability, AvailabilityState, MenuBar, MenuNode, MenuNodeKind};
-use hsk_studio_harness_view::view::menu_tree::{self, HostLeaf, MenuState, Profile};
+use hsk_studio_harness_view::view::menu_tree::{self, MenuContext, MenuState};
+use hsk_studio_harness_view::view::shell::ShellCommand;
 use hsk_studio_harness_view::view::{LayerRow, Viewer};
 use crate::scene::ChromeMode;
 use hsk_studio_vulkan::ui::TraceRecord;
@@ -303,7 +304,7 @@ const PANELS: usize = 12;
 /// Open-path roots that are not titles: the chevron's list of hidden titles and the Layers context menu.
 pub const MORE_MENU: &str = "more";
 pub const LAYERS_CONTEXT: &str = "ctx.layers";
-/// The WORKSPACE > Panels expansion node the frame grafts its panels into (STU-SHL-036).
+/// WORKSPACE > Panels: the shell's panel registry, grafted into the designed expansion (STU-SHL-036).
 pub const WORKSPACE_PANELS: &str = "studio.workspace.panel";
 /// Tooltip dwell (components.json tooltip_l0 400 ms, STU-SHL-230 L1 ~900 ms) and the quiet time after a press
 /// (STU-SHL-235 rule 1).
@@ -311,9 +312,35 @@ pub const L0_DWELL_MS: u64 = 400;
 pub const L1_DWELL_MS: u64 = 900;
 pub const TIP_QUIET_MS: u64 = 500;
 
-/// The menu leaf id of a panel (WORKSPACE > Panels > <panel>).
-pub fn panel_leaf_id(panel: &str) -> String {
-    format!("{WORKSPACE_PANELS}.{}", panel.replace('-', "_"))
+/// The (group, tab) of the dock tab this frame shows for the shell panel `key` (the raster preset's panel ids are the
+/// shell's keys in kebab case), if it hosts one.
+pub fn hosted_panel(key: &str) -> Option<(usize, usize)> {
+    (0..GROUPS).find_map(|gi| group_tabs(gi).iter().position(|(p, _)| p.replace('-', "_") == key).map(|t| (gi, t)))
+}
+
+/// The shell commands this frame shows (lead ruling 2): Undo, Redo, Create Outlines (document edits drawn in the
+/// Viewport and Layers) and the panels it hosts. Open, Save, the dialogs, zoom, proof and the panels it has no place for
+/// are NOT_IN_THIS_HOST here.
+pub fn frame_hosts(command: ShellCommand) -> bool {
+    match command {
+        ShellCommand::Undo | ShellCommand::Redo | ShellCommand::CreateOutlines => true,
+        ShellCommand::Panel(p) => hosted_panel(p.key()).is_some(),
+        _ => false,
+    }
+}
+
+/// The command id an outcome names for a leaf that ran (an [`Outcome`] carries a static id): the catalog id, or the
+/// shell leaf's own id for the shell commands this frame runs.
+fn outcome_command(command: &str) -> &'static str {
+    if let Some(c) = menu_tree::CATALOG_COMMANDS.iter().find(|c| **c == command) {
+        return c;
+    }
+    match command {
+        "studio.history.undo" => "studio.history.undo",
+        "studio.history.redo" => "studio.history.redo",
+        "studio.type.convert.create_outlines" => "studio.type.convert.create_outlines",
+        _ => "frame.menu_run",
+    }
 }
 
 /// Menu counters for the receipt (codes and counters only).
@@ -321,7 +348,7 @@ pub fn panel_leaf_id(panel: &str) -> String {
 pub struct MenuStats {
     /// Popups opened (titles, cascades, the chevron list, the context menu).
     pub opens: u64,
-    /// Leaves that ran (commands and host leaves).
+    /// Leaves that ran (commands and hosted panels).
     pub runs: u64,
     /// Greyed rows that answered their reason.
     pub unavailable: u64,
@@ -331,14 +358,14 @@ pub struct MenuStats {
     pub refused: u64,
     /// Availability evaluations (one per context change).
     pub evaluations: u64,
-    /// Evaluations that grew the profile (STU-SHL-048).
-    pub profile_growth: u64,
+    /// Evaluations whose profile signature differed from the one before (STU-SHL-048, STU-SHL-054).
+    pub profile_changes: u64,
     /// Tooltips shown.
     pub tips: u64,
 }
 
 /// A tooltip as shown (STU-SHL-231, STU-SHL-232), from the element's own record: L0 name and chord; L1 also the
-/// summary (absent when null), the reason of a dimmed element and its remedy.
+/// summary (the UiDescriptor's, absent when null), the reason of a dimmed element and its remedy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TipRecord {
     pub target: String,
@@ -369,25 +396,31 @@ enum MenuTarget {
     Node(String),
     Remedy(String),
     TipRemedy,
+    /// A scroll lane button of open level `k`: one row up (-1) or down (+1).
+    Scroll(usize, i64),
 }
 
 /// Menu and tooltip state (B6).
 #[derive(Default)]
 struct Menus {
-    /// The profile, grown at every evaluation and never shrunk (STU-SHL-048).
-    profile: Profile,
     state: MenuState,
     bar: MenuBar,
     /// author id -> node id over the evaluated bar.
     authors: HashMap<String, String>,
+    /// node id -> child indices from the titles (lookups never walk the tree, lead ruling F11).
+    index: HashMap<String, Vec<usize>>,
     /// The open path: a title id (or [`MORE_MENU`], [`LAYERS_CONTEXT`]) then each open submenu id.
     open: Vec<String>,
     /// The highlighted row's author id (hover or keyboard).
     hot: Option<String>,
+    /// F10 or Alt: the title the keyboard is on while no popup is open.
+    bar_hot: Option<String>,
     /// First shown row per open level.
     first: Vec<usize>,
     /// Where the context menu opens, logical px.
     anchor: (f32, f32),
+    /// The pointer before the last move (the cascade safe triangle).
+    prev_pointer: Option<Point>,
     stats: MenuStats,
     rev: u64,
     popup: Option<(String, chrome::PopupFacts)>,
@@ -402,6 +435,12 @@ struct Menus {
     operated: Option<String>,
     tips_off: bool,
     tip_cap: Option<u8>,
+    /// Summary sentences of the catalog commands leaves run, from the UiDescriptor set (STU-SHL-240).
+    summaries: HashMap<String, String>,
+    /// The last leaf that ran: its command id and parameters (the receipt's `frame.menu.last_run`).
+    last_run: Option<(String, Vec<(String, String)>)>,
+    signature: Vec<&'static str>,
+    summaries_loaded: bool,
 }
 
 pub struct GuiFrame {
@@ -806,9 +845,13 @@ impl GuiFrame {
         self.regions.window.contains(p).then_some(p)
     }
     fn panel_at(&self, p: Point) -> Option<usize> {
-        // The tooltip, then the open popups, are over every band.
+        // The tooltip's remedy button, then the open popups, are over every band. The rest of a tip takes no pointer
+        // (STU-SHL-235: a tip never swallows a click): what lies under it gets the press.
         if self.menu.tip.is_some() && self.menu.tip_facts.as_ref().is_some_and(|(_, t)| t.rect.contains(p)) {
-            return Some(TIP);
+            let t = self.panels[TIP].tree();
+            if kumihimo_ui::hit::hit_test(t, p).is_some_and(|n| t.get(n).author_id == chrome::TIP_REMEDY_ID) || !self.menu.tips_off {
+                return Some(TIP);
+            }
         }
         if !self.menu.open.is_empty() && self.menu.popup.as_ref().is_some_and(|(_, f)| f.levels.iter().any(|l| l.rect.contains(p))) {
             return Some(POPUP);
@@ -867,7 +910,10 @@ impl GuiFrame {
                 None
             }
             HostEvent::Button { button: Button::Left, pressed: true } => {
-                self.hide_dwell_tip();
+                // The next action dismisses a tip, unless the press is on the tip's remedy button.
+                if !self.pointer.is_some_and(|p| self.panel_at(p) == Some(TIP)) && self.menu.tip.as_ref().is_some_and(|t| !t.explicit) {
+                    self.hide_tip();
+                }
                 if let Some(p) = self.pointer
                     && !self.menu.open.is_empty()
                     && !matches!(self.panel_at(p), Some(POPUP | MENU | TIP))
@@ -903,6 +949,7 @@ impl GuiFrame {
             }
             HostEvent::Button { button: Button::Right, pressed: false } => {
                 // The context menu of the row under the pointer (STU-SHL-014).
+                self.hide_tip();
                 let p = self.pointer?;
                 let i = self.panel_at(p).filter(|&i| i == INSPECT)?;
                 let t = self.panels[i].tree();
@@ -943,12 +990,18 @@ impl GuiFrame {
     }
 
     fn key(&mut self, key: Key, mods: Mods) -> Option<Outcome> {
+        // Escape dismisses a shown tip and nothing else; any other key is the next action, which dismisses it too.
         if key == Key::Escape && self.menu.tip.is_some() && self.menu.open.is_empty() {
             self.hide_tip();
             return None;
         }
-        if !self.menu.open.is_empty() && matches!(key, Key::Up | Key::Down | Key::Enter | Key::Space | Key::Escape) {
+        let plain = !mods.ctrl && !mods.alt;
+        let menu_key = matches!(key, Key::Up | Key::Down | Key::Left | Key::Right | Key::Enter | Key::Space | Key::Escape) || matches!(key, Key::Char(_));
+        if !self.menu.open.is_empty() && plain && menu_key {
             return self.menu_key(key);
+        }
+        if let Some(out) = self.bar_key(key, mods) {
+            return out;
         }
         let page = view::rows_page(self.regions.body.h()) as i64;
         // Page keys go only to the active tab's panel: the Layers list scrolls only while Layers is shown.
@@ -1030,6 +1083,9 @@ impl GuiFrame {
         self.menu.operated = Some(id.to_owned());
         if let Some(t) = self.menu_target(id) {
             return Ok(Some(self.menu_activate(t)));
+        }
+        if self.menu.bar_hot.take().is_some() {
+            self.bump(&[MENU]);
         }
         // Any other control closes the open menus.
         if !self.menu.open.is_empty() {
@@ -1626,9 +1682,34 @@ pub fn popup_id(node_id: &str, title: bool) -> String {
     }
 }
 
+/// The chord of a menu node, resolved now from the active set (STU-SHL-232: never baked), which binds catalog command
+/// ids: a catalog leaf's command, the catalog command a shell leaf runs (`menu_tree::SHELL_RUNS`), an alias's primary's.
+fn chord_of_node(n: &MenuNode) -> Option<&'static str> {
+    let id = n.alias_of.as_deref().unwrap_or(&n.id);
+    let command = menu_tree::leaf(id).map(|l| l.command).or_else(|| menu_tree::SHELL_RUNS.iter().find(|(leaf, _)| *leaf == id).map(|(_, c)| *c));
+    preset::chord_of(command.unwrap_or(id))
+}
+
 /// The author id of a hidden title's row in the chevron's list.
 pub fn more_row_id(title: &str) -> String {
     format!("studio.menu.more.{title}")
+}
+
+/// The scroll lane buttons of popup `popup` (components.json `menu_popup.pointer`).
+pub fn scroll_up_id(popup: &str) -> String {
+    format!("{popup}.scroll-up")
+}
+pub fn scroll_down_id(popup: &str) -> String {
+    format!("{popup}.scroll-down")
+}
+
+/// True when `p` lies in the triangle `a`, `b`, `c` (edges included).
+fn in_triangle(p: Point, a: Point, b: Point, c: Point) -> bool {
+    let side = |u: Point, v: Point| (v.x - u.x) * (p.y - u.y) - (v.y - u.y) * (p.x - u.x);
+    let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(neg && pos)
 }
 
 impl GuiFrame {
@@ -1638,13 +1719,17 @@ impl GuiFrame {
     pub fn menu_bar(&self) -> &MenuBar {
         &self.menu.bar
     }
-    /// The state the last evaluation read (the grown profile, selection, transient features).
+    /// The state the last evaluation read (profile, selection, transient features).
     pub fn menu_state(&self) -> &MenuState {
         &self.menu.state
     }
     /// The open path: a title id (or `more`, `ctx.layers`) then each open submenu id; empty when closed.
     pub fn menu_open(&self) -> &[String] {
         &self.menu.open
+    }
+    /// The title the keyboard is on (F10, Alt) while no popup is open.
+    pub fn menu_bar_hot(&self) -> Option<&str> {
+        self.menu.bar_hot.as_deref()
     }
     pub fn menu_stats(&self) -> MenuStats {
         self.menu.stats
@@ -1654,69 +1739,93 @@ impl GuiFrame {
     pub fn menu_json(&self) -> String {
         menu_tree::bar_json(&self.menu.bar, &self.menu.state).to_string()
     }
-
-    /// WORKSPACE > Panels: one leaf per panel of the raster preset, grafted into the expansion (its 90-panel registry
-    /// is not in this host). A group's panel picks its tab here; the Time & Results panels have no bodies yet.
-    fn host_leaves(&self) -> Vec<HostLeaf> {
-        let mut out = Vec::new();
-        for gi in 0..GROUPS {
-            for (t, (panel, name)) in group_tabs(gi).iter().enumerate() {
-                out.push(HostLeaf {
-                    parent: WORKSPACE_PANELS.to_owned(),
-                    id: panel_leaf_id(panel),
-                    label: (*name).to_owned(),
-                    requires: Vec::new(),
-                    unbuilt: None,
-                    selected: self.tabs[gi] == t,
-                    help: format!("Shows the {name} panel in its group."),
-                });
-            }
-        }
-        for p in preset::BOTTOM {
-            out.push(HostLeaf {
-                parent: WORKSPACE_PANELS.to_owned(),
-                id: panel_leaf_id(p.id),
-                label: p.name.to_owned(),
-                requires: Vec::new(),
-                unbuilt: Some("the Time & Results Dock has no panel bodies in this host yet".to_owned()),
-                selected: false,
-                help: format!("Shows the {} panel.", p.name),
-            });
-        }
-        out
+    /// The menu context of this frame: its active tool and the shell commands it shows ([`frame_hosts`]).
+    pub fn menu_context(&self) -> MenuContext<'static> {
+        MenuContext { tool: Some(preset::RAIL[self.tool].face_tool), hosts: &frame_hosts }
     }
 
-    /// The one availability evaluation per context change (STU-SHL-046): after a document refresh, a tool pick or a
-    /// tab switch; never per frame. The profile grows first (STU-SHL-048). The open path keeps the nodes that remain.
-    fn menu_eval(&mut self) {
-        let derived = Profile::of(&self.viewer);
-        if self.menu.profile.grow(&derived) {
-            self.menu.stats.profile_growth = self.menu.stats.profile_growth.saturating_add(1);
+    /// The node `id` of the evaluated bar, by index.
+    fn node_by_id(&self, id: &str) -> Option<&MenuNode> {
+        let path = self.menu.index.get(id)?;
+        let (first, rest) = path.split_first()?;
+        let mut n = self.menu.bar.titles.get(*first)?;
+        for i in rest {
+            n = n.children.get(*i)?;
         }
-        let tool = preset::RAIL[self.tool].face_tool;
-        self.menu.state = MenuState::of(&self.viewer, self.menu.profile.clone(), Some(tool));
-        let host = self.host_leaves();
-        let titles_before: Vec<Availability> = self.menu.bar.titles.iter().map(|t| t.availability.clone()).collect();
-        self.menu.bar = menu_tree::menu_bar(&self.menu.state, &host);
-        let titles_changed = self.menu.bar.titles.iter().map(|t| &t.availability).ne(titles_before.iter());
+        Some(n)
+    }
+
+    /// The one availability evaluation per context change (STU-SHL-046): harness-view's `Viewer::studio_menu`, the
+    /// function the drive surface runs leaves through, with this frame's tool and hosting; after a document refresh, a
+    /// tool pick or a tab switch, never per frame. The open path keeps the nodes that remain.
+    fn menu_eval(&mut self) {
+        self.load_summaries();
+        let ctx = self.menu_context();
+        let (mut bar, state) = self.viewer.studio_menu(&ctx);
+        // A panel row's check says whether THIS window shows the panel: a hosted panel when its tab is the active one,
+        // never one this frame does not host.
+        fn find_mut<'a>(n: &'a mut MenuNode, id: &str) -> Option<&'a mut MenuNode> {
+            if n.id == id {
+                return Some(n);
+            }
+            n.children.iter_mut().find_map(|c| find_mut(c, id))
+        }
+        if let Some(panels) = bar.titles.iter_mut().find_map(|t| find_mut(t, WORKSPACE_PANELS)) {
+            for c in &mut panels.children {
+                if let Some(ShellCommand::Panel(p)) = ShellCommand::from_id(&c.id) {
+                    c.selected = hosted_panel(p.key()).is_some_and(|(gi, t)| self.tabs[gi] == t);
+                }
+            }
+        }
+        let titles_changed = self.menu.bar.titles.iter().map(|t| &t.availability).ne(bar.titles.iter().map(|t| &t.availability));
+        let signature = state.profile.signature();
+        if signature != self.menu.signature {
+            self.menu.stats.profile_changes = self.menu.stats.profile_changes.saturating_add(1);
+            self.menu.signature = signature;
+        }
+        self.menu.bar = bar;
+        self.menu.state = state;
         let mut authors = HashMap::new();
-        for w in self.menu.bar.walk() {
-            authors.insert(menu_tree::node_author_id(&w.node.id), w.node.id.clone());
+        let mut index = HashMap::new();
+        fn walk(n: &MenuNode, path: &mut Vec<usize>, authors: &mut HashMap<String, String>, index: &mut HashMap<String, Vec<usize>>) {
+            authors.insert(menu_tree::node_author_id(&n.id), n.id.clone());
+            index.insert(n.id.clone(), path.clone());
+            for (i, c) in n.children.iter().enumerate() {
+                path.push(i);
+                walk(c, path, authors, index);
+                path.pop();
+            }
+        }
+        for (i, t) in self.menu.bar.titles.iter().enumerate() {
+            walk(t, &mut vec![i], &mut authors, &mut index);
         }
         self.menu.authors = authors;
+        self.menu.index = index;
         let was_open = !self.menu.open.is_empty();
-        let keep = self.menu.open.iter().take_while(|id| matches!(id.as_str(), MORE_MENU | LAYERS_CONTEXT) || self.menu.bar.find(id).is_some()).count();
+        let keep = self.menu.open.iter().take_while(|id| matches!(id.as_str(), MORE_MENU | LAYERS_CONTEXT) || self.menu.index.contains_key(id.as_str())).count();
         self.menu.open.truncate(keep);
         self.menu.first.truncate(keep);
         self.menu.stats.evaluations = self.menu.stats.evaluations.saturating_add(1);
-        // Only what the evaluation changed rebuilds: the titles when a title's record changed, the popups while open
-        // (a tool pick or a tab switch changes neither in a closed frame).
+        // Only what the evaluation changed rebuilds: the titles when a title's record changed, the popups while open.
         self.menu.rev = self.menu.rev.wrapping_add(1);
         if titles_changed {
             self.bump(&[MENU]);
         }
         if was_open {
             self.bump(&[POPUP]);
+        }
+    }
+
+    /// The summary sentences of the commands leaves run, by command id, from the UiDescriptor set (read once).
+    fn load_summaries(&mut self) {
+        if std::mem::replace(&mut self.menu.summaries_loaded, true) {
+            return;
+        }
+        let Ok(catalog) = self.viewer.ui_catalog() else { return };
+        for d in catalog.rows() {
+            if let (Some(c), Some(s)) = (&d.command_id, &d.summary) {
+                self.menu.summaries.entry(c.clone()).or_insert_with(|| s.clone());
+            }
         }
     }
 
@@ -1730,13 +1839,13 @@ impl GuiFrame {
             .iter()
             .map(|t| {
                 let id = t.to_ascii_lowercase();
-                let node = self.menu.bar.titles.iter().find(|n| n.id == id);
+                let node = self.node_by_id(&id);
                 let greyed = node.is_some_and(|n| !n.availability.is_available());
                 kumihimo_ui::widgets::TitleState {
                     availability: node.map(|n| node_availability(&n.availability)),
                     value: node.filter(|_| greyed).map(|n| n.availability.reason_line()),
                     greyed,
-                    open: open == Some(id.as_str()),
+                    open: open == Some(id.as_str()) || self.menu.bar_hot.as_deref() == Some(id.as_str()),
                 }
             })
             .collect()
@@ -1750,8 +1859,21 @@ impl GuiFrame {
         if author == chrome::TIP_REMEDY_ID {
             return self.menu.tip.as_ref().map(|_| MenuTarget::TipRemedy);
         }
+        if let Some((_, f)) = &self.menu.popup
+            && let Some((k, delta)) = f.levels.iter().enumerate().find_map(|(k, l)| {
+                if author == scroll_up_id(&l.id) {
+                    Some((k, -1))
+                } else if author == scroll_down_id(&l.id) {
+                    Some((k, 1))
+                } else {
+                    None
+                }
+            })
+        {
+            return Some(MenuTarget::Scroll(k, delta));
+        }
         if let Some(t) = author.strip_prefix("studio.menu.more.")
-            && self.menu.bar.titles.iter().any(|x| x.id == t)
+            && menu_tree::TITLES.contains(&t)
         {
             return Some(MenuTarget::MoreTitle(t.to_owned()));
         }
@@ -1761,13 +1883,14 @@ impl GuiFrame {
             return Some(MenuTarget::Remedy(id.clone()));
         }
         let id = self.menu.authors.get(author)?;
-        if self.menu.bar.titles.iter().any(|t| &t.id == id) {
+        if menu_tree::TITLES.contains(&id.as_str()) {
             return Some(MenuTarget::Title(id.clone()));
         }
         Some(MenuTarget::Node(id.clone()))
     }
 
     fn menu_activate(&mut self, t: MenuTarget) -> Outcome {
+        self.menu.bar_hot = None;
         match t {
             MenuTarget::Title(id) => {
                 if self.menu.open.first() == Some(&id) {
@@ -1794,12 +1917,16 @@ impl GuiFrame {
                     None => self.frame_outcome("frame.menu", "menu_node_unknown", &[]),
                 }
             }
+            MenuTarget::Scroll(k, delta) => {
+                self.scroll_level(k, delta);
+                self.frame_outcome("frame.menu_scroll", "ok", &[])
+            }
         }
     }
 
     /// Runs the remedy of node `id` (its INAPPLICABLE_HERE record's one enabled command, STU-SHL-020).
     fn run_remedy(&mut self, id: &str) -> Outcome {
-        match self.menu.bar.find(id).and_then(|n| n.availability.remedy_command_id.clone()) {
+        match self.node_by_id(id).and_then(|n| n.availability.remedy_command_id.clone()) {
             Some(r) => {
                 self.menu.stats.remedies = self.menu.stats.remedies.saturating_add(1);
                 self.menu_node(&r)
@@ -1826,7 +1953,7 @@ impl GuiFrame {
             self.menu.hot = None;
         }
         self.set_open(path);
-        self.hide_dwell_tip();
+        self.hide_tip();
         self.frame_outcome("frame.menu_open", "ok", &[MENU])
     }
 
@@ -1860,16 +1987,15 @@ impl GuiFrame {
 
     /// The ids from a title down to node `id`.
     fn path_to(&self, id: &str) -> Option<Vec<String>> {
-        fn go(n: &MenuNode, id: &str, path: &mut Vec<String>) -> bool {
-            path.push(n.id.clone());
-            if n.id == id || n.children.iter().any(|c| go(c, id, path)) {
-                return true;
-            }
-            path.pop();
-            false
+        let path = self.menu.index.get(id)?;
+        let (first, rest) = path.split_first()?;
+        let mut n = self.menu.bar.titles.get(*first)?;
+        let mut out = vec![n.id.clone()];
+        for i in rest {
+            n = n.children.get(*i)?;
+            out.push(n.id.clone());
         }
-        let mut path = Vec::new();
-        self.menu.bar.titles.iter().any(|t| go(t, id, &mut path)).then_some(path)
+        Some(out)
     }
 
     /// The open path that shows node `id`'s cascade (under the chevron's list when that is the root).
@@ -1882,9 +2008,11 @@ impl GuiFrame {
     }
 
     /// A menu node activated: a submenu opens its cascade; a greyed leaf answers its reason code and runs nothing
-    /// (the menu stays open, the status bar says the reason); an enabled leaf runs and the menus close.
+    /// (the menu stays open, the status bar says the reason); a hosted panel picks its tab; any other enabled leaf runs
+    /// through harness-view's `Viewer::run_menu_leaf_in` (the shell command or the shared catalog executor) and the
+    /// menus close.
     fn menu_node(&mut self, id: &str) -> Outcome {
-        let Some(n) = self.menu.bar.find(id) else { return self.frame_outcome("frame.menu", "menu_node_unknown", &[]) };
+        let Some(n) = self.node_by_id(id) else { return self.frame_outcome("frame.menu", "menu_node_unknown", &[]) };
         let (kind, label, availability) = (n.kind, n.label.clone(), n.availability.clone());
         let author = menu_tree::node_author_id(id);
         if kind != MenuNodeKind::Item {
@@ -1900,22 +2028,35 @@ impl GuiFrame {
             self.set_hot(author);
             return out;
         }
-        if let Some(o) = self.host_run(id) {
+        if let Some(ShellCommand::Panel(p)) = ShellCommand::from_id(id)
+            && let Some((gi, t)) = hosted_panel(p.key())
+            && self.menu.tips_off
+            && self.menu.tip_cap == Some(9)
+        {
+            // A panel this frame hosts: its tab is picked (the shell command shows the same panel in the egui shell).
+            self.tabs[gi] = t;
+            self.focus_group = gi;
+            self.open_more = None;
+            self.stats.picks = self.stats.picks.saturating_add(1);
             self.menu.stats.runs = self.menu.stats.runs.saturating_add(1);
+            self.menu.last_run = Some((id.to_owned(), Vec::new()));
             self.close_menus();
-            return o;
+            self.menu_eval();
+            let dock = if gi < 3 { INSPECT } else { BROWSE };
+            return self.frame_outcome("frame.tab_select", "ok", &[dock, OBSERVE]);
         }
-        let result = menu_tree::run(&mut self.viewer, &self.menu.bar, id);
+        let result = self.viewer.run_menu_leaf_in(&self.menu.bar, &self.menu.state, id);
         self.stats.commands = self.stats.commands.saturating_add(1);
         let out = match result {
             Ok(r) => {
                 self.menu.stats.runs = self.menu.stats.runs.saturating_add(1);
-                Outcome { command: r.command, code: "ok".to_owned() }
+                self.menu.last_run = Some((r.command.clone(), r.params.into_iter().collect()));
+                Outcome { command: outcome_command(&r.command), code: "ok".to_owned() }
             }
             Err(e) => {
                 self.menu.stats.refused = self.menu.stats.refused.saturating_add(1);
                 self.stats.refused = self.stats.refused.saturating_add(1);
-                Outcome { command: e.command.unwrap_or("frame.menu"), code: e.code }
+                Outcome { command: e.command.as_deref().map_or("frame.menu", outcome_command), code: e.code }
             }
         };
         self.close_menus();
@@ -1925,24 +2066,8 @@ impl GuiFrame {
         out
     }
 
-    /// A WORKSPACE > Panels leaf: picks that panel's tab in its group (`frame.tab_select`, view state).
-    fn host_run(&mut self, id: &str) -> Option<Outcome> {
-        for gi in 0..GROUPS {
-            if let Some(t) = group_tabs(gi).iter().position(|(p, _)| panel_leaf_id(p) == id) {
-                self.tabs[gi] = t;
-                self.focus_group = gi;
-                self.open_more = None;
-                self.stats.picks = self.stats.picks.saturating_add(1);
-                let dock = if gi < 3 { INSPECT } else { BROWSE };
-                self.menu_eval();
-                return Some(self.frame_outcome("frame.tab_select", "ok", &[dock, OBSERVE]));
-            }
-        }
-        None
-    }
-
     /// Opens the Layers context menu on the row `author_id` (a Layers row or its visibility box), as Shift+F10 or the
-    /// Menu key would on that row (STU-MDL-109: by author id): selects the layer (view state, no undo step) and opens the
+    /// Menu key does on that row (STU-MDL-109: by author id): selects the layer (view state, no undo step) and opens the
     /// menu under the row. Its rows reference menu-bar leaves and run the identical commands (STU-SHL-014).
     /// `Err("menu_context_none")` for any other id, `Err("unknown_layer")` for a row that is gone.
     pub fn open_context(&mut self, author_id: &str) -> Result<Outcome, &'static str> {
@@ -1972,10 +2097,10 @@ impl GuiFrame {
             let titles = self.menu.bar.titles.iter().skip(shown).map(|t| (t, more_row_id(&t.id))).collect();
             (popup_id(MORE_MENU, false), "More menus".to_owned(), titles, None)
         } else if k == 0 && root == LAYERS_CONTEXT {
-            let rows = preset::LAYER_CONTEXT.iter().filter_map(|id| self.menu.bar.find(id)).map(|n| (n, menu_tree::node_author_id(&n.id))).collect();
+            let rows = preset::LAYER_CONTEXT.iter().filter_map(|id| self.node_by_id(id)).map(|n| (n, menu_tree::node_author_id(&n.id))).collect();
             (popup_id(LAYERS_CONTEXT, false), "Layer".to_owned(), rows, None)
         } else {
-            let n = self.menu.bar.find(self.menu.open.get(k)?)?;
+            let n = self.node_by_id(self.menu.open.get(k)?)?;
             let rows = n.children.iter().map(|c| (c, menu_tree::node_author_id(&c.id))).collect();
             (popup_id(&n.id, n.kind == MenuNodeKind::Title), n.label.clone(), rows, Some(n))
         };
@@ -1984,16 +2109,18 @@ impl GuiFrame {
         for (n, author) in nodes {
             let a = &n.availability;
             let greyed = !a.is_available();
+            let toggle = matches!(ShellCommand::from_id(&n.id), Some(ShellCommand::Panel(_) | ShellCommand::ToggleGpu | ShellCommand::ToggleStatus));
             out.push(chrome::PopupRow {
                 hot: hot == Some(author.as_str()),
                 id: author,
                 label: n.label.clone(),
-                chord: menu_tree::binding(&n.id).and_then(|b| preset::chord_of(b.op.command_id())).map(str::to_owned),
+                chord: chord_of_node(n).map(str::to_owned),
                 reason: greyed.then(|| a.reason_text.clone().unwrap_or_default()),
                 availability: Some(node_availability(a)),
                 value: greyed.then(|| a.reason_line()),
                 submenu: n.kind != MenuNodeKind::Item,
                 open: child_open == Some(n.id.as_str()),
+                toggle,
                 checked: n.selected,
                 shown: true,
                 remedy: false,
@@ -2002,7 +2129,7 @@ impl GuiFrame {
             if a.state == AvailabilityState::InapplicableHere
                 && let Some(r) = &a.remedy_command_id
             {
-                let label = self.menu.bar.find(r).map_or_else(|| r.clone(), |m| m.label.clone());
+                let label = self.node_by_id(r).map_or_else(|| r.clone(), |m| m.label.clone());
                 let rid = menu_tree::remedy_author_id(&n.id);
                 out.push(chrome::PopupRow {
                     hot: hot == Some(rid.as_str()),
@@ -2014,6 +2141,7 @@ impl GuiFrame {
                     value: Some(format!("remedy {r}")),
                     submenu: false,
                     open: false,
+                    toggle: false,
                     checked: false,
                     shown: true,
                     remedy: true,
@@ -2059,8 +2187,9 @@ impl GuiFrame {
     }
 
     /// Lays the open popups out: width from the measured rows (220 to 480), height from the rows that fit under the
-    /// menu bar (the rest scroll: in the tree with no box), cascades at the parent's right edge level with their row,
-    /// the whole set moved left into the window.
+    /// menu bar; when they do not all fit, a scroll lane with arrows above and below (components.json
+    /// `menu_popup.pointer`) and the rows outside it kept in the tree with no box; cascades at the parent's right edge
+    /// level with their row; the whole set moved left into the window.
     fn measure_popups(&mut self) -> chrome::PopupFacts {
         use kumihimo_ui::widgets::popup;
         let win = self.layout.window;
@@ -2093,7 +2222,10 @@ impl GuiFrame {
                 Some(prev) => (prev.rect.x1, prev.rows.iter().find(|r| r.open && r.shown).map_or(prev.rect.y0, |r| r.y - popup::PAD_Y)),
             };
             let hs: Vec<f32> = rows.iter().map(|r| kumihimo_ui::widgets::menu_row_h(r.reason.is_some())).collect();
+            let full: f32 = hs.iter().sum();
             let room = (win.y1 - top - 4.0).max(2.0 * popup::PAD_Y + size::MENU_ITEM_H);
+            let lane = full + 2.0 * popup::PAD_Y > room && self.menu.tips_off;
+            let room = if lane { room - 2.0 * popup::SCROLL_LANE } else { room };
             let end_from = |first: usize| {
                 let mut used = 2.0 * popup::PAD_Y;
                 let mut end = first;
@@ -2115,9 +2247,10 @@ impl GuiFrame {
                 *f = first;
             }
             let body: f32 = if rows.is_empty() { kumihimo_ui::widgets::menu_row_h(true) } else { hs[first..end].iter().sum() };
-            let h = 2.0 * popup::PAD_Y + body;
+            let lanes = if lane { 2.0 * popup::SCROLL_LANE } else { 0.0 };
+            let h = 2.0 * popup::PAD_Y + body + lanes;
             let y0 = if y0 + h > win.y1 { (win.y1 - h).max(top.min(y0)) } else { y0 };
-            let mut y = y0 + popup::PAD_Y;
+            let mut y = y0 + popup::PAD_Y + if lane { popup::SCROLL_LANE } else { 0.0 };
             for (i, r) in rows.iter_mut().enumerate() {
                 r.shown = i >= first && i < end;
                 if r.shown {
@@ -2125,7 +2258,8 @@ impl GuiFrame {
                     y += hs[i];
                 }
             }
-            levels.push(chrome::PopupLevel { id, label, rect: Rect::xywh(x0, y0, w, h), rows, empty });
+            let scroll = lane.then_some((first > 0, end < rows.len()));
+            levels.push(chrome::PopupLevel { id, label, rect: Rect::xywh(x0, y0, w, h), rows, empty, scroll });
         }
         let mut rect = levels.first().map_or_else(Rect::default, |l| l.rect);
         for l in &levels {
@@ -2141,21 +2275,47 @@ impl GuiFrame {
         chrome::PopupFacts { rect, levels }
     }
 
-    /// The wheel over a popup: the deepest level scrolls by `rows`.
-    fn scroll_menu(&mut self, rows: i64) {
-        let Some(k) = self.menu.open.len().checked_sub(1) else { return };
+    /// Open level `k` scrolls by `rows` (a scroll lane button or the wheel).
+    fn scroll_level(&mut self, k: usize, rows: i64) {
         let n = self.level_rows(k).map_or(0, |(_, _, r, _)| r.len());
         if let Some(f) = self.menu.first.get_mut(k) {
             let next = i64::try_from(*f).unwrap_or(0).saturating_add(rows).clamp(0, i64::try_from(n.saturating_sub(1)).unwrap_or(0));
             *f = usize::try_from(next).unwrap_or(0);
         }
+        self.menu.hot = None;
         self.menu_changed();
     }
 
-    /// Keys while a menu is open: Down and Up move the highlight through every row of the deepest popup (greyed rows
-    /// too: their reason is read there), Enter or Space activates it, Escape closes the topmost popup.
+    /// The wheel over a popup: the deepest level scrolls by `rows`.
+    fn scroll_menu(&mut self, rows: i64) {
+        if let Some(k) = self.menu.open.len().checked_sub(1) {
+            self.scroll_level(k, rows);
+        }
+    }
+
+    /// The row ids of the deepest open level (scroll buttons excluded).
+    fn deepest_rows(&self) -> Vec<(String, String)> {
+        let Some(k) = self.menu.open.len().checked_sub(1) else { return Vec::new() };
+        self.level_rows(k).map(|(_, _, r, _)| r.into_iter().map(|r| (r.id, r.label)).collect()).unwrap_or_default()
+    }
+
+    /// Keys while a menu is open (components.json menu_popup and menu_bar keyboard): Down and Up move the highlight
+    /// through every row of the deepest popup (greyed rows too: their reason is read there); Right opens the
+    /// highlighted submenu, or at the first level steps to the next title; Left closes the deepest cascade, or at the
+    /// first level steps to the previous title; Enter or Space activates the highlight; a letter jumps to the next row
+    /// starting with it; Escape closes the topmost popup.
     fn menu_key(&mut self, key: Key) -> Option<Outcome> {
         let k = self.menu.open.len().checked_sub(1)?;
+        if matches!(key, Key::Left | Key::Right | Key::Char(_)) {
+            return None;
+        }
+        let root_title = menu_tree::TITLES.contains(&self.menu.open[0].as_str());
+        let step_title = |me: &mut Self, back: bool| {
+            let at = menu_tree::TITLES.iter().position(|t| *t == me.menu.open[0]).unwrap_or(0);
+            let n = menu_tree::TITLES.len();
+            let next = if back { (at + n - 1) % n } else { (at + 1) % n };
+            Some(me.open_menu(vec![menu_tree::TITLES[next].to_owned()]))
+        };
         match key {
             Key::Escape => {
                 if k == 0 {
@@ -2169,20 +2329,56 @@ impl GuiFrame {
                 self.set_hot(hot);
                 None
             }
+            Key::Left => {
+                if k > 0 {
+                    return self.menu_key(Key::Escape);
+                }
+                if root_title { step_title(self, true) } else { None }
+            }
+            Key::Right => {
+                let hot = self.menu.hot.clone();
+                let sub = hot.as_deref().and_then(|h| self.menu_target(h)).and_then(|t| match t {
+                    MenuTarget::Node(id) if self.node_by_id(&id).is_some_and(|n| n.kind != MenuNodeKind::Item) => Some(MenuTarget::Node(id)),
+                    MenuTarget::MoreTitle(t) => Some(MenuTarget::MoreTitle(t)),
+                    _ => None,
+                });
+                match sub {
+                    Some(t) => {
+                        let out = self.menu_activate(t);
+                        // The cascade's first row takes the highlight.
+                        if let Some((first, _)) = self.deepest_rows().into_iter().next() {
+                            self.set_hot(first);
+                        }
+                        Some(out)
+                    }
+                    None if k == 0 && root_title => step_title(self, false),
+                    None => None,
+                }
+            }
             Key::Up | Key::Down => {
-                let rows: Vec<String> = self.level_rows(k).map(|(_, _, r, _)| r.into_iter().map(|r| r.id).collect()).unwrap_or_default();
+                let rows = self.deepest_rows();
                 let n = rows.len();
                 if n == 0 {
                     return None;
                 }
-                let at = self.menu.hot.as_ref().and_then(|h| rows.iter().position(|r| r == h));
+                let at = self.menu.hot.as_ref().and_then(|h| rows.iter().position(|(r, _)| r == h));
                 let next = match (at, key == Key::Down) {
                     (None, true) => 0,
                     (None, false) => n - 1,
                     (Some(i), true) => (i + 1) % n,
                     (Some(i), false) => (i + n - 1) % n,
                 };
-                self.set_hot(rows[next].clone());
+                self.set_hot(rows[next].0.clone());
+                None
+            }
+            Key::Char(c) => {
+                let rows = self.deepest_rows();
+                let n = rows.len();
+                let at = self.menu.hot.as_ref().and_then(|h| rows.iter().position(|(r, _)| r == h)).map_or(0, |i| i + 1);
+                let starts = |l: &str| l.trim_start_matches("-> ").chars().next().is_some_and(|f| f.to_ascii_lowercase() == c);
+                if let Some(i) = (0..n).map(|d| (at + d) % n).find(|&i| starts(&rows[i].1)) {
+                    self.set_hot(rows[i].0.clone());
+                }
                 None
             }
             _ => {
@@ -2193,9 +2389,69 @@ impl GuiFrame {
         }
     }
 
+    /// Keys while no popup is open: F10 puts the keyboard on the menu bar (FILE), Left and Right step titles there, Down,
+    /// Enter or Space open it, Escape leaves; Alt with a letter opens the next title starting with it (its mnemonic);
+    /// Shift+F10 or the Menu key opens the Layers context menu on the focused or selected row. None: not a menu key.
+    fn bar_key(&mut self, key: Key, mods: Mods) -> Option<Option<Outcome>> {
+        if !mods.ctrl || mods.shift || !mods.alt || key != Key::Tab {
+            return None;
+        }
+        let titles = &menu_tree::TITLES;
+        if key == Key::F10 && !mods.shift {
+            self.menu.bar_hot = if self.menu.bar_hot.is_some() { None } else { Some(titles[0].to_owned()) };
+            self.bump(&[MENU]);
+            return Some(None);
+        }
+        if (key == Key::F10 && mods.shift) || key == Key::ContextMenu {
+            let target = self.ui.focused.clone().filter(|f| f.starts_with(ROW_PREFIX)).or_else(|| self.selected.as_deref().map(row_id));
+            let Some(target) = target else { return Some(Some(self.frame_outcome("frame.menu", "menu_context_none", &[]))) };
+            return Some(Some(match self.context_at(&target, None) {
+                Ok(o) => o,
+                Err(code) => self.frame_outcome("frame.menu", code, &[]),
+            }));
+        }
+        if (mods.alt || (self.menu.bar_hot.is_some() && !mods.ctrl))
+            && let Key::Char(c) = key
+        {
+            let from = self.menu.bar_hot.as_deref().and_then(|h| titles.iter().position(|t| *t == h)).map_or(0, |i| i + 1);
+            let n = titles.len();
+            let hit = (0..n).map(|d| (from + d) % n).find(|&i| titles[i].starts_with(c.to_ascii_lowercase()))?;
+            self.menu.bar_hot = None;
+            return Some(Some(self.open_menu(vec![titles[hit].to_owned()])));
+        }
+        let hot = self.menu.bar_hot.clone()?;
+        let at = titles.iter().position(|t| *t == hot).unwrap_or(0);
+        let n = titles.len();
+        match key {
+            Key::Left | Key::Right => {
+                let next = if key == Key::Left { (at + n - 1) % n } else { (at + 1) % n };
+                self.menu.bar_hot = Some(titles[next].to_owned());
+                self.bump(&[MENU]);
+                Some(None)
+            }
+            Key::Down | Key::Enter | Key::Space => {
+                self.menu.bar_hot = None;
+                let out = self.open_menu(vec![hot]);
+                if let Some((first, _)) = self.deepest_rows().into_iter().next() {
+                    self.set_hot(first);
+                }
+                Some(Some(out))
+            }
+            Key::Escape => {
+                self.menu.bar_hot = None;
+                self.bump(&[MENU]);
+                Some(None)
+            }
+            _ => None,
+        }
+    }
+
     /// Hover while a menu is open: another title switches menus, a submenu row opens its cascade at once (no delay,
-    /// components.json `menu_popup.pointer`), an item row closes deeper cascades; the hovered row is highlighted.
+    /// components.json `menu_popup.pointer`), an item row closes deeper cascades, except while the pointer moves inside
+    /// the safe triangle toward the open cascade; the hovered row is highlighted.
     fn menu_hover(&mut self) {
+        let prev = self.menu.prev_pointer;
+        self.menu.prev_pointer = self.pointer;
         if self.menu.open.is_empty() {
             return;
         }
@@ -2203,6 +2459,17 @@ impl GuiFrame {
         let in_popup = self.panels[POPUP].tree().find(&h).is_some();
         let in_bar = self.panels[MENU].tree().find(&h).is_some();
         if !in_popup && !in_bar {
+            return;
+        }
+        if in_popup
+            && let (Some(a), Some(p), Some((_, f))) = (prev, self.pointer, &self.menu.popup)
+            && let Some(k) = f.levels.iter().position(|l| l.rows.iter().any(|r| r.id == h))
+            && let Some(next) = f.levels.get(k.saturating_add(1))
+            && !f.levels[k].rows.iter().any(|r| r.id == h && r.open)
+            && in_triangle(p, a, Point::new(next.rect.x0, next.rect.y0), Point::new(next.rect.x0, next.rect.y1))
+            && self.menu.tips_off
+        {
+            // Moving toward the open cascade: it stays.
             return;
         }
         match self.menu_target(&h) {
@@ -2218,7 +2485,7 @@ impl GuiFrame {
                 self.set_open(vec![MORE_MENU.to_owned(), t]);
             }
             Some(MenuTarget::Node(id)) if in_popup => {
-                let sub = self.menu.bar.find(&id).is_some_and(|n| n.kind != MenuNodeKind::Item);
+                let sub = self.node_by_id(&id).is_some_and(|n| n.kind != MenuNodeKind::Item);
                 self.set_hot(h);
                 if sub {
                     let path = self.cascade_path(&id);
@@ -2240,6 +2507,9 @@ impl GuiFrame {
         let n = |v: u64| Json::Num(v);
         let st = self.menu.stats;
         let (nodes, available, greyed, inapplicable) = menu_tree::counts(&self.menu.bar);
+        let last_run = self.menu.last_run.as_ref().map_or(Json::Null, |(command, params)| {
+            Json::obj(vec![("command", Json::str(command.as_str())), ("params", Json::obj(params.iter().map(|(k, v)| (k.as_str(), Json::str(v.as_str()))).collect()))])
+        });
         Json::obj(vec![
             ("open", Json::strs(&self.menu.open)),
             ("opens", n(st.opens)),
@@ -2248,14 +2518,15 @@ impl GuiFrame {
             ("remedies", n(st.remedies)),
             ("refused", n(st.refused)),
             ("evaluations", n(st.evaluations)),
-            ("profile_growth", n(st.profile_growth)),
+            ("profile_changes", n(st.profile_changes)),
             ("tips", n(st.tips)),
             ("nodes", n(nodes as u64)),
             ("available", n(available as u64)),
             ("greyed", n(greyed as u64)),
             ("inapplicable", n(inapplicable as u64)),
-            ("profile_signature", Json::strs(&self.menu.profile.signature())),
-            ("named_shape", self.menu.profile.named_shape().map_or(Json::Null, Json::str)),
+            ("profile_signature", Json::strs(&self.menu.state.profile.signature())),
+            ("named_shape", self.menu.state.profile.named_shape().map_or(Json::Null, Json::str)),
+            ("last_run", last_run),
         ])
     }
 
@@ -2264,8 +2535,7 @@ impl GuiFrame {
     /// Advances the host's clock by `ms` (a window frame clock; no script step calls it, so an agent-driven session
     /// never sees a dwell tip, STU-SHL-235 rule 5): L0 after 400 ms on the hovered control, L1 after 900 ms or at once
     /// when a tip was showing on the control the pointer came from; none while a button is held, for 500 ms after a
-    /// release, on the control just operated, with tips off, or above the level cap. The tip stays while the pointer is
-    /// on it (its remedy button is reachable).
+    /// release, on the control just operated, with tips off, or above the level cap.
     pub fn advance(&mut self, ms: u64) {
         self.menu.clock_ms = self.menu.clock_ms.saturating_add(ms);
         let hovered = self.ui.hovered.clone();
@@ -2290,7 +2560,7 @@ impl GuiFrame {
         };
         let level = self.menu.tip_cap.map_or(level, |c| level.min(c));
         let want = TipOn { target, level, explicit: false };
-        if self.menu.tip.as_ref() == Some(&want) || self.tip_record(&want.target, level).is_none() {
+        if self.menu.tip.as_ref() == Some(&want) || self.tip_record(&want.target, level).is_none() || self.tip_place(&want.target, level).is_none() {
             return;
         }
         self.menu.tip = Some(want);
@@ -2298,28 +2568,41 @@ impl GuiFrame {
         self.bump(&[TIP]);
     }
 
-    /// The dwell starts again when the hovered control changes (a pointer move): a tip showing on the control left
-    /// warms the next one (L1 at once), the operated mark clears, a dwell tip hides. The tip itself keeps its control.
+    /// The dwell starts again when the hovered control changes: a tip showing on the control left warms the next one
+    /// (L1 at once), the operated mark clears, and any tip not on the pointer's control or on the tip itself is
+    /// dismissed (STU-SHL-235: a tip never stays over a moved pointer).
     fn dwell_reset(&mut self) {
         let hovered = self.ui.hovered.clone();
-        if hovered == self.menu.dwell_target || hovered.as_deref().is_some_and(|h| self.panels[TIP].tree().find(h).is_some()) {
+        let on_tip = hovered.as_deref().is_some_and(|h| self.panels[TIP].tree().find(h).is_some())
+            || self.pointer.is_some_and(|p| self.menu.tip_facts.as_ref().is_some_and(|(_, t)| t.rect.contains(p)) && self.menu.tip.is_some());
+        if on_tip {
             return;
         }
-        self.menu.warm = self.menu.tip.as_ref().is_some_and(|t| !t.explicit);
+        if self.menu.tip.as_ref().is_some_and(|t| hovered.as_deref() != Some(t.target.as_str())) {
+            self.hide_tip();
+            self.menu.warm = true;
+        }
+        if hovered == self.menu.dwell_target {
+            return;
+        }
+        if self.menu.tip.is_none() && self.menu.dwell_target.is_some() {
+            self.menu.warm = false;
+        }
         self.menu.dwell_target = hovered.clone();
         self.menu.dwell_ms = 0;
         if self.menu.operated.is_some() && self.menu.operated != hovered {
             self.menu.operated = None;
         }
-        self.hide_dwell_tip();
     }
 
-    /// The accessibility request for a tooltip (AC-REACH-05: "open L1 through the accessibility action"): shows the
-    /// L0 (`level` 0) or L1 tip of `author_id` until hidden, also in an agent-driven session (it was asked for).
-    /// `Err("unknown_author_id")` for an id with no labelled node.
+    /// The accessibility request for a tooltip (AC-REACH-05: "open L1 through the accessibility action"): shows the L0
+    /// (`level` 0) or L1 tip of `author_id` until the next action, a pointer move off its control, or Escape.
+    /// `Err("unknown_author_id")` for an id with no labelled node, `Err("tip_no_room")` when no place keeps it off its
+    /// control (STU-SHL-235 rule 3).
     pub fn show_tip(&mut self, author_id: &str, level: u8) -> Result<TipRecord, &'static str> {
         let level = level.min(1);
         let r = self.tip_record(author_id, level).ok_or("unknown_author_id")?;
+        self.tip_place(author_id, level).ok_or("tip_no_room")?;
         self.menu.tip = Some(TipOn { target: author_id.to_owned(), level, explicit: true });
         self.menu.stats.tips = self.menu.stats.tips.saturating_add(1);
         self.bump(&[TIP]);
@@ -2337,36 +2620,33 @@ impl GuiFrame {
         }
     }
 
-    fn hide_dwell_tip(&mut self) {
-        if self.menu.tip.as_ref().is_some_and(|t| !t.explicit) {
-            self.hide_tip();
-        }
-    }
-
     /// The global tips-off preference and a per-level cap (STU-SHL-235 rule 4): `cap` Some(0) shows L0 only.
     pub fn set_tips(&mut self, off: bool, cap: Option<u8>) {
         self.menu.tips_off = off;
         self.menu.tip_cap = cap;
-        if off {
-            self.hide_dwell_tip();
+        if off && self.menu.tip.as_ref().is_some_and(|t| !t.explicit) {
+            self.hide_tip();
         }
     }
 
-    /// The tip of `target` at `level` from the element's own record: a menu node's label, its chord resolved now, its
-    /// help sentence, its reason and remedy; any other control's label (and, for an unbuilt one, that it is not built).
+    /// The tip of `target` at `level` from the element's own record: a menu node's label, its chord resolved now, the
+    /// summary of the command it runs from the UiDescriptor set (null: no sentence), its reason and remedy; any other
+    /// control's label (and, for an unbuilt one, that it is not built).
     fn tip_record(&self, target: &str, level: u8) -> Option<TipRecord> {
         let node = self.node(target)?;
         let name = node.label.clone().filter(|l| !l.trim().is_empty())?;
         let mut r = TipRecord { target: target.to_owned(), level, name, chord: None, summary: None, reason: None, remedy: None, remedy_label: None, value: node.value.clone() };
-        if let Some(n) = self.menu.authors.get(target).and_then(|id| self.menu.bar.find(id)) {
+        if let Some(n) = self.menu.authors.get(target).and_then(|id| self.node_by_id(id)) {
             let a = &n.availability;
-            r.chord = menu_tree::binding(&n.id).and_then(|b| preset::chord_of(b.op.command_id())).map(str::to_owned);
+            r.chord = chord_of_node(n).map(str::to_owned);
             r.value = (!a.is_available()).then(|| a.reason_line());
             if level > 0 {
-                r.summary = (!n.help.is_empty()).then(|| n.help.clone());
+                let primary = n.alias_of.as_deref().unwrap_or(&n.id);
+                let command = menu_tree::leaf(primary).map_or(primary, |l| l.command);
+                r.summary = self.menu.summaries.get(command).cloned().filter(|_| self.menu.tips_off);
                 r.reason = (!a.is_available()).then(|| a.reason_text.clone().unwrap_or_default());
                 r.remedy = a.remedy_command_id.clone();
-                r.remedy_label = r.remedy.as_deref().and_then(|x| self.menu.bar.find(x)).map(|x| x.label.clone());
+                r.remedy_label = r.remedy.as_deref().and_then(|x| self.node_by_id(x)).map(|x| x.label.clone());
             }
         } else if level > 0 && node.value.as_deref().is_some_and(|v| v.starts_with(chrome::NIY)) {
             r.reason = Some(chrome::NOT_BUILT.to_owned());
@@ -2374,21 +2654,11 @@ impl GuiFrame {
         Some(r)
     }
 
-    /// The shown tip laid out: L0 one line 24 high, L1 one line per part (at most 320 wide), below its control by 8,
-    /// above it when there is no room below (never over its control, STU-SHL-235 rule 3), inside the window.
-    fn tip_now(&mut self) -> Option<chrome::TipFacts> {
+    /// The tip's size for `rec`: L0 one line 24 high, L1 one line per part, at most 320 wide.
+    fn tip_size(&mut self, rec: &TipRecord) -> (f32, f32, Option<String>) {
         use kumihimo_ui::widgets::popup;
-        let on = self.menu.tip.clone()?;
-        let rec = self.tip_record(&on.target, on.level)?;
-        let b = self.node(&on.target)?.bounds;
-        let key = format!("{rec:?}|{b:?}|{:?}|{}|{}", self.extent, self.scale.get(), self.text.epoch());
-        if let Some((k, f)) = &self.menu.tip_facts
-            && *k == key
-        {
-            return Some(f.clone());
-        }
-        let l1 = on.level > 0;
-        let remedy = rec.remedy.as_ref().map(|r| format!("-> {}", rec.remedy_label.clone().unwrap_or_else(|| r.clone())));
+        let l1 = rec.level > 0;
+        let remedy = rec.remedy.as_ref().filter(|_| l1).map(|r| format!("-> {}", rec.remedy_label.clone().unwrap_or_else(|| r.clone())));
         let t = &mut self.text;
         let (px, py) = if l1 { (popup::TIP_L1_PAD_X, popup::TIP_L1_PAD_Y) } else { (popup::TIP_PAD_X, 0.0) };
         let chord_w = rec.chord.as_deref().map_or(0.0, |c| kumihimo_ui::tokens::spacing::S4 + t.measure(c, TextToken::Caption, 0));
@@ -2399,25 +2669,61 @@ impl GuiFrame {
         }
         let w = (w + 2.0 * px).ceil().min(size::TOOLTIP_MAX_W);
         let h = if l1 { 2.0 * py + (1 + parts.len()) as f32 * TextToken::Body.style().line } else { popup::TIP_L0_H };
+        (w, h, remedy)
+    }
+
+    /// Where the tip of `target` goes (STU-SHL-235 rule 3: never over its control): a menu row's tip beside its popup
+    /// (right, else left), level with the row, so it covers no row of that popup; any other control's below it, else
+    /// above it. None when neither fits in the window.
+    fn tip_place(&mut self, target: &str, level: u8) -> Option<Rect> {
+        let rec = self.tip_record(target, level)?;
+        let b = self.node(target)?.bounds;
+        let (w, h, _) = self.tip_size(&rec);
         let win = self.layout.window;
-        let below = b.y1 + size::TOOLTIP_OFFSET;
-        let y0 = if below + h <= win.y1 { below } else { (b.y0 - size::TOOLTIP_OFFSET - h).max(win.y0) };
-        let x0 = b.x0.min(win.x1 - w).max(win.x0);
+        let off = size::TOOLTIP_OFFSET;
+        let fits = |r: Rect| r.x0 >= win.x0 && r.y0 >= win.y0 && r.x1 <= win.x1 && r.y1 <= win.y1;
+        let popup = self.menu.popup.as_ref().and_then(|(_, f)| f.levels.iter().find(|l| l.rows.iter().any(|r| r.id == target)).map(|l| l.rect));
+        let candidates: Vec<Rect> = match popup {
+            Some(p) => {
+                let y = b.y0.min(win.y1 - h).max(win.y0);
+                vec![Rect::xywh(p.x1 + off, y, w, h), Rect::xywh(p.x0 - off - w, y, w, h)]
+            }
+            None => {
+                let x = b.x0.min(win.x1 - w).max(win.x0);
+                vec![Rect::xywh(x, b.y1 + off, w, h), Rect::xywh(x, b.y0 - off - h, w, h)]
+            }
+        };
+        candidates.into_iter().find(|&r| fits(r) && r.intersect(&b).is_empty())
+    }
+
+    /// The shown tip laid out ([`GuiFrame::tip_place`]); None when it has no place.
+    fn tip_now(&mut self) -> Option<chrome::TipFacts> {
+        let on = self.menu.tip.clone()?;
+        let rec = self.tip_record(&on.target, on.level)?;
+        let b = self.node(&on.target)?.bounds;
+        let key = format!("{rec:?}|{b:?}|{:?}|{}|{}|{}", self.extent, self.scale.get(), self.text.epoch(), self.menu.rev);
+        if let Some((k, f)) = &self.menu.tip_facts
+            && *k == key
+        {
+            return Some(f.clone());
+        }
+        let rect = self.tip_place(&on.target, on.level)?;
+        let (_, _, remedy) = self.tip_size(&rec);
+        let l1 = on.level > 0;
         let f = chrome::TipFacts {
-            rect: Rect::xywh(x0, y0, w, h),
+            rect,
             level: on.level,
             name: rec.name,
             chord: rec.chord,
             summary: rec.summary.filter(|_| l1),
             reason: rec.reason.filter(|_| l1),
-            remedy: remedy.filter(|_| l1),
+            remedy,
             value: rec.value,
         };
         self.menu.tip_facts = Some((key, f.clone()));
         Some(f)
     }
 }
-
 
 /// The dock groups the frame knows: the three Inspect Dock groups, then the Browse Dock's one group (FIT-L1).
 const GROUPS: usize = 4;

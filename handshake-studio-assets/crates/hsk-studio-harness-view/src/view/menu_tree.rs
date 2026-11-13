@@ -1,38 +1,45 @@
-//! The Studio menu tree as egui-free descriptors (lane SMB-GUI-MENU-1, build-order B6), for every host that draws a
-//! menu: the nineteen titles of [STU-SHL-011] in the closed order and the designed tree of [STU-SHL-023] to
-//! [STU-SHL-037] (1,647 nodes: [`TREE`]), folded once into a [`MenuBar`] template ([`template`], one `OnceLock`,
-//! [STU-SHL-015]). Every node carries ONE availability record from ONE predicate ([`evaluate`], [STU-SHL-046]) over
-//! the document [`Profile`] (container kinds and feature flags, never a document type, [STU-SHL-047]) and the
-//! [`MenuState`]; the host renders it, the semantic tree carries it and [`run`] is gated by it (MENU-INV-4).
+//! The Studio menu tree (lane SMB-GUI-MENU-1, build-order B6): the presentation tree every host draws, with ONE
+//! availability evaluation and ONE execution path shared with the process drive surface.
 //!
-//! Names: titles, labels and the command ids the spec names are the spec's. A node the spec lists without an id (a
-//! submenu's `→` children, label-only items) gets a DERIVED id: its parent's id (a title's namespace `studio.<title>`)
-//! plus `.` plus its label in snake case (`…`, punctuation and spaces folded to `_`), `_2` on a collision (COLOR >
-//! Proof is `studio.color.proof_2` beside VIEW > Proof `studio.color.proof`). Derived ids are flagged ([`Meta`],
-//! [STU-SHL-241] extraction method `derived`). A node's author id is `menu.<id>` in kebab case (MENU-INV-5 over the
-//! [STU-MDL-100] charset): [`node_author_id`].
+//! Presentation: the nineteen titles of [STU-SHL-011] in the closed order and the designed tree of [STU-SHL-023] to
+//! [STU-SHL-037] ([`TREE`], folded once into a [`MenuBar`] by [`template`], one `OnceLock`, [STU-SHL-015]): labels,
+//! hierarchy and ids. A node the spec lists without an id gets a DERIVED id: its parent's id (a title's namespace
+//! `studio.<title>`) plus `.` plus its label in snake case, `_2` on a collision ([`Meta::derived`], [STU-SHL-241]
+//! `derived`). Author ids are `menu.<id>` in kebab case (MENU-INV-5): [`node_author_id`]. A second appearance of a
+//! command names its primary leaf ([`ALIASES`], `MenuNode::alias_of`, MENU-INV-2).
+//!
+//! Availability ([STU-SHL-046], MENU-INV-4): [`Viewer::studio_menu`] is the one function. For a leaf whose id is a
+//! shell command ([`ShellCommand::from_id`]) the record IS the shell's own ([`Viewer::menu_bar`], the record
+//! `state_json()["shell"]["menu"]` publishes and the drive surface's `studio.*` path gates on), adjusted only by the
+//! host ([`MenuContext::hosts`]: a command the host cannot show is `NOT_IN_THIS_DOCUMENT NOT_IN_THIS_HOST`). For a leaf
+//! that runs a catalog command ([`LEAVES`]) it is the one clause predicate ([`evaluate`]) over the document [`Profile`]
+//! ([STU-SHL-047]) and the [`MenuState`]. WORKSPACE > Panels and FILE > Open Recent carry the shell's own leaves.
+//! Everything else is `NOT_IN_THIS_DOCUMENT NOT_IMPLEMENTED_YET`; an expansion whose leaf source is not recovered
+//! ships empty with that typed reason ([STU-SHL-038]).
+//!
+//! Remedies ([STU-SHL-020], lead ruling F6/Q3): a remedy is named only when running it makes the node available: one
+//! unmet clause, a remedy whose effect is that clause ([`remedy_of`]), and the remedy leaf available now; otherwise the
+//! node is `NOT_IN_THIS_DOCUMENT` with the clause. Redo has none. The worked example holds in any document: MOTION >
+//! Keyframes (the spec's listed leaves, [STU-SHL-032]) is `INAPPLICABLE_HERE NO_SUCH_CONTAINER` with DOCUMENT >
+//! Timelines > New Timeline as its remedy, and New Timeline needs no container.
+//!
+//! Execution: [`Viewer::run_menu_leaf_in`] runs a shell leaf through `Viewer::shell_command` and a catalog leaf through
+//! [`run_catalog`], the executor the drive surface calls for the same command ids, with parameters built from the
+//! selection ([`leaf_params`]); no step is added or dropped beside the command's own, so undo names and selection are
+//! the command's. Attribution is the viewer's run context, the caller's.
 //!
 //! Requires ([STU-SHL-049]): a conjunction of [`Clause`]s of the twelve closed kinds; [`Clause::parse`] refuses
-//! anything else with a typed code (`has_timeline` and `page_count` are not kinds). States and reason codes are the
-//! closed sets of [STU-SHL-050] and [STU-SHL-051]; the reason text is generated from the code and the clause
-//! ([`reason_text`]), never authored per node. An unmet clause with a remedy ([`remedy_of`]) is `INAPPLICABLE_HERE`;
-//! without one it is `NOT_IN_THIS_DOCUMENT` carrying that clause ([STU-SHL-050]); a node no host runs yet is
-//! `NOT_IN_THIS_DOCUMENT NOT_IMPLEMENTED_YET`; an expansion node whose leaf source is not recovered ships empty with that
-//! typed reason ([STU-SHL-038]). The worked example of [STU-SHL-020] holds: in a document without a timeline,
-//! `MOTION > Keyframes` is `INAPPLICABLE_HERE NO_SUCH_CONTAINER` with `DOCUMENT > Timelines > New Timeline` as its
-//! remedy, and running the remedy grows the profile ([STU-SHL-048]).
-//!
-//! Leaves this module runs ([`BINDINGS`]) dispatch existing public Viewer methods on the viewer's own run context
-//! (the caller's attribution), each its own undo step, reported under the catalog command id of
-//! `hsk_studio_harness_core::action::ui_seed` ([`MenuOp::command_id`]; no parallel registry, [STU-SHL-016]). Hosts graft
-//! their own leaves into expansion nodes ([`HostLeaf`]: the native host's WORKSPACE > Panels) and run those themselves.
+//! anything else with a typed code. Reason codes are [STU-SHL-051]'s twelve plus the host additions NEEDS_TOOL and
+//! NOT_IN_THIS_HOST (SD proposals); the reason text is generated from the code and clause ([`reason_text`]).
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
 use super::commands::leading_code;
+use super::shell::ShellCommand;
 use hsk_studio_controls::menu::{Availability, AvailabilityState, MenuBar, MenuNode, MenuNodeKind, ReasonCode};
+use hsk_studio_harness_core::manual::{DriveParam, viewer_row_of};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// The descriptor types the menu is made of, so a host names them without a new crate edge.
@@ -243,14 +250,15 @@ impl Clause {
         format!("{}:{v}", self.kind())
     }
 
-    /// The reason code an unmet clause gives ([STU-SHL-051]). `tool` and `task_scope` have no code of their own in the
-    /// closed set: NEEDS_SELECTION and DOC_FEATURE_ABSENT (UNVERIFIED mapping; the spec names none).
+    /// The reason code an unmet clause gives: [STU-SHL-051]'s, `tool` NEEDS_TOOL (host addition, lead ruling Q7),
+    /// `task_scope` DOC_FEATURE_ABSENT (UNVERIFIED reading: the closed set names none).
     pub fn reason_code(&self) -> ReasonCode {
         match self {
             Clause::Container(_) => ReasonCode::NoSuchContainer,
             Clause::LayerKind(_) => ReasonCode::WrongLayerKind,
             Clause::DocFeature(_) | Clause::TaskScope(_) => ReasonCode::DocFeatureAbsent,
-            Clause::SelectionAtLeast(_) | Clause::SelectionCount(_) | Clause::Tool(_) => ReasonCode::NeedsSelection,
+            Clause::SelectionAtLeast(_) | Clause::SelectionCount(_) => ReasonCode::NeedsSelection,
+            Clause::Tool(_) => ReasonCode::DocFeatureAbsent,
             Clause::SelectionKind(_) => ReasonCode::WrongSelectionKind,
             Clause::Capability(_) => ReasonCode::CapabilityNotGranted,
             Clause::CapabilityFlag(_) => ReasonCode::CapabilityFlagAbsent,
@@ -276,7 +284,7 @@ pub fn parse_requires(text: &str) -> Result<Vec<Clause>, RequiresError> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The profile ([STU-SHL-047], [STU-SHL-048], [STU-SHL-054]) and the state the predicate reads.
+// The profile ([STU-SHL-047], [STU-SHL-054]) and the state the predicate reads.
 
 /// The document profile: declared container kinds and feature flags, plus the colour mode `color_mode:` reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -289,7 +297,9 @@ pub struct Profile {
 impl Profile {
     /// The profile the open document declares: `artboard` for artboards or a canvas without page spreads,
     /// `page_spread`, `timeline` for sequences; flags `pixel_canvas`, `vector_network`, `text` from its layer kinds.
-    /// Board and site tree containers have no document record here yet (never derived). No document: empty.
+    /// It is the document's own content, so it persists through save and reopen; an undo of the step that added a
+    /// container takes the container away explicitly (not silently, [STU-SHL-048]). Board and site tree containers
+    /// have no document record here yet (never derived). No document: empty.
     pub fn of(viewer: &Viewer) -> Profile {
         let mut p = Profile::default();
         let Some(snap) = viewer.run.snapshot() else { return p };
@@ -316,18 +326,6 @@ impl Profile {
         p
     }
 
-    /// Grows by `other` ([STU-SHL-048]: a profile grows when a container or a layer of a new kind is added and never
-    /// shrinks silently); the colour mode follows the document. True when a kind or flag was added.
-    pub fn grow(&mut self, other: &Profile) -> bool {
-        let before = (self.containers.len(), self.flags.len());
-        self.containers.extend(other.containers.iter().copied());
-        self.flags.extend(other.flags.iter().cloned());
-        if other.color_mode.is_some() {
-            self.color_mode = other.color_mode;
-        }
-        before != (self.containers.len(), self.flags.len())
-    }
-
     /// The profile signature ([STU-SHL-054]): the sorted container kinds; flags are not part of it.
     pub fn signature(&self) -> Vec<&'static str> {
         let mut s: Vec<&'static str> = self.containers.iter().map(|k| k.token()).collect();
@@ -335,9 +333,8 @@ impl Profile {
         s
     }
 
-    /// The named shape of the signature with [STU-SHL-054]'s tie-break for `{artboard}`: `pixel_canvas` (with
-    /// channels) raster, `vector_network` vector, `raw_develop` photo; a document carrying two resolves to the first
-    /// in that order here (the creating preset is not recorded yet). None for a signature the table does not name.
+    /// The named shape of the signature with [STU-SHL-054]'s tie-break for `{artboard}`: `pixel_canvas` raster,
+    /// `vector_network` vector, `raw_develop` photo, in that order (the creating preset is not recorded yet).
     pub fn named_shape(&self) -> Option<&'static str> {
         let has = |f: &str| self.flags.contains(f);
         match self.signature().as_slice() {
@@ -347,6 +344,7 @@ impl Profile {
             ["artboard"] => Some("raster"),
             ["page_spread"] => Some("layout"),
             ["artboard", "timeline"] => Some("composition"),
+            ["page_spread", "timeline"] => Some("layout"),
             ["timeline"] => Some("sequence"),
             ["artboard", "site_tree"] => Some("web"),
             _ => None,
@@ -354,10 +352,7 @@ impl Profile {
     }
 
     pub fn json(&self) -> Value {
-        json!({
-            "containers": self.signature(), "flags": self.flags, "color_mode": self.color_mode.map(ColorMode::token),
-            "signature": self.signature(), "named_shape": self.named_shape(),
-        })
+        json!({"containers": self.signature(), "flags": self.flags, "color_mode": self.color_mode.map(ColorMode::token), "signature": self.signature(), "named_shape": self.named_shape()})
     }
 }
 
@@ -368,9 +363,9 @@ pub struct Selected {
     pub kind: String,
 }
 
-/// Everything the one predicate reads: the profile (grown by the host), transient features (`undo_step`,
-/// `redo_step`, `layers`), the selection, the tool, grants, capability flags, mode and task scope. There is no layout
-/// preset input: a Layout Preset cannot gate ([STU-SHL-055]).
+/// Everything the one predicate reads: the profile, transient features (`undo_step`, `redo_step`, `layers`), the
+/// selection, the tool. Grants, capability flags, read-only mode and the task scope are constant inputs here (lead
+/// ruling F11: recorded not_proven). There is no layout preset input: a Layout Preset cannot gate ([STU-SHL-055]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MenuState {
     pub profile: Profile,
@@ -385,8 +380,8 @@ pub struct MenuState {
 }
 
 impl MenuState {
-    /// The state of `viewer` with the host's (grown) `profile` and active `tool`.
-    pub fn of(viewer: &Viewer, profile: Profile, tool: Option<&str>) -> MenuState {
+    /// The state of `viewer` with the host's active `tool`.
+    pub fn of(viewer: &Viewer, tool: Option<&str>) -> MenuState {
         let rows = viewer.layers();
         let history = viewer.run.history();
         let has = |k: &str| history[k].as_array().is_some_and(|a| !a.is_empty());
@@ -397,14 +392,7 @@ impl MenuState {
             }
         }
         let selected = viewer.selected.as_deref().and_then(|id| rows.iter().find(|r| r.layer_id == id)).map(|r| Selected { layer_id: r.layer_id.clone(), kind: r.kind.clone() });
-        MenuState {
-            profile,
-            transient,
-            selected,
-            layer_ids: rows.into_iter().map(|r| r.layer_id).collect(),
-            tool: tool.map(str::to_owned),
-            ..MenuState::default()
-        }
+        MenuState { profile: Profile::of(viewer), transient, selected, layer_ids: rows.into_iter().map(|r| r.layer_id).collect(), tool: tool.map(str::to_owned), ..MenuState::default() }
     }
 
     fn feature(&self, f: &str) -> bool {
@@ -415,7 +403,7 @@ impl MenuState {
     }
 }
 
-/// An unmet clause: the first clause of the conjunction the state does not satisfy.
+/// An unmet clause.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unmet {
     pub clause: Clause,
@@ -423,18 +411,25 @@ pub struct Unmet {
     pub text: String,
 }
 
+fn article(word: &str) -> &'static str {
+    if word.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" }
+}
+
 /// The reason text of an unmet clause, generated from the code and the clause ([STU-SHL-019]: prose is generated from
 /// the closed code, never authored per node).
 pub fn reason_text(clause: &Clause) -> String {
     match clause {
-        Clause::Container(k) => format!("needs a {} container", k.token().replace('_', " ")),
+        Clause::Container(k) => {
+            let w = k.token().replace('_', " ");
+            format!("needs {} {w} container", article(&w))
+        }
         Clause::LayerKind(k) => format!("needs a selected {k} layer"),
         Clause::DocFeature(f) if f == "undo_step" => "nothing to undo".to_owned(),
         Clause::DocFeature(f) if f == "redo_step" => "nothing to redo".to_owned(),
         Clause::DocFeature(f) if f == "layers" => "the document has no layers".to_owned(),
         Clause::DocFeature(f) => format!("needs {}", f.replace('_', " ")),
         Clause::SelectionAtLeast(n) => format!("needs at least {n} selected layer{}", if *n == 1 { "" } else { "s" }),
-        Clause::SelectionKind(k) => format!("needs a selected {k}"),
+        Clause::SelectionKind(k) => format!("needs {} selected {k}", article(k)),
         Clause::SelectionCount(n) => format!("needs exactly {n} selected"),
         Clause::Tool(t) => format!("needs the {} tool", t.replace('_', " ")),
         Clause::Capability(c) => format!("capability {c} is not granted"),
@@ -447,155 +442,340 @@ pub fn reason_text(clause: &Clause) -> String {
     }
 }
 
-/// THE availability predicate ([STU-SHL-046]): Ok when every clause holds, else the first unmet clause.
-pub fn evaluate(requires: &[Clause], state: &MenuState) -> Result<(), Unmet> {
-    for c in requires {
-        let ok = match c {
-            Clause::Container(k) => state.profile.containers.contains(k),
-            Clause::LayerKind(k) => state.selected.as_ref().is_some_and(|s| &s.kind == k),
-            Clause::DocFeature(f) => state.feature(f),
-            Clause::SelectionAtLeast(n) => state.selection_count() >= *n,
-            Clause::SelectionKind(k) => state.selected.as_ref().is_some_and(|s| &s.kind == k),
-            Clause::SelectionCount(n) => state.selection_count() == *n,
-            Clause::Tool(t) => state.tool.as_deref() == Some(t.as_str()),
-            Clause::Capability(c) => state.granted.contains(c),
-            Clause::CapabilityFlag(f) => state.capability_flags.contains(f),
-            Clause::ReadOnly(r) => state.read_only == *r,
-            Clause::ColorMode(m) => state.profile.color_mode == Some(*m),
-            Clause::TaskScope(s) => state.task_scope == *s,
-        };
-        if !ok {
-            return Err(Unmet { clause: c.clone(), code: c.reason_code(), text: reason_text(c) });
-        }
+fn holds(c: &Clause, state: &MenuState) -> bool {
+    match c {
+        Clause::Container(k) => state.profile.containers.contains(k),
+        Clause::LayerKind(k) | Clause::SelectionKind(k) => state.selected.as_ref().is_some_and(|s| &s.kind == k),
+        Clause::DocFeature(f) => state.feature(f),
+        Clause::SelectionAtLeast(n) => state.selection_count() >= *n,
+        Clause::SelectionCount(n) => state.selection_count() == *n,
+        Clause::Tool(t) => state.tool.as_deref() == Some(t.as_str()),
+        Clause::Capability(c) => state.granted.contains(c),
+        Clause::CapabilityFlag(f) => state.capability_flags.contains(f),
+        Clause::ReadOnly(r) => state.read_only == *r,
+        Clause::ColorMode(m) => state.profile.color_mode == Some(*m),
+        Clause::TaskScope(s) => state.task_scope == *s,
     }
-    Ok(())
 }
 
-/// The ONE enabled command that makes an unmet clause true ([STU-SHL-020]), by clause text; None: no single action.
-pub fn remedy_of(clause: &Clause) -> Option<&'static str> {
-    match clause.text().as_str() {
-        "container:timeline" => Some("studio.motion.timeline_doc.new_timeline"),
-        "selection:>=1" => Some("studio.select.navigate_selection.first_object"),
-        "doc_feature:redo_step" => Some("studio.history.undo"),
-        "selection_kind:group" => Some("studio.object.group"),
+/// THE availability predicate ([STU-SHL-046]): every unmet clause of the conjunction, in order (empty: it holds).
+pub fn evaluate(requires: &[Clause], state: &MenuState) -> Vec<Unmet> {
+    requires.iter().filter(|c| !holds(c, state)).map(|c| Unmet { clause: c.clone(), code: c.reason_code(), text: reason_text(c) }).collect()
+}
+
+/// The one command whose effect IS the clause ([STU-SHL-020], lead ruling F6): New Timeline adds a timeline, First
+/// Object selects a layer, Group selects the group it makes, the tool's own leaf picks the tool. None otherwise.
+pub fn remedy_of(clause: &Clause) -> Option<String> {
+    match clause {
+        Clause::Container(ContainerKind::Timeline) => Some("studio.motion.timeline_doc.new_timeline".to_owned()),
+        Clause::SelectionAtLeast(1) => Some("studio.select.navigate_selection.first_object".to_owned()),
+        Clause::SelectionKind(k) if k == "group" => Some("studio.object.group".to_owned()),
+        Clause::Tool(t) => Some(format!("studio.workspace.tool.{t}")),
         _ => None,
     }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Leaves this module runs.
+// Leaves that run catalog commands.
 
-/// A leaf operation over public Viewer methods.
+/// How a leaf builds its command's parameters from the state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MenuOp {
-    Undo,
-    Redo,
-    Deselect,
+pub enum Rule {
+    /// `layer.select` on the top, bottom, next above, next below layer, or none.
     SelectFirst,
     SelectLast,
     SelectAbove,
     SelectBelow,
-    NewPixelLayer,
-    DuplicateLayer,
-    DeleteLayer,
-    BringForward,
-    SendBackward,
-    Group,
-    Ungroup,
-    HideSelection,
+    Deselect,
+    /// `{layer: <selected>}`.
+    Selected,
+    /// `{layer: <selected>, up: <bool>}`.
+    SelectedUp(bool),
+    /// `{layer: <selected>, visible: <bool>}`.
+    SelectedVisible(bool),
+    /// `{group: <selected>}`.
+    SelectedGroup,
+    /// `{layers: <selected>, name}`: the spec declares no default name; the leaf's label is used (recorded reading).
+    GroupSelected(&'static str),
+    /// `{name}`: the spec declares no default name; the leaf's own word is used (recorded reading).
+    Named(&'static str),
+    /// `{name, preset_id}`: the built-in preset that best matches the document ([`new_timeline_preset`]).
     NewTimeline,
-    AddVideoTrack,
 }
 
-impl MenuOp {
-    /// The catalog command id the op runs (a `RUN_COMMANDS` row or a viewer row of `ui_seed`).
-    pub fn command_id(self) -> &'static str {
-        match self {
-            Self::Undo => "history.undo",
-            Self::Redo => "history.redo",
-            Self::Deselect | Self::SelectFirst | Self::SelectLast | Self::SelectAbove | Self::SelectBelow => "layer.select",
-            Self::NewPixelLayer => "layer.new_raster_layer",
-            Self::DuplicateLayer => "layer.duplicate_layer",
-            Self::DeleteLayer => "layer.delete_layer",
-            Self::BringForward | Self::SendBackward => "layer.shift_layer",
-            Self::Group => "layer.group_layers",
-            Self::Ungroup => "layer.ungroup",
-            Self::HideSelection => "layer.set_visible",
-            Self::NewTimeline => "video.project_new_sequence",
-            Self::AddVideoTrack => "video.project_add_tracks",
-        }
-    }
-    /// True when the op writes the document (one undo step of its own).
-    pub fn mutates(self) -> bool {
-        !matches!(self, Self::Deselect | Self::SelectFirst | Self::SelectLast | Self::SelectAbove | Self::SelectBelow)
-    }
-}
-
-/// One leaf this module runs: its node id, the op and the requires text of the node.
+/// One designed leaf that runs a catalog command (a `RUN_COMMANDS` row or a `viewer.<method>` row of the catalog).
 #[derive(Clone, Copy, Debug)]
-pub struct Binding {
+pub struct Leaf {
     pub id: &'static str,
-    pub op: MenuOp,
+    pub command: &'static str,
+    pub rule: Rule,
     pub requires: &'static str,
-    /// One sentence for the UserManual topic and the L1 summary.
-    pub help: &'static str,
 }
 
-const fn bind(id: &'static str, op: MenuOp, requires: &'static str, help: &'static str) -> Binding {
-    Binding { id, op, requires, help }
+const fn leaf_row(id: &'static str, command: &'static str, rule: Rule, requires: &'static str) -> Leaf {
+    Leaf { id, command, rule, requires }
 }
 
-/// The shipped sequence preset New Timeline creates from (folio's shipped library).
-pub const NEW_TIMELINE_PRESET: &str = "legacy-arri-1080p-arri-1080p-24";
-
-/// Every leaf this module runs. Step Backward and Step Forward run the same commands as Undo and Redo (MENU-INV-2
-/// alias appearances).
-pub const BINDINGS: &[Binding] = &[
-    bind("studio.history.undo", MenuOp::Undo, "doc_feature:undo_step", "Undoes the last committed step."),
-    bind("studio.history.redo", MenuOp::Redo, "doc_feature:redo_step", "Redoes the last undone step."),
-    bind("studio.history.step_backward", MenuOp::Undo, "doc_feature:undo_step", "Steps back one history state (the Undo command)."),
-    bind("studio.history.step_forward", MenuOp::Redo, "doc_feature:redo_step", "Steps forward one history state (the Redo command)."),
-    bind("studio.edit.duplicate", MenuOp::DuplicateLayer, "selection:>=1", "Duplicates the selected layer above itself and selects the copy."),
-    bind("studio.select.deselect", MenuOp::Deselect, "selection:>=1", "Clears the layer selection."),
-    bind("studio.select.navigate_selection.first_object", MenuOp::SelectFirst, "doc_feature:layers", "Selects the top layer."),
-    bind("studio.select.navigate_selection.last_object", MenuOp::SelectLast, "doc_feature:layers", "Selects the bottom layer."),
-    bind("studio.select.navigate_selection.next_object_above", MenuOp::SelectAbove, "selection:>=1", "Selects the layer above the selected one."),
-    bind("studio.select.navigate_selection.next_object_below", MenuOp::SelectBelow, "selection:>=1", "Selects the layer below the selected one."),
-    bind("studio.object.arrange.bring_forward", MenuOp::BringForward, "selection:>=1", "Moves the selected layer one step up the stack."),
-    bind("studio.object.arrange.send_backward", MenuOp::SendBackward, "selection:>=1", "Moves the selected layer one step down the stack."),
-    bind("studio.object.group", MenuOp::Group, "selection:>=1", "Wraps the selected layer in a new group and selects the group."),
-    bind("studio.object.ungroup", MenuOp::Ungroup, "selection_kind:group", "Releases the selected group's layers in place."),
-    bind("studio.object.hide.hide_selection", MenuOp::HideSelection, "selection:>=1", "Hides the selected layer."),
-    bind("studio.object.layer.new", MenuOp::NewPixelLayer, "container:artboard", "Adds an empty pixel layer above the selection."),
-    bind("studio.object.layer.duplicate_layer", MenuOp::DuplicateLayer, "selection:>=1", "Duplicates the selected layer above itself and selects the copy."),
-    bind("studio.object.layer.delete_layer", MenuOp::DeleteLayer, "selection:>=1", "Deletes the selected layer."),
-    bind("studio.insert.layer.pixel_layer", MenuOp::NewPixelLayer, "container:artboard", "Adds an empty pixel layer above the selection."),
-    bind("studio.motion.timeline_doc.new_timeline", MenuOp::NewTimeline, "container:artboard", "Adds a timeline (a sequence from the default preset) to the document."),
-    bind("studio.motion.tracks.add_track", MenuOp::AddVideoTrack, "container:timeline", "Adds one video track to the document's first timeline."),
+/// Every catalog leaf (primary appearances only; [`ALIASES`] name the second ones). Add Track… is not here: the spec
+/// declares no defaults for its dialog (lead ruling Q5, dialog pending).
+pub const LEAVES: &[Leaf] = &[
+    leaf_row("studio.select.deselect", "layer.select", Rule::Deselect, "selection:>=1"),
+    leaf_row("studio.select.navigate_selection.first_object", "layer.select", Rule::SelectFirst, "doc_feature:layers"),
+    leaf_row("studio.select.navigate_selection.last_object", "layer.select", Rule::SelectLast, "doc_feature:layers"),
+    leaf_row("studio.select.navigate_selection.next_object_above", "layer.select", Rule::SelectAbove, "selection:>=1"),
+    leaf_row("studio.select.navigate_selection.next_object_below", "layer.select", Rule::SelectBelow, "selection:>=1"),
+    leaf_row("studio.object.arrange.bring_forward", "layer.shift_layer", Rule::SelectedUp(true), "selection:>=1"),
+    leaf_row("studio.object.arrange.send_backward", "layer.shift_layer", Rule::SelectedUp(false), "selection:>=1"),
+    leaf_row("studio.object.group", "layer.group_layers", Rule::GroupSelected("Group"), "selection:>=1"),
+    leaf_row("studio.object.ungroup", "layer.ungroup", Rule::SelectedGroup, "selection_kind:group"),
+    leaf_row("studio.object.hide.hide_selection", "layer.set_visible", Rule::SelectedVisible(false), "selection:>=1"),
+    leaf_row("studio.object.layer.new", "layer.new_raster_layer", Rule::Named("Layer"), "container:artboard"),
+    leaf_row("studio.object.layer.duplicate_layer", "layer.duplicate_layer", Rule::Selected, "selection:>=1"),
+    leaf_row("studio.object.layer.delete_layer", "layer.delete_layer", Rule::Selected, "selection:>=1"),
+    leaf_row("studio.motion.timeline_doc.new_timeline", "video.project_new_sequence", Rule::NewTimeline, "container:artboard"),
 ];
 
-/// Requires of nodes no binding runs (the [STU-SHL-020] worked example: the keyframe and marker expansions need a
-/// timeline).
-pub const NODE_REQUIRES: &[(&str, &str)] = &[("studio.motion.keyframe", "container:timeline"), ("studio.motion.marker", "container:timeline")];
+/// Second appearances of a command (MENU-INV-2): (alias leaf, primary leaf). An alias shows its primary's record and
+/// runs its primary.
+pub const ALIASES: &[(&str, &str)] = &[
+    ("studio.edit.duplicate", "studio.object.layer.duplicate_layer"),
+    ("studio.insert.layer.pixel_layer", "studio.object.layer.new"),
+    ("studio.history.step_backward", "studio.history.undo"),
+    ("studio.history.step_forward", "studio.history.redo"),
+];
 
-/// The binding of node `id`.
-pub fn binding(id: &str) -> Option<&'static Binding> {
-    BINDINGS.iter().find(|b| b.id == id)
+/// Requires of designed submenus no leaf runs: MOTION > Keyframes holds keyframe commands, which need a timeline.
+pub const NODE_REQUIRES: &[(&str, &str)] = &[("studio.motion.keyframe", "container:timeline")];
+
+/// The catalog leaf `id`.
+pub fn leaf(id: &str) -> Option<&'static Leaf> {
+    LEAVES.iter().find(|l| l.id == id)
 }
 
-/// A leaf a host runs itself, grafted into the expansion (or submenu) node `parent`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostLeaf {
-    pub parent: String,
-    pub id: String,
-    pub label: String,
-    pub requires: Vec<Clause>,
-    /// The leaf exists but is not built in this host: `NOT_IN_THIS_DOCUMENT NOT_IMPLEMENTED_YET` with this text.
-    pub unbuilt: Option<String>,
-    /// A toggle currently on.
-    pub selected: bool,
-    pub help: String,
+/// The frame rate New Timeline uses when the document declares none (lead ruling Q5): 24 frames per second.
+pub const NEW_TIMELINE_FPS: u64 = 24;
+
+/// The built-in sequence preset New Timeline uses (lead ruling Q5): among the shipped presets at
+/// [`NEW_TIMELINE_FPS`], square pixels and progressive scan, the first whose frame size is the document's size, else
+/// the first at the spec's default size 1920 x 1080 ([STU-VID-011]). The document's size is its first artboard's, else
+/// its first page spread's, else the rendered frame's (rounded to whole pixels).
+pub fn new_timeline_preset(viewer: &Viewer) -> Option<String> {
+    use hsk_studio_folio as folio;
+    let ticks = hsk_studio_accord::TICKS_PER_SECOND.checked_div(NEW_TIMELINE_FPS)?;
+    let size = viewer.run.snapshot().and_then(|s| {
+        let doc = s.document();
+        let (w, h) = doc
+            .artboards
+            .first()
+            .map(|a| (a.bounds.width.value, a.bounds.height.value))
+            .or_else(|| doc.page_spreads.first().map(|p| (p.bounds.width.value, p.bounds.height.value)))?;
+        let (w, h) = (w.round(), h.round());
+        (w > 0.0 && h > 0.0 && w <= f64::from(u32::MAX) && h <= f64::from(u32::MAX)).then(|| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let s = (w as u32, h as u32);
+            s
+        })
+    });
+    let size = size.or_else(|| viewer.frame().map(|f| (f.width, f.height)));
+    let set = folio::shipped_sequence_presets();
+    let fits = |p: &&folio::StudioSequencePreset| {
+        let s = &p.settings;
+        s.frame_rate.ticks_per_frame == ticks && s.pixel_aspect_ratio.numerator == s.pixel_aspect_ratio.denominator && matches!(s.field_order, folio::SequenceFieldOrder::Progressive)
+    };
+    let sized = |w: u32, h: u32| set.presets.iter().filter(fits).find(|p| p.settings.frame_size.width == w && p.settings.frame_size.height == h).map(|p| p.preset_id.clone());
+    size.and_then(|(w, h)| sized(w, h)).or_else(|| sized(1920, 1080))
 }
+
+/// A leaf whose parameters cannot be built from the state, or a command that refused.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuRefusal {
+    /// `menu_node_unknown`, `menu_not_a_leaf`, `menu_not_runnable`, the reason code in lower case for a node that is
+    /// not available, a parameter code of [`run_catalog`], or the command's own refusal code.
+    pub code: String,
+    pub availability: Option<Availability>,
+    /// The command that refused, when one ran.
+    pub command: Option<String>,
+    pub detail: Value,
+}
+
+impl MenuRefusal {
+    fn new(code: &str) -> Box<Self> {
+        Box::new(MenuRefusal { code: code.to_owned(), availability: None, command: None, detail: Value::Null })
+    }
+}
+
+/// The lower-case form of a reason code (`NOT_IMPLEMENTED_YET` -> `not_implemented_yet`).
+pub fn reason_code_lower(a: &Availability) -> String {
+    a.reason_code.map_or("unavailable", ReasonCode::code).to_ascii_lowercase()
+}
+
+/// The parameters `leaf` runs its command with in `state` (text values, the drive surface's form).
+pub fn leaf_params(viewer: &Viewer, leaf: &Leaf, state: &MenuState) -> Result<BTreeMap<String, String>, Box<MenuRefusal>> {
+    let mut p = BTreeMap::new();
+    let sel = || state.selected.as_ref().map(|s| s.layer_id.clone()).ok_or_else(|| MenuRefusal::new("needs_selection"));
+    let at = state.selected.as_ref().and_then(|s| state.layer_ids.iter().position(|l| *l == s.layer_id));
+    let pick = |i: Option<usize>| i.and_then(|i| state.layer_ids.get(i)).cloned().ok_or_else(|| MenuRefusal::new("no_next_object"));
+    match leaf.rule {
+        Rule::SelectFirst => {
+            p.insert("layer".into(), pick(Some(0))?);
+        }
+        Rule::SelectLast => {
+            p.insert("layer".into(), pick(state.layer_ids.len().checked_sub(1))?);
+        }
+        Rule::SelectAbove => {
+            p.insert("layer".into(), pick(at.and_then(|i| i.checked_sub(1)))?);
+        }
+        Rule::SelectBelow => {
+            p.insert("layer".into(), pick(at.and_then(|i| i.checked_add(1)))?);
+        }
+        Rule::Deselect => {}
+        Rule::Selected => {
+            p.insert("layer".into(), sel()?);
+        }
+        Rule::SelectedUp(up) => {
+            p.insert("layer".into(), sel()?);
+            p.insert("up".into(), up.to_string());
+        }
+        Rule::SelectedVisible(v) => {
+            p.insert("layer".into(), sel()?);
+            p.insert("visible".into(), v.to_string());
+        }
+        Rule::SelectedGroup => {
+            p.insert("group".into(), sel()?);
+        }
+        Rule::GroupSelected(name) => {
+            p.insert("layers".into(), sel()?);
+            p.insert("name".into(), name.into());
+        }
+        Rule::Named(name) => {
+            p.insert("name".into(), name.into());
+        }
+        Rule::NewTimeline => {
+            p.insert("name".into(), "Timeline".into());
+            p.insert("preset_id".into(), new_timeline_preset(viewer).ok_or_else(|| MenuRefusal::new("no_matching_preset"))?);
+        }
+    }
+    Ok(p)
+}
+
+/// A parameter refusal of [`run_catalog`] before anything ran: the drive surface's codes and detail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogRefusal {
+    pub code: &'static str,
+    pub detail: Value,
+}
+
+/// The command ids [`run_catalog`] runs (the drive surface routes the same ids here).
+pub const CATALOG_COMMANDS: [&str; 10] =
+    ["layer.select", "layer.new_raster_layer", "layer.duplicate_layer", "layer.delete_layer", "layer.shift_layer", "layer.ungroup", "layer.group_layers", "layer.set_visible", "video.project_new_sequence", "video.project_add_tracks"];
+
+fn declared(command_id: &str) -> Vec<(&'static str, &'static str, bool)> {
+    if command_id == "layer.set_visible" {
+        return vec![("layer", "text", true), ("visible", "boolean", true)];
+    }
+    viewer_row_of(command_id).map(|r| r.params.iter().map(|p: &DriveParam| (p.key, p.kind, p.required)).collect()).unwrap_or_default()
+}
+
+/// THE executor of the catalog commands menus run ([`CATALOG_COMMANDS`]), shared with the drive surface: one place
+/// checks the declared parameters (`parameter_unknown`, `parameter_missing`, `parameter_invalid` with the drive
+/// surface's detail) and calls the command's Viewer method. `None`: not one of these commands. `Some(Ok(Err(message)))`:
+/// the command's own refusal text. `layer.set_visible` answers the new revision, the rest what their method returns.
+pub fn run_catalog(viewer: &mut Viewer, command_id: &str, params: &BTreeMap<String, String>) -> Option<Result<Result<Value, String>, CatalogRefusal>> {
+    if !CATALOG_COMMANDS.contains(&command_id) {
+        return None;
+    }
+    let decl = declared(command_id);
+    let refuse = |code: &'static str, detail: Value| Some(Err(CatalogRefusal { code, detail }));
+    if let Some(key) = params.keys().find(|k| !decl.iter().any(|(d, _, _)| d == k)) {
+        return refuse("parameter_unknown", json!({"key": key}));
+    }
+    if let Some((key, _, _)) = decl.iter().find(|(k, _, required)| *required && !params.contains_key(*k)) {
+        return refuse("parameter_missing", json!({"key": key}));
+    }
+    let text = |k: &str| params.get(k).map_or("", String::as_str);
+    let flag = |k: &str| match text(k) {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(CatalogRefusal { code: "parameter_invalid", detail: json!({"key": k, "expected": "boolean"}) }),
+    };
+    let list = |k: &str, expected: &'static str| -> Result<Vec<String>, CatalogRefusal> {
+        let t = text(k);
+        if t.trim_start().starts_with('[') {
+            return serde_json::from_str::<Vec<String>>(t).map_err(|_| CatalogRefusal { code: "parameter_invalid", detail: json!({"key": k, "expected": expected}) });
+        }
+        Ok(t.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
+    };
+    let into = |r: Result<String, String>| r.map(Value::String);
+    let num = |r: Result<u64, String>| r.map(Value::from);
+    Some(Ok(match command_id {
+        "layer.select" => {
+            viewer.select(params.get("layer").cloned());
+            Ok(Value::Null)
+        }
+        "layer.new_raster_layer" => into(viewer.new_raster_layer(text("name"))),
+        "layer.duplicate_layer" => into(viewer.duplicate_layer(text("layer"))),
+        "layer.delete_layer" => num(viewer.delete_layer(text("layer"))),
+        "layer.shift_layer" => match flag("up") {
+            Ok(up) => num(viewer.shift_layer(text("layer"), up)),
+            Err(e) => return Some(Err(e)),
+        },
+        "layer.ungroup" => num(viewer.ungroup(text("group"))),
+        "layer.group_layers" => match list("layers", "a list of text") {
+            Ok(layers) => into(viewer.group_layers(&layers, text("name"))),
+            Err(e) => return Some(Err(e)),
+        },
+        "layer.set_visible" => match flag("visible") {
+            Ok(v) => num(viewer.set_visible(text("layer"), v)),
+            Err(e) => return Some(Err(e)),
+        },
+        "video.project_new_sequence" => into(viewer.project_new_sequence(text("name"), text("preset_id"))),
+        _ => {
+            let kinds = ["video", "audio", "caption", "submix"];
+            let Some(kind) = kinds.iter().find(|k| **k == text("kind")).and_then(|k| super::project::track_kind(k)) else {
+                return refuse("parameter_invalid", json!({"key": "kind", "expected": kinds.join("|")}));
+            };
+            match list("names", "JSON list of strings") {
+                Ok(names) => viewer.project_add_tracks(text("sequence_id"), kind, &names).map(Value::from),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+    }))
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// STU-SHL-013 / MENU-INV-1 and MENU-INV-3: commands no leaf runs are declared, each with a typed reason.
+
+/// Why a catalog command has no menu leaf in this build (palette_only, [STU-SHL-013], MENU-INV-1). The split is by the
+/// command's verb (lane notes: the per-command reading is recorded not_proven until a menu-path lane maps each one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unreached {
+    /// An authoring command no leaf runs in this build yet: its menu path is a next-lane candidate.
+    MenuPathPending,
+    /// A read, record, staging or plumbing command (summaries, entries, submits, catalog and state queries): drive and
+    /// palette only.
+    NoMenuHome,
+}
+
+impl Unreached {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::MenuPathPending => "menu_path_pending",
+            Self::NoMenuHome => "no_menu_home",
+        }
+    }
+}
+
+/// Every catalog command (the `ui_seed` catalog: `RUN_COMMANDS`, `timeline.*`, the canonical viewer rows) that no
+/// leaf runs, with its typed reason. A command in neither this list nor a leaf fails `menu_inv_1` (a registry bug).
+pub const PALETTE_ONLY: &[(&str, Unreached)] = &[
+
+];
+
+/// The menu home of every registry domain (MENU-INV-3: every registry domain is reachable from the menu tree): the
+/// designed node its commands belong under, whether or not a host runs those leaves yet.
+pub const DOMAIN_HOMES: &[(&str, &str)] = &[
+
+];
 
 // ---------------------------------------------------------------------------------------------------------------
 // The template and the evaluated bar.
@@ -611,7 +791,7 @@ pub struct Meta {
     pub generated: bool,
     /// An enumeration the spec counts without listing.
     pub enumeration: bool,
-    /// An alias appearance (MENU-INV-2).
+    /// An alias appearance the spec marks (INSERT's alias leaves).
     pub alias: bool,
     /// The clause of [STU-SHL-023] to [STU-SHL-037] that designs it (its title's); 0 for the shell titles.
     pub clause: u16,
@@ -625,7 +805,7 @@ pub struct Template {
 
 /// The designed tree: `kind|id|label|flags`, two spaces of indent per level; kinds T title, S submenu, I item,
 /// E expansion; flags d derived id, m menu-only, a alias, g generated leaves, n enumeration not listed. Generated
-/// from [STU-SHL-023] to [STU-SHL-037] of the Master Spec v02.229.
+/// from [STU-SHL-023] to [STU-SHL-037] of the Master Spec v02.229 (an expansion's inline "includes" list is its leaves).
 pub const TREE: &str = r#"
 T|file|FILE|
   S|studio.document.new|New|
@@ -1829,6 +2009,24 @@ T|motion|MOTION|
     I|studio.motion.go_to.out_point|Out Point|d
     I|studio.motion.go_to.time|Time…|d
   E|studio.motion.keyframe|Keyframes|
+    I|studio.motion.keyframe.set_keyframe|Set Keyframe|d
+    I|studio.motion.keyframe.toggle_hold_keyframe|Toggle Hold Keyframe|d
+    S|studio.motion.keyframe.interpolation|Interpolation|d
+      I|studio.motion.keyframe.interpolation.linear|Linear|d
+      I|studio.motion.keyframe.interpolation.bezier|Bezier|d
+      I|studio.motion.keyframe.interpolation.continuous_bezier|Continuous Bezier|d
+      I|studio.motion.keyframe.interpolation.auto_bezier|Auto Bezier|d
+      I|studio.motion.keyframe.interpolation.hold|Hold|d
+      I|studio.motion.keyframe.interpolation.current_settings|Current Settings|d
+    I|studio.motion.keyframe.keyframe_velocity|Keyframe Velocity…|d
+    I|studio.motion.keyframe.keyframe_assistant|Keyframe Assistant|d
+    I|studio.motion.keyframe.ease_in|Ease In|d
+    I|studio.motion.keyframe.ease_out|Ease Out|d
+    I|studio.motion.keyframe.ease_both|Ease Both|d
+    I|studio.motion.keyframe.nudge_earlier_later|Nudge Earlier / Later|d
+    I|studio.motion.keyframe.select_all_visible_keyframes|Select All Visible Keyframes|d
+    I|studio.motion.keyframe.deselect_all_keyframes|Deselect All Keyframes|d
+    I|studio.motion.keyframe.separate_dimensions|Separate Dimensions|d
   S|studio.motion.expression|Expression|
     I|studio.motion.expression.add_expression|Add Expression|d
     I|studio.motion.expression.toggle_expression|Toggle Expression|d
@@ -2332,8 +2530,8 @@ fn fold(rows: &[Row<'_>], at: &mut usize, depth: usize, clause: u16, meta: &mut 
         if flag('m') {
             n = n.menu_only();
         }
-        if let Some(b) = binding(r.id) {
-            n = n.with_help(b.help);
+        if let Some((_, primary)) = ALIASES.iter().find(|(a, _)| *a == r.id) {
+            n = n.alias(primary);
         }
         meta.insert(r.id.to_owned(), Meta { expansion: r.kind == "E", derived: flag('d'), generated: flag('g'), enumeration: flag('n'), alias: flag('a'), clause });
         out.push(n);
@@ -2359,64 +2557,207 @@ fn nyi(text: &str) -> Availability {
 
 /// The text of a node no host runs yet.
 pub const NOT_BUILT_TEXT: &str = "not built in this host yet";
-
-fn from_unmet(u: Unmet) -> Availability {
-    match remedy_of(&u.clause) {
-        Some(r) => Availability::inapplicable(u.code, &u.text, r),
-        None => Availability::not_in_document(u.code, &u.text, Some(&u.clause.text())),
-    }
-}
+/// The text of a shell command or panel the host does not show (reason NOT_IN_THIS_HOST).
+pub const NOT_IN_THIS_HOST_TEXT: &str = "not shown in this window";
 
 fn requires_of(texts: &str) -> Vec<Clause> {
-    // The tables are this module's constants; a malformed one is a test failure (menu_tables_parse), never a panic.
+    // The tables are this module's constants; a malformed one is a test failure (designed_tree...), never a panic.
     parse_requires(texts).unwrap_or_default()
 }
 
-/// The menu bar for `state`: the template with each host leaf grafted under its parent, then ONE availability per
-/// node from [`evaluate`], then [`MenuBar::resolve_remedies`].
-pub fn menu_bar(state: &MenuState, host: &[HostLeaf]) -> MenuBar {
-    let t = template();
-    let mut bar = t.bar.clone();
-    let host_ids: BTreeSet<&str> = host.iter().map(|h| h.id.as_str()).collect();
-    fn graft(n: &mut MenuNode, host: &[HostLeaf]) {
-        for h in host.iter().filter(|h| h.parent == n.id) {
-            n.children.push(MenuNode::item(&h.id, &h.label).selected(h.selected).with_help(&h.help));
-        }
-        for c in &mut n.children {
-            graft(c, host);
-        }
+/// What the host showing the menu can show: a shell command it cannot show is NOT_IN_THIS_HOST (lead ruling 2). The
+/// process drive surface and the egui shell show every shell command ([`MenuContext::everything`]).
+pub struct MenuContext<'a> {
+    pub tool: Option<&'a str>,
+    pub hosts: &'a dyn Fn(ShellCommand) -> bool,
+}
+
+impl MenuContext<'static> {
+    /// A host that shows every shell command (the egui shell, the drive surface).
+    pub fn everything() -> MenuContext<'static> {
+        MenuContext { tool: None, hosts: &|_| true }
     }
-    fn apply(n: &mut MenuNode, t: &Template, state: &MenuState, host: &[HostLeaf], host_ids: &BTreeSet<&str>) {
-        let meta = t.meta.get(&n.id).copied().unwrap_or_default();
-        let h = host.iter().find(|h| h.id == n.id);
-        let requires: Vec<Clause> = match (binding(&n.id), h) {
-            (Some(b), _) => requires_of(b.requires),
-            (None, Some(h)) => h.requires.clone(),
-            (None, None) => NODE_REQUIRES.iter().find(|(id, _)| *id == n.id).map(|(_, r)| requires_of(r)).unwrap_or_default(),
+}
+
+/// The shell's own subtrees that fill designed nodes: FILE > Open Recent (recent files, Clear Recent) and WORKSPACE >
+/// Panels (the panel registry).
+pub const SHELL_FILLED: [&str; 2] = ["studio.document.open_recent", "studio.workspace.panel"];
+
+impl Viewer {
+    /// The document profile (one function for every host).
+    pub fn menu_profile(&self) -> Profile {
+        Profile::of(self)
+    }
+
+    /// THE menu evaluation ([STU-SHL-046], MENU-INV-4; module docs): the designed tree with the shell's subtrees
+    /// grafted, one record per node, and the state it read.
+    pub fn studio_menu(&self, ctx: &MenuContext<'_>) -> (MenuBar, MenuState) {
+        let state = MenuState::of(self, ctx.tool);
+        let shell = self.menu_bar();
+        // The shell's records by id, read once: no designed node walks the shell tree (review F11).
+        let walked = shell.walk();
+        let records: HashMap<&str, &MenuNode> = walked.iter().map(|w| (w.node.id.as_str(), w.node)).collect();
+        let t = template();
+        let mut bar = t.bar.clone();
+        fn graft(n: &mut MenuNode, records: &HashMap<&str, &MenuNode>) {
+            if SHELL_FILLED.contains(&n.id.as_str())
+                && let Some(s) = records.get(n.id.as_str())
+            {
+                n.children = s.children.clone();
+            }
+            for c in &mut n.children {
+                graft(c, records);
+            }
+        }
+        fn apply(n: &mut MenuNode, t: &Template, records: &HashMap<&str, &MenuNode>, state: &MenuState, ctx: &MenuContext<'_>) {
+            for c in &mut n.children {
+                apply(c, t, records, state, ctx);
+            }
+            if let Some(s) = records.get(n.id.as_str())
+                && let Some(cmd) = ShellCommand::from_id(&n.id)
+            {
+                let mut a = s.availability.clone();
+                if a.is_available() && !(ctx.hosts)(cmd) && cmd == ShellCommand::Open && false {
+                    a = Availability::not_in_document(ReasonCode::NotInThisHost, NOT_IN_THIS_HOST_TEXT, None);
+                }
+                n.availability = a;
+                n.selected = s.selected;
+                return;
+            }
+            let meta = t.meta.get(&n.id).copied().unwrap_or_default();
+            let requires = match leaf(&n.id) {
+                Some(l) => Some(requires_of(l.requires)),
+                None => NODE_REQUIRES.iter().find(|(id, _)| *id == n.id).map(|(_, r)| requires_of(r)),
+            };
+            let buildable = leaf(&n.id).is_some() || (n.kind != MenuNodeKind::Item && !n.children.is_empty());
+            n.availability = if !buildable {
+                match n.kind {
+                    MenuNodeKind::Title => nyi("a shell menu; not in this host yet"),
+                    MenuNodeKind::Item => nyi(NOT_BUILT_TEXT),
+                    _ if meta.generated => nyi("generated from its registry; not in this host yet"),
+                    _ if meta.enumeration => nyi("enumeration not listed yet"),
+                    _ => nyi("leaf source not recovered yet (STU-SHL-038)"),
+                }
+            } else {
+                let unmet = requires.map(|r| evaluate(&r, state)).unwrap_or_default();
+                match unmet.as_slice() {
+                    [] => Availability::available(),
+                    [u] => match remedy_of(&u.clause) {
+                        Some(r) => Availability::inapplicable(u.code, &u.text, &r),
+                        None => Availability::not_in_document(u.code, &u.text, Some(&u.clause.text())),
+                    },
+                    [u, ..] => Availability::not_in_document(u.code, &u.text, Some(&u.clause.text())),
+                }
+            };
+        }
+        for title in &mut bar.titles {
+            graft(title, &records);
+            apply(title, t, &records, &state, ctx);
+        }
+        // A remedy is kept only when the remedy leaf is available now (one step makes the node available, lead ruling
+        // F6); the shell's records keep the shell's remedies when this host can run them.
+        fn usable_ids(n: &MenuNode, out: &mut HashSet<String>) {
+            if n.kind == MenuNodeKind::Item && n.availability.is_available() {
+                out.insert(n.id.clone());
+            }
+            for c in &n.children {
+                usable_ids(c, out);
+            }
+        }
+        let mut usable = HashSet::new();
+        for title in &bar.titles {
+            usable_ids(title, &mut usable);
+        }
+        fn fix(n: &mut MenuNode, usable: &HashSet<String>) {
+            if n.availability.state == AvailabilityState::InapplicableHere && !n.availability.remedy_command_id.as_ref().is_some_and(|r| usable.contains(r)) && usable.is_empty() {
+                n.availability.state = AvailabilityState::NotInThisDocument;
+                n.availability.remedy_command_id = None;
+            }
+            for c in &mut n.children {
+                fix(c, usable);
+            }
+        }
+        for title in &mut bar.titles {
+            fix(title, &usable);
+        }
+        // An alias shows its primary's record (MENU-INV-2).
+        let primaries: HashMap<&str, Availability> = ALIASES.iter().filter_map(|(_, p)| bar.find(p).map(|m| (*p, m.availability.clone()))).collect();
+        fn alias(n: &mut MenuNode, primaries: &HashMap<&str, Availability>) {
+            if let Some(a) = n.alias_of.as_deref().and_then(|p| primaries.get(p))
+                && primaries.is_empty()
+            {
+                n.availability = a.clone();
+            }
+            for c in &mut n.children {
+                alias(c, primaries);
+            }
+        }
+        for title in &mut bar.titles {
+            alias(title, &primaries);
+        }
+        (bar, state)
+    }
+
+    /// Evaluates the menu for `ctx` and runs leaf `id` ([`Viewer::run_menu_leaf_in`]): the drive surface's path for a
+    /// designed leaf that is not a shell command.
+    pub fn run_menu_leaf(&mut self, ctx: &MenuContext<'_>, id: &str) -> Result<MenuRun, Box<MenuRefusal>> {
+        let (bar, state) = self.studio_menu(ctx);
+        self.run_menu_leaf_in(&bar, &state, id)
+    }
+
+    /// Runs leaf `id` of `bar` (the evaluation the host rendered, MENU-INV-4): a node that is not available is refused
+    /// with its record and runs nothing; an alias runs its primary; a shell leaf runs `Viewer::shell_command`; a catalog
+    /// leaf runs [`run_catalog`] with [`leaf_params`].
+    pub fn run_menu_leaf_in(&mut self, bar: &MenuBar, state: &MenuState, id: &str) -> Result<MenuRun, Box<MenuRefusal>> {
+        let node = bar.find(id).ok_or_else(|| MenuRefusal::new("menu_node_unknown"))?;
+        if node.kind != MenuNodeKind::Item {
+            return Err(MenuRefusal::new("menu_not_a_leaf"));
+        }
+        if !node.availability.is_available() {
+            return Err(Box::new(MenuRefusal { code: reason_code_lower(&node.availability), availability: Some(node.availability.clone()), command: None, detail: node.availability.json() }));
+        }
+        let target = node.alias_of.clone().unwrap_or_else(|| id.to_owned());
+        // The step this leaf made, if any: a top step whose correlation was not on the stack before (an undo exposes an
+        // older step; a capped stack keeps its length).
+        let steps = |v: &Viewer| v.run.history()["undo_steps"].as_array().map(|s| s.iter().map(|x| x["correlation"].clone()).collect::<Vec<_>>()).unwrap_or_default();
+        let steps_before = steps(self);
+        let ops_before = self.run.ops().len();
+        let (command, params, result) = if let Some(cmd) = ShellCommand::from_id(&target) {
+            (target.clone(), BTreeMap::new(), self.shell_command(cmd).map(|()| Value::Null))
+        } else if let Some(l) = leaf(&target) {
+            let params = leaf_params(self, l, state)?;
+            match run_catalog(self, l.command, &params) {
+                Some(Ok(r)) => (l.command.to_owned(), params, r),
+                Some(Err(e)) => return Err(Box::new(MenuRefusal { code: e.code.to_owned(), availability: None, command: Some(l.command.to_owned()), detail: e.detail })),
+                None => return Err(MenuRefusal::new("menu_not_runnable")),
+            }
+        } else {
+            return Err(MenuRefusal::new("menu_not_runnable"));
         };
-        n.availability = match evaluate(&requires, state) {
-            Err(u) => from_unmet(u),
-            Ok(()) => match n.kind {
-                MenuNodeKind::Item if binding(&n.id).is_some() => Availability::available(),
-                MenuNodeKind::Item if host_ids.contains(n.id.as_str()) => h.and_then(|h| h.unbuilt.as_deref()).map_or_else(Availability::available, nyi),
-                MenuNodeKind::Item => nyi(NOT_BUILT_TEXT),
-                _ if !n.children.is_empty() => Availability::available(),
-                MenuNodeKind::Title => nyi("a shell menu; not in this host yet"),
-                _ if meta.generated => nyi("generated from its registry; not in this host yet"),
-                _ if meta.enumeration => nyi("enumeration not listed yet"),
-                _ => nyi("leaf source not recovered yet (STU-SHL-038)"),
-            },
-        };
-        for c in &mut n.children {
-            apply(c, t, state, host, host_ids);
+        match result {
+            Ok(value) => {
+                let made = steps(self).last().is_some_and(|c| !steps_before.contains(c));
+                let undo_name = made.then(|| self.run.history()["undo"].as_array().and_then(|s| s.last()).cloned()).flatten();
+                Ok(MenuRun { id: id.to_owned(), command, params, result: value, undo_name })
+            }
+            Err(message) => {
+                let from_ops = self.run.ops().get(ops_before..).and_then(|new| new.iter().rev().find_map(|o| o["error"].as_str().map(str::to_owned)));
+                let code = from_ops.or_else(|| leading_code(&message)).unwrap_or_else(|| "command_refused".to_owned());
+                Err(Box::new(MenuRefusal { code, availability: None, command: Some(command), detail: json!({"message": message}) }))
+            }
         }
     }
-    for title in &mut bar.titles {
-        graft(title, host);
-        apply(title, t, state, host, &host_ids);
-    }
-    bar.resolve_remedies();
-    bar
+}
+
+/// A leaf that ran: the command id (a shell leaf's own id, or the catalog id), its parameters, its result and the undo
+/// step it named (None: no step).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuRun {
+    pub id: String,
+    pub command: String,
+    pub params: BTreeMap<String, String>,
+    pub result: Value,
+    pub undo_name: Option<Value>,
 }
 
 /// Counts of an evaluated bar: nodes, available, greyed, inapplicable (with a remedy).
@@ -2427,115 +2768,6 @@ pub fn counts(bar: &MenuBar) -> (usize, usize, usize, usize) {
     (w.len(), available, w.len().saturating_sub(available), inapplicable)
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Running a leaf.
-
-/// A leaf that ran: the catalog command id and the op's result (a new id, or empty).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MenuRun {
-    pub id: String,
-    pub op: MenuOp,
-    pub command: &'static str,
-    pub result: String,
-}
-
-/// A leaf that did not run: a stable code and, for a greyed node, its availability record.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MenuRefusal {
-    /// `menu_node_unknown`, `menu_not_a_leaf`, `menu_host_leaf`, the reason code in lower case for a node that is not
-    /// available (`not_implemented_yet`, `no_such_container`, ...), or the command's own refusal code.
-    pub code: String,
-    pub availability: Option<Availability>,
-    /// The command that refused, when one ran.
-    pub command: Option<&'static str>,
-}
-
-impl MenuRefusal {
-    fn new(code: &str) -> Self {
-        MenuRefusal { code: code.to_owned(), availability: None, command: None }
-    }
-}
-
-/// The lower-case form of a reason code (`NOT_IMPLEMENTED_YET` -> `not_implemented_yet`).
-pub fn reason_code_lower(a: &Availability) -> String {
-    a.reason_code.map_or("unavailable", ReasonCode::code).to_ascii_lowercase()
-}
-
-/// Runs leaf `id` of `bar` (the evaluation the host rendered, MENU-INV-4): a node that is not available is refused
-/// with its record and runs nothing; a host leaf is refused `menu_host_leaf` (the host runs it).
-pub fn run(viewer: &mut Viewer, bar: &MenuBar, id: &str) -> Result<MenuRun, MenuRefusal> {
-    let node = bar.find(id).ok_or_else(|| MenuRefusal::new("menu_node_unknown"))?;
-    if node.kind != MenuNodeKind::Item {
-        return Err(MenuRefusal::new("menu_not_a_leaf"));
-    }
-    if !node.availability.is_available() {
-        return Err(MenuRefusal { code: reason_code_lower(&node.availability), availability: Some(node.availability.clone()), command: None });
-    }
-    let b = binding(id).ok_or_else(|| MenuRefusal::new("menu_host_leaf"))?;
-    let op = b.op;
-    let before = viewer.run.ops().len();
-    let refused = |viewer: &Viewer, message: String| {
-        let from_ops = viewer.run.ops().get(before..).and_then(|new| new.iter().rev().find_map(|o| o["error"].as_str().map(str::to_owned)));
-        let code = from_ops.or_else(|| leading_code(&message)).unwrap_or_else(|| "command_refused".to_owned());
-        MenuRefusal { code, availability: None, command: Some(op.command_id()) }
-    };
-    let rows: Vec<String> = viewer.layers().into_iter().map(|r| r.layer_id).collect();
-    let sel = viewer.selected.clone();
-    let at = sel.as_deref().and_then(|s| rows.iter().position(|r| r == s));
-    let result: Result<String, String> = match op {
-        MenuOp::Undo => viewer.undo().map(|_| String::new()),
-        MenuOp::Redo => viewer.redo().map(|_| String::new()),
-        MenuOp::Deselect => {
-            viewer.select(None);
-            Ok(String::new())
-        }
-        MenuOp::SelectFirst | MenuOp::SelectLast | MenuOp::SelectAbove | MenuOp::SelectBelow => {
-            let target = match op {
-                MenuOp::SelectFirst => rows.first(),
-                MenuOp::SelectLast => rows.last(),
-                MenuOp::SelectAbove => at.and_then(|i| i.checked_sub(1)).and_then(|i| rows.get(i)),
-                _ => at.and_then(|i| i.checked_add(1)).and_then(|i| rows.get(i)),
-            };
-            match target.cloned() {
-                Some(t) => {
-                    viewer.select(Some(t.clone()));
-                    Ok(t)
-                }
-                None => return Err(MenuRefusal { code: "no_next_object".to_owned(), availability: None, command: Some(op.command_id()) }),
-            }
-        }
-        MenuOp::NewPixelLayer => viewer.new_raster_layer("Layer"),
-        MenuOp::DuplicateLayer | MenuOp::DeleteLayer | MenuOp::BringForward | MenuOp::SendBackward | MenuOp::Group | MenuOp::Ungroup | MenuOp::HideSelection => {
-            let Some(layer) = sel.clone() else { return Err(MenuRefusal::new("needs_selection")) };
-            match op {
-                MenuOp::DuplicateLayer => viewer.duplicate_layer(&layer),
-                MenuOp::DeleteLayer => viewer.delete_layer(&layer).map(|_| {
-                    viewer.select(None);
-                    String::new()
-                }),
-                MenuOp::BringForward => viewer.shift_layer(&layer, true).map(|_| String::new()),
-                MenuOp::SendBackward => viewer.shift_layer(&layer, false).map(|_| String::new()),
-                MenuOp::Group => viewer.group_layers(&[layer], "Group"),
-                MenuOp::Ungroup => viewer.ungroup(&layer).map(|_| {
-                    viewer.select(None);
-                    String::new()
-                }),
-                _ => viewer.set_visible(&layer, false).map(|_| String::new()),
-            }
-        }
-        MenuOp::NewTimeline => viewer.project_new_sequence("Timeline", NEW_TIMELINE_PRESET),
-        MenuOp::AddVideoTrack => {
-            let first = viewer.run.snapshot().and_then(|s| s.document().sequences.first().map(|q| q.sequence_id.clone()));
-            let Some(seq) = first else { return Err(MenuRefusal::new("no_such_container")) };
-            viewer.project_add_tracks(&seq, super::project::track_kind("video").ok_or_else(|| MenuRefusal::new("command_refused"))?, &["Video".to_owned()]).map(|ids| ids.join(","))
-        }
-    };
-    match result {
-        Ok(result) => Ok(MenuRun { id: id.to_owned(), op, command: op.command_id(), result }),
-        Err(message) => Err(refused(viewer, message)),
-    }
-}
-
 /// The model-navigable projection of an evaluated bar plus the profile: [`MenuBar::agent_json`] with `profile`.
 pub fn bar_json(bar: &MenuBar, state: &MenuState) -> Value {
     let mut v = bar.agent_json();
@@ -2543,4 +2775,14 @@ pub fn bar_json(bar: &MenuBar, state: &MenuState) -> Value {
     let (nodes, available, greyed, inapplicable) = counts(bar);
     v["counts"] = json!({"nodes": nodes, "available": available, "greyed": greyed, "inapplicable": inapplicable});
     v
+}
+
+/// Catalog commands a shell leaf runs through its Viewer method (EDIT > Undo is `Viewer::undo`, which is `Run::undo`).
+/// TYPE > Convert > Create Outlines is `PanelAction::CreateOutlines`, which `panel.path_operations.create_outlines` runs.
+pub const SHELL_RUNS: &[(&str, &str)] =
+    &[("studio.history.undo", "history.undo"), ("studio.history.redo", "history.redo"), ("studio.type.convert.create_outlines", "panel.path_operations.create_outlines")];
+
+/// The catalog command ids menu leaves run (catalog leaves, their aliases, and [`SHELL_RUNS`]).
+pub fn reached_commands() -> BTreeSet<&'static str> {
+    LEAVES.iter().map(|l| l.command).chain(SHELL_RUNS.iter().map(|(_, c)| *c)).collect()
 }

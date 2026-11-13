@@ -631,6 +631,9 @@ pub mod popup {
     pub const TIP_PAD_X: f32 = 8.0;
     pub const TIP_L1_PAD_Y: f32 = 8.0;
     pub const TIP_L1_PAD_X: f32 = 10.0;
+    /// The accent edge of a highlighted greyed row (components.json `hover_or_key`: 2 px) and the scroll lane's height.
+    pub const EDGE: f32 = 2.0;
+    pub const SCROLL_LANE: f32 = 16.0;
 }
 
 /// The height of a menu row: 24, plus the reason line when greyed.
@@ -657,7 +660,8 @@ pub struct MenuRow<'a> {
     pub open: bool,
     /// Hover or keyboard highlight (surface.row_selected with the accent edge).
     pub hot: bool,
-    /// A toggle that is on (MenuItemCheckBox).
+    /// A toggle row (role MenuItemCheckBox, components.json menu_item variant `check`), and whether it is on.
+    pub toggle: bool,
     pub checked: bool,
     /// False: scrolled out of the popup; in the tree with no box.
     pub shown: bool,
@@ -678,14 +682,21 @@ pub fn menu_popup_begin(b: &mut Builder<'_>, id: &str, label: &str, w: f32, h: f
 }
 
 /// One menu row (components.json `menu_item`, h 24): icon gutter 24 (a check mark when on), the label, the chord,
-/// the submenu chevron; a greyed row is disabled and carries its reason line under the label in caption style.
+/// the submenu chevron. A greyed row's item node is disabled (its label in text.disabled, its record on the node); it
+/// sits in an undisabled frame that draws the highlight a hot or open greyed row still shows (surface.row_selected with
+/// the 2 px accent edge, components.json `hover_or_key`) and the reason line under the label in text.secondary.
 pub fn menu_item(b: &mut Builder<'_>, r: &MenuRow<'_>, check: IconId, chevron: IconId) {
     let greyed = r.reason.is_some();
-    let mut n = Node::new(r.id, Role::MenuItem).label(cut_label(r.label)).actions(CLICK).availability(r.availability.clone()).flags(|f| {
+    let lit = r.hot || r.open;
+    let role = if r.toggle && r.remedy { Role::MenuItemCheckBox } else { Role::MenuItem };
+    let mut n = Node::new(r.id, role).label(cut_label(r.label)).actions(CLICK).availability(r.availability.clone()).flags(|f| {
         f.disabled = greyed;
-        f.selected = r.hot || r.open;
+        f.selected = lit;
         f.toggled = r.checked;
     });
+    if r.toggle {
+        n = n.value(if r.checked { "on" } else { "off" });
+    }
     if let Some(v) = r.value {
         n = n.value(cut_label(v));
     }
@@ -694,31 +705,64 @@ pub fn menu_item(b: &mut Builder<'_>, r: &MenuRow<'_>, check: IconId, chevron: I
         b.leaf(n.size(Size::Fixed(0.0), Size::Fixed(0.0)));
         return;
     }
-    b.begin(n.layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(menu_row_h(greyed)), cross: Align::Start, ..LayoutSpec::default() }).paint(Paint::Surface { kind: StyleKind::Row, radius: radius::R0_DOCKED }));
-    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(size::MENU_GUTTER_ICON), h: Size::Fixed(size::MENU_ITEM_H), main: Align::Center, cross: Align::Center, ..LayoutSpec::default() }));
-    if r.checked {
-        b.leaf(icon_leaf(check, frame::ICON_MICRO));
-    }
-    b.end();
+    let gutter = |b: &mut Builder<'_>, w: f32| {
+        b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fixed(w), h: Size::Fixed(size::MENU_ITEM_H), main: Align::Center, cross: Align::Center, ..LayoutSpec::default() }));
+        if r.checked {
+            b.leaf(icon_leaf(check, frame::ICON_MICRO));
+        }
+        b.end();
+    };
+    let content = |b: &mut Builder<'_>| {
+        b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(size::MENU_ITEM_H), gap: popup::CHORD_GAP, pad: [0.0, 0.0, popup::PAD_R, 0.0], cross: Align::Center, ..LayoutSpec::default() }));
+        let color = if r.remedy { Some(ColorToken::AccentText) } else { None };
+        b.leaf(Node::deco().paint(Paint::Label { text: cut_label(r.label).into(), token: TextToken::Body, weight: 0, color, align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
+        if let Some(c) = r.chord {
+            b.leaf(text_leaf(c, TextToken::Body, 0, Some(ColorToken::TextTertiary), Size::Hug));
+        }
+        if r.submenu {
+            b.leaf(icon_leaf(chevron, popup::CHEVRON));
+        }
+        b.end();
+    };
+    let Some(reason) = r.reason else {
+        b.begin(n.layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(menu_row_h(false)), cross: Align::Start, ..LayoutSpec::default() }).paint(Paint::Surface { kind: StyleKind::Row, radius: radius::R0_DOCKED }));
+        gutter(b, size::MENU_GUTTER_ICON);
+        content(b);
+        b.end();
+        return;
+    };
+    let fill = if lit && r.remedy { Paint::Fill(ColorToken::SurfaceRowSelected) } else { Paint::None };
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(menu_row_h(true)), cross: Align::Start, ..LayoutSpec::default() }).paint(fill));
+    let edge = if lit && r.remedy { Paint::Fill(ColorToken::AccentBase) } else { Paint::None };
+    b.leaf(Node::deco().paint(edge).size(Size::Fixed(popup::EDGE), Size::Fill));
     b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Column, w: Size::Fill, h: Size::Fill, cross: Align::Start, ..LayoutSpec::default() }));
-    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(size::MENU_ITEM_H), gap: popup::CHORD_GAP, pad: [0.0, 0.0, popup::PAD_R, 0.0], cross: Align::Center, ..LayoutSpec::default() }));
-    let color = if r.remedy { Some(ColorToken::AccentText) } else { None };
-    b.leaf(Node::deco().paint(Paint::Label { text: cut_label(r.label).into(), token: TextToken::Body, weight: 0, color, align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fill));
-    if let Some(c) = r.chord {
-        b.leaf(text_leaf(c, TextToken::Body, 0, Some(ColorToken::TextTertiary), Size::Hug));
-    }
-    if r.submenu {
-        b.leaf(icon_leaf(chevron, popup::CHEVRON));
-    }
+    b.begin(n.layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(size::MENU_ITEM_H), cross: Align::Start, ..LayoutSpec::default() }));
+    gutter(b, size::MENU_GUTTER_ICON - popup::EDGE);
+    content(b);
     b.end();
-    if let Some(reason) = r.reason {
-        b.leaf(
-            Node::deco()
-                .paint(Paint::Label { text: cut_label(reason).into(), token: TextToken::Caption, weight: 0, color: Some(ColorToken::TextTertiary), align: Align::Start, ellipsis: true })
-                .size(Size::Fill, Size::Fixed(popup::REASON_LINE)),
-        );
-    }
+    b.begin(Node::deco().layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(popup::REASON_LINE), pad: [size::MENU_GUTTER_ICON - popup::EDGE, 0.0, popup::PAD_R, 0.0], cross: Align::Start, ..LayoutSpec::default() }));
+    b.leaf(
+        Node::deco()
+            .paint(Paint::Label { text: cut_label(reason).into(), token: TextToken::Caption, weight: 0, color: Some(ColorToken::TextSecondary), align: Align::Start, ellipsis: true })
+            .size(Size::Fill, Size::Fill),
+    );
     b.end();
+    b.end();
+    b.end();
+}
+
+/// A scroll lane button of a popup that cannot show all its rows (components.json `menu_popup.pointer`: a scroll lane
+/// with arrows): a Button `h` high with a centred arrow; `enabled` false at the end of the list.
+pub fn menu_scroll_button(b: &mut Builder<'_>, id: &str, label: &str, icon: IconId, enabled: bool) {
+    b.begin(
+        Node::new(id, Role::Button)
+            .label(cut_label(label))
+            .actions(CLICK)
+            .flags(|f| f.disabled = !enabled)
+            .layout(LayoutSpec { axis: Axis::Row, w: Size::Fill, h: Size::Fixed(popup::SCROLL_LANE), main: Align::Center, cross: Align::Center, ..LayoutSpec::default() })
+            .paint(Paint::Surface { kind: StyleKind::Row, radius: radius::R0_DOCKED }),
+    );
+    b.leaf(icon_leaf(icon, frame::ICON_MICRO));
     b.end();
 }
 

@@ -33,6 +33,12 @@ pub enum Key {
     PageDown,
     Home,
     End,
+    /// Lane SMB-GUI-MENU-1 (components.json menu_popup, menu_bar, context_menu keyboard): Left and Right step titles
+    /// and open or close cascades, F10 reaches the menu bar, the context-menu key opens a context menu.
+    Left,
+    Right,
+    F10,
+    ContextMenu,
     Other,
 }
 
@@ -50,6 +56,10 @@ impl Key {
             "pagedown" => Key::PageDown,
             "home" => Key::Home,
             "end" => Key::End,
+            "left" => Key::Left,
+            "right" => Key::Right,
+            "f10" => Key::F10,
+            "menu" => Key::ContextMenu,
             s if s.len() == 1 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) => Key::Char(char::from(s.as_bytes()[0])),
             _ => return None,
         })
@@ -182,6 +192,10 @@ pub(crate) fn from_winit(event: &winit::event::WindowEvent, mods: Mods) -> Optio
                 K::Named(N::PageDown) => Key::PageDown,
                 K::Named(N::Home) => Key::Home,
                 K::Named(N::End) => Key::End,
+                K::Named(N::ArrowLeft) => Key::Left,
+                K::Named(N::ArrowRight) => Key::Right,
+                K::Named(N::F10) => Key::F10,
+                K::Named(N::ContextMenu) => Key::ContextMenu,
                 K::Character(s) => {
                     let mut chars = s.chars();
                     match (chars.next(), chars.next()) {

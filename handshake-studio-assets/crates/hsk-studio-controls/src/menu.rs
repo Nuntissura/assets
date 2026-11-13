@@ -114,9 +114,17 @@ pub enum ReasonCode {
     ReadOnlyDocument,
     ExpressionDriven,
     NotImplementedYet,
+    /// Studio host addition, outside the twelve of [STU-SHL-051] (SD proposal, lane SMB-GUI-MENU-1, lead ruling Q7):
+    /// a `tool:<id>` requirement is unmet; its remedy selects the tool.
+    NeedsTool,
+    /// Studio host addition, outside the twelve of [STU-SHL-051] (SD proposal, lane SMB-GUI-MENU-1, lead ruling 2):
+    /// the element exists but the host showing the menu does not host it (a panel this window has no place for).
+    NotInThisHost,
 }
 
 impl ReasonCode {
+    /// The host additions to the closed set, pending a spec decision; [`ReasonCode::ALL`] stays the spec's twelve.
+    pub const HOST_EXTRA: [ReasonCode; 2] = [Self::NeedsTool, Self::NotInThisHost];
     pub const ALL: [ReasonCode; 12] = [
         Self::NoSuchContainer,
         Self::WrongLayerKind,
@@ -145,6 +153,8 @@ impl ReasonCode {
             Self::ReadOnlyDocument => "READ_ONLY_DOCUMENT",
             Self::ExpressionDriven => "EXPRESSION_DRIVEN",
             Self::NotImplementedYet => "NOT_IMPLEMENTED_YET",
+            Self::NeedsTool => "NEEDS_TOOL",
+            Self::NotInThisHost => "NOT_IN_THIS_HOST",
         }
     }
 }
@@ -250,6 +260,8 @@ pub struct MenuNode {
     pub data_label: bool,
     pub availability: Availability,
     pub children: Vec<MenuNode>,
+    /// MENU-INV-2: a second appearance of a command names the primary leaf it repeats (None: a primary leaf).
+    pub alias_of: Option<String>,
 }
 
 impl MenuNode {
@@ -265,6 +277,7 @@ impl MenuNode {
             data_label: false,
             availability: Availability::available(),
             children,
+            alias_of: None,
         }
     }
     pub fn title(id: &str, label: &str, children: Vec<MenuNode>) -> Self {
@@ -294,6 +307,11 @@ impl MenuNode {
     }
     pub fn menu_only(mut self) -> Self {
         self.menu_only = true;
+        self
+    }
+    /// Marks this node as a second appearance of the primary leaf `primary` (MENU-INV-2).
+    pub fn alias(mut self, primary: &str) -> Self {
+        self.alias_of = Some(primary.to_owned());
         self
     }
     /// Marks the label as operator data ([`MenuNode::data_label`]).
@@ -488,7 +506,7 @@ impl MenuBar {
                 let n = w.node;
                 json!({
                     "id": n.id, "author_id": n.author_id(), "label": n.label, "kind": n.kind, "menu_path": w.path,
-                    "depth": w.depth, "shortcut": n.shortcut, "menu_only": n.menu_only, "selected": n.selected, "help": n.help,
+                    "depth": w.depth, "shortcut": n.shortcut, "menu_only": n.menu_only, "selected": n.selected, "help": n.help, "alias_of": n.alias_of,
                     "availability": n.availability.json(),
                     "children": n.children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
                 })

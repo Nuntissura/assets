@@ -99,9 +99,20 @@ fn frame_regions_panels_and_ids() {
     // rail bottom, browse 4 above the proxy).
     assert_eq!((node("studio.tool.family-browse").bounds.y0, node("studio.colour.proxy").bounds.y0), (978.0, 1014.0));
     // D-F1 (lead correction 2026-11-08): no frame control is drawn disabled; the unbuilt ones carry the reason as data.
-    // B6 (SMB-GUI-MENU-1): menu titles open menus and carry their availability; the shell's own titles (GO, RUN,
-    // EDITORS, OPERATOR) are greyed with their reason (STU-SHL-052: titles included).
-    assert!(all_nodes(&f).iter().filter(|n| !n.actions.is_empty() && !n.author_id.starts_with("menu.")).all(|n| !n.disabled));
+    // B6 (SMB-GUI-MENU-1): menu titles open menus and carry their availability; only the shell's own titles (GO, RUN,
+    // EDITORS, OPERATOR) are greyed, with their reason (STU-SHL-052: titles included, lead ruling Q2). Every other
+    // control, the fifteen designed titles included, is enabled.
+    let greyed_titles = ["menu.go", "menu.run", "menu.editors", "menu.operator"];
+    for n in all_nodes(&f).iter().filter(|n| !n.actions.is_empty()) {
+        let greyed = greyed_titles.contains(&n.author_id.as_str());
+        assert_eq!(n.disabled, greyed, "{}", n.author_id);
+        if greyed {
+            let a = n.availability.as_ref().unwrap_or_else(|| panic!("{} carries its record", n.author_id));
+            assert_eq!((a.state.as_str(), a.reason_code.as_deref()), ("NOT_IN_THIS_DOCUMENT", Some("NOT_IMPLEMENTED_YET")), "{}", n.author_id);
+        }
+    }
+    let titles = all_nodes(&f).iter().filter(|n| n.role == Role::MenuItem && n.author_id.starts_with("menu.") && !n.author_id.contains("studio")).count();
+    assert_eq!(titles, 19);
     assert_eq!(node("menu.file").value.as_deref(), None);
     // D-F10: the visibility icons are text.tertiary in both states.
     let red = row_id(&layer(&f, "Red"));
@@ -156,6 +167,10 @@ fn frame_regions_panels_and_ids() {
     assert!(matches!(t.get(t.get(vis).children[0]).paint, Paint::TintedIcon { icon, .. } if Some(icon) == icons::ui("eye_off")));
 }
 
+/// Unbuilt controls of the 1920 x 1080 frame after B6, pinned at the measured count (review F9; B5's bound was > 40 with
+/// the nineteen titles among them).
+const STATICS_B6: u64 = 31;
+
 /// Every interactive author_id maps to one command table entry; every unbuilt control answers not_implemented_yet in
 /// the status bar and the receipt, by pointer and by invoke, with no Viewer call, no undo step and no focus move.
 #[test]
@@ -179,8 +194,9 @@ fn every_control_answers_and_static_ones_say_not_implemented_yet() {
             assert!(before.as_deref().is_some_and(|v| v.starts_with(NIY)), "{id}: the value states the reason first");
         }
     }
-    // B6 (SMB-GUI-MENU-1): the nineteen menu titles open menus now; the other unbuilt controls stay static.
-    assert!(statics > 25, "{statics}");
+    // B6 (SMB-GUI-MENU-1): the nineteen menu titles open menus now (B5 counted them among the more than 40); the other
+    // unbuilt controls stay static. The bound is the count measured at this lane (lane notes F9).
+    assert_eq!(statics, STATICS_B6, "the unbuilt controls of this frame");
     assert_eq!(f.statics(), statics);
     // Undo the layer commands the sweep made, so only the static ones are left to compare.
     let viewer_ops = f.viewer().run().ops().len();

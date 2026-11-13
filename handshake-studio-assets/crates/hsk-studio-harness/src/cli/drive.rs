@@ -19,7 +19,8 @@ use crate::view::{Viewer, render::Prefer};
 use hsk_studio_accord::{ActorContext, ClientSessionId, Ticks, TransientCorrelation};
 use hsk_studio_harness_core::action::{self, Surface, ValueType};
 use hsk_studio_harness_core::harness::{motion_commands, web_commands};
-use hsk_studio_harness_core::manual::{DRIVE_CATALOG_ROUTES, DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline, viewer_row_of};
+use crate::view::menu_tree::{self, CatalogRefusal, MenuContext};
+use hsk_studio_harness_core::manual::{DRIVE_CATALOG_ROUTES, DRIVE_RUN_COMMANDS, DRIVE_SHELL_NOT_DRIVEABLE, DRIVE_TIMELINE, DRIVE_TIMELINE_NOT_DRIVEABLE, DRIVE_VIEWER, DriveTimeline, viewer_command_id, viewer_row_of};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -187,7 +188,12 @@ impl Live {
         let before = self.viewer.run().ops().len();
         let result = match id {
             "layer.rename" => self.viewer.rename_layer(text("layer"), text("name")),
-            "layer.set_visible" => self.viewer.set_visible(text("layer"), flag("visible")),
+            // The menus' shared executor (lane SMB-GUI-MENU-1): one code path for the leaf and this row.
+            "layer.set_visible" => match menu_tree::run_catalog(&mut self.viewer, id, &params) {
+                Some(Ok(r)) => r.map(|v| v.as_u64().unwrap_or_default()),
+                Some(Err(e)) => return Err(catalog_refusal(e)),
+                None => return Err(refuse("command_not_driveable", json!({"command_id": id}))),
+            },
             "layer.set_opacity" => self.viewer.set_opacity(text("layer"), number("opacity")),
             "layer.set_blend_mode" => match text("blend_mode").parse::<u16>() {
                 Ok(mode) if mode >= 1 => self.viewer.set_blend_mode(text("layer"), mode),
@@ -326,7 +332,12 @@ impl Live {
             }
         }
         let before = self.viewer.run().ops().len();
-        match super::drive_viewer::call(&mut self.viewer, row, params)? {
+        // The menus' shared executor runs its rows (lane SMB-GUI-MENU-1): a menu leaf and this row are one code path.
+        let outcome = match menu_tree::run_catalog(&mut self.viewer, &viewer_command_id(method), params) {
+            Some(r) => r.map_err(catalog_refusal)?,
+            None => super::drive_viewer::call(&mut self.viewer, row, params)?,
+        };
+        match outcome {
             Ok(result) => Ok(json!({"result": result, "revision": self.revision()})),
             Err(message) => Err(self.failure(before, "command_refused", message)),
         }
@@ -338,6 +349,9 @@ impl Live {
             return Err(refuse("command_not_driveable", json!({"command_id": id, "reason": reason})));
         }
         let Some(command) = ShellCommand::from_id(id) else {
+            if id.is_empty() {
+                return self.menu_leaf(id, params, expected);
+            }
             return Err(refuse("unknown_command", json!({"command_id": id, "hint": "state.shell.menu lists the leaves"})));
         };
         if let Some(key) = params.keys().next() {
@@ -348,6 +362,23 @@ impl Live {
         match self.viewer.shell_command(command) {
             Ok(()) => Ok(json!({"revision": self.revision()})),
             Err(message) => Err(self.failure(before, "command_refused", message)),
+        }
+    }
+
+    /// A designed menu leaf that is not a shell command (lane SMB-GUI-MENU-1): the one evaluation the native menu
+    /// renders (`Viewer::studio_menu`, every shell command shown) gates it, and it runs through the shared executor.
+    /// A greyed leaf answers its reason code with its availability record as the detail.
+    fn menu_leaf(&mut self, id: &str, params: &Params, expected: Option<u64>) -> Result<Value, Refusal> {
+        if !menu_tree::template().meta.contains_key(id) {
+            return Err(refuse("unknown_command", json!({"command_id": id, "hint": "state.shell.menu lists the leaves"})));
+        }
+        if let Some(key) = params.keys().next() {
+            return Err(refuse("parameter_unknown", json!({"key": key})));
+        }
+        self.check_revision(expected)?;
+        match self.viewer.run_menu_leaf(&MenuContext::everything(), id) {
+            Ok(run) => Ok(json!({"revision": self.revision(), "command": run.command, "params": run.params, "result": run.result, "undo_name": run.undo_name})),
+            Err(r) => Err(Refusal { code: r.code, detail: json!({"command": r.command, "availability": r.availability.map(|a| a.json()), "detail": r.detail}) }),
         }
     }
 
@@ -370,6 +401,11 @@ impl Live {
             Err(message) => Err(self.failure(before, "timeline_refused", message)),
         }
     }
+}
+
+/// A parameter refusal of the menus' shared executor, as the drive surface's refusal.
+fn catalog_refusal(e: CatalogRefusal) -> Refusal {
+    refuse(e.code, e.detail)
 }
 
 /// Every given key is declared, every declared key is given and each value has the declared type.

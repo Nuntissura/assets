@@ -526,6 +526,8 @@ pub struct PopupRow {
     pub submenu: bool,
     pub open: bool,
     pub hot: bool,
+    /// A toggle row (MenuItemCheckBox: the panels, GPU render, status log) and whether it is on.
+    pub toggle: bool,
     pub checked: bool,
     pub shown: bool,
     pub remedy: bool,
@@ -542,6 +544,9 @@ pub struct PopupLevel {
     pub rect: Rect,
     pub rows: Vec<PopupRow>,
     pub empty: Option<(String, String, String, String)>,
+    /// The scroll lane when not every row fits (components.json `menu_popup.pointer`): whether rows lie above the
+    /// first shown one and below the last. None: every row shows.
+    pub scroll: Option<(bool, bool)>,
 }
 
 /// Every open popup, left to right, and their union (the popup panel's viewport).
@@ -584,8 +589,11 @@ pub fn popups(b: &mut Builder<'_>, p: &PopupFacts) {
                     }),
             );
             b.leaf(Node::deco().paint(Paint::Label { text: label.clone(), token: TextToken::Body, weight: 0, color: None, align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fixed(kumihimo_ui::tokens::size::MENU_ITEM_H)));
-            b.leaf(Node::deco().paint(Paint::Label { text: reason.clone(), token: TextToken::Caption, weight: 0, color: Some(ColorToken::TextTertiary), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fixed(widgets::popup::REASON_LINE)));
+            b.leaf(Node::deco().paint(Paint::Label { text: reason.clone(), token: TextToken::Caption, weight: 0, color: Some(ColorToken::TextSecondary), align: Align::Start, ellipsis: true }).size(Size::Fill, Size::Fixed(widgets::popup::REASON_LINE)));
             b.end();
+        }
+        if let Some((up, _)) = l.scroll {
+            widgets::menu_scroll_button(b, &format!("{}.scroll-up", l.id), "Scroll up", ui_icon("chev_up"), up);
         }
         for r in &l.rows {
             let row = MenuRow {
@@ -598,11 +606,15 @@ pub fn popups(b: &mut Builder<'_>, p: &PopupFacts) {
                 submenu: r.submenu,
                 open: r.open,
                 hot: r.hot,
+                toggle: r.toggle,
                 checked: r.checked,
                 shown: r.shown,
                 remedy: r.remedy,
             };
             widgets::menu_item(b, &row, check, chevron);
+        }
+        if let Some((_, down)) = l.scroll {
+            widgets::menu_scroll_button(b, &format!("{}.scroll-down", l.id), "Scroll down", ui_icon("chev_down"), down);
         }
         b.end();
         b.end();
