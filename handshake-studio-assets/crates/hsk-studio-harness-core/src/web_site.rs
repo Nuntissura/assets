@@ -1596,7 +1596,10 @@ fn rewrites(set: &SiteSet, after: &Files, from: &str, to: &str, link_base: &str,
 /// The receipt rows of planned rewrites (per changed file, sorted by its new id: every change's byte ranges before
 /// and after, line and references) and the writes (old id, the file's own bytes with the edits applied; a style
 /// sheet was scanned masked, review F8), in source order.
-fn receipt_rows(set: &SiteSet, planned: &[Planned]) -> R<(Vec<Value>, Vec<(String, String)>)> {
+/// Receipt rows and the (id, new text) writes of planned rewrites.
+type RowsAndWrites = (Vec<Value>, Vec<(String, String)>);
+
+fn receipt_rows(set: &SiteSet, planned: &[Planned]) -> R<RowsAndWrites> {
     let mut changed = Vec::new();
     let mut writes = Vec::new();
     for p in planned {
@@ -2392,6 +2395,9 @@ fn generated(t: &Template, text: &str, template_id: &str, st: &State, at: &str, 
     Ok(Generated { text: out, doc, instance })
 }
 
+/// An instance's new text, its instance markers and (when generated) the parsed document.
+type Regenerated = (String, Vec<Range<usize>>, Option<WebDoc>);
+
 /// How an instance stands against its template ([STU-WEB-093]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Standing {
@@ -2740,7 +2746,7 @@ impl WebHost {
             cancel.check().map_err(|_| No("canceled", String::new(), None))?;
             let old = src.doc.source();
             let how = resolve.get(&src.id).copied();
-            let (outcome, next): (&str, Option<(String, Vec<Range<usize>>, Option<WebDoc>)>) = if how == Some("detach") {
+            let (outcome, next): (&str, Option<Regenerated>) = if how == Some("detach") {
                 let mut text = String::with_capacity(old.len());
                 let mut at = 0usize;
                 for m in &inst.markers {
@@ -2971,7 +2977,11 @@ impl Snippet {
 
 /// The optional fields of [STU-WEB-113] and the snippet library of one site record.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(super) struct SiteDepth {
+pub(super) struct SiteDepth(Box<DepthFields>);
+
+/// The fields behind [`SiteDepth`] (boxed: a site record stays small in every history step).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct DepthFields {
     testing_target: Option<super::Target>,
     server_model_id: Option<&'static str>,
     preprocessor_config: Option<Preprocessor>,
@@ -2980,6 +2990,20 @@ pub(super) struct SiteDepth {
     browser_baseline: Option<Vec<String>>,
     version_control_binding: Option<VcBinding>,
     snippets: Vec<Snippet>,
+}
+
+impl std::ops::Deref for SiteDepth {
+    type Target = DepthFields;
+
+    fn deref(&self) -> &DepthFields {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SiteDepth {
+    fn deref_mut(&mut self) -> &mut DepthFields {
+        &mut self.0
+    }
 }
 
 /// The dotted key of the first object key named like a secret inside `value` (depth at most 8).
@@ -3401,6 +3425,11 @@ pub(super) struct SyncPlan {
     apply: bool,
 }
 
+/// A file's size and modification time (milliseconds since the epoch).
+type Stat = (u64, u64);
+/// One compared file: its id, action and both sides' stats.
+type SyncRow = (String, &'static str, Option<Stat>, Option<Stat>);
+
 /// A regular file's size and modification time (milliseconds since the epoch).
 fn file_stat(path: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file)?;
@@ -3533,7 +3562,7 @@ impl WebHost {
                 out
             }
         };
-        let mut rows: Vec<(String, &'static str, Option<(u64, u64)>, Option<(u64, u64)>)> = Vec::new();
+        let mut rows: Vec<SyncRow> = Vec::new();
         for id in selected.iter().filter(|id| !reserved(id)) {
             cancel.check().map_err(|_| No("canceled", String::new(), None))?;
             let segments = split_path(id);
