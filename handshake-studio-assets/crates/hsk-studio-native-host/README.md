@@ -23,8 +23,19 @@ studio-vk offscreen --document <path>/demo.handshake --out doc.png              
 studio-vk window --quiet --frames 3 --capture shot.png --receipt shot.json       # agents and tests
 studio-vk window --quiet --frames 4 --exercise --scene painted --capture e.png   # resize, minimise, restore
 studio-vk window --document <path>/demo.handshake                                # the Operator's own window
+studio-vk offscreen --actor agent-7 --session s-42 --resource SDOC-<uuidv7> --observe run.jsonl   # attributed run
 studio-vk help
 ```
+
+Every `offscreen` and `window` run sends one terminal observe frame (F-R60-22), on every exit path: success, any
+refusal (usage refusals of the command line included) and a panic (`Failure(Unavailable)`, then the panic goes on).
+The frame is attributed to the caller `--actor` (account and principal; owner and access space default to it),
+`--session` and `--resource` name; all three or none. With none, the run is the asset-local test host's fixed
+context, the one harness-view's `Viewer::new` runs on, and the line says `caller_default: true`. Each frame is one
+`hsk.studio.native_host.observe@1` JSON line (class, bytes, outcome and failure wire codes, correlation, sequence,
+`caller_default`, `frame_hex`) appended to `--observe`, else written to stderr. `help` is not a run and sends none.
+Library callers pass their own `diag::HostRun` (actor, resource, correlation, cancellation, sink) to
+`offscreen::run` and `window::run`; `HostRun::terminal()` tells what the delivery returned.
 
 The `document` feature (`--features document`) links harness-view's `Viewer` (and through it egui, eframe and wgpu)
 and renders with `Prefer::Cpu`, so the viewer opens no GPU device. Any file `Viewer::open` accepts works (a PNG goes
@@ -134,6 +145,8 @@ and the reference), menus opening, docking and splitters, rename, reorder, lock,
   warnings, the first 16 message ids), loader layers seen, enabled and disabled, extent, format,
   `frame_sha256`, focus counters, swapchain state, counters and transitions, DPI, chrome, document facts.
 - The same scene gives the same `frame_sha256` offscreen and in the window.
+- Observe line (`hsk.studio.native_host.observe@1`, `--observe` file or stderr): one per run, see Run. A sink that
+  could not take the frame leaves `observe_undelivered <code>` on stderr; the exit code stays the run's.
 
 ## Quiet rules (HBR-QUIET)
 
@@ -154,7 +167,8 @@ this process only (`VK_LOADER_LAYERS_DISABLE=~implicit~`) unless `--allow-overla
   `src/gui/chrome.rs` the band views, `src/gui/view.rs` the Layers panel views, `src/script.rs` the scripted step queue, `src/event.rs` the typed HostEvent stream.
 - `src/cli.rs` arguments, `src/offscreen.rs` offscreen path, `src/window.rs` winit app and exercise script,
   `src/scene.rs` clear, CPU painter and document flattening, `src/capture.rs` PNG, hash and receipt JSON,
-  `src/win32.rs` the only `unsafe` here (window style and foreground queries), `src/diag.rs` observe terminal frames.
+  `src/win32.rs` the only `unsafe` here (window style and foreground queries), `src/diag.rs` observe terminal frames
+  (`HostRun`, the entries' `observed` wrapper, studio-vk's `LineSink`).
 - `hsk-studio-vulkan`: `Owner` (transient owner, panes), `Presenter` (surface, swapchain, blit), `machine` (swapchain
   state machine).
 
@@ -163,6 +177,7 @@ this process only (`VK_LOADER_LAYERS_DISABLE=~implicit~`) unless `--allow-overla
 | Exit | Code | Meaning | Recovery |
 |---|---|---|---|
 | 2 | usage | unknown flag, bad size, quiet without `--frames` | fix the arguments; no window was opened |
+| 2 | caller_incomplete, actor_invalid, resource_invalid, flag_repeated | the caller flags: not all three, an id outside accord's bounds (1..=128 bytes, no control character), not an accord domain id, a flag given twice | pass all three valid flags or none; the refusal's frame is on the fixed context |
 | 3 | vulkan_unavailable, api_below_baseline, no_suitable_device, ... | no Vulkan 1.3 device or a Vulkan refusal | install a Vulkan 1.3 driver; nothing falls back |
 | 3 | owner_already_open | a second device in one process | one owner per process |
 | 3 | device_lost, surface_unrecoverable | the device or surface did not come back | rerun; owner rebind is not built yet |
