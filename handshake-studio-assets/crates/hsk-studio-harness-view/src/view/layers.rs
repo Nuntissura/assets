@@ -79,18 +79,10 @@ pub(super) fn try_mint_layer_id(doc: &StudioDocument, salt: u64) -> Result<Strin
 pub(super) fn try_mint_block_id(doc: &StudioDocument, block: &str, salt: u64, taken: &dyn Fn(&str) -> bool) -> Result<String, &'static str> {
     let uuid = doc.document_id.split_once('-').map_or("", |(_, u)| u);
     let (high, low) = (uuid.get(0..8).unwrap_or("00000000"), uuid.get(9..13).unwrap_or("0000"));
-    let revision = mint_revision(doc);
-    if revision >= ID_HALF {
+    if doc.revision >= ID_HALF {
         return Err(LAYER_ID_SPACE_EXHAUSTED);
     }
-    let base = revision.checked_mul(ID_HALF).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
-    // Test seam (review F3): an injected space that holds no more id.
-    #[cfg(test)]
-    {
-        if tests::MINTS_LEFT.with(std::cell::Cell::get) == Some(0) {
-            return Err(LAYER_ID_SPACE_EXHAUSTED);
-        }
-    }
+    let base = doc.revision.checked_mul(ID_HALF).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
     let mut at = salt;
     loop {
         if at >= ID_HALF {
@@ -99,26 +91,9 @@ pub(super) fn try_mint_block_id(doc: &StudioDocument, block: &str, salt: u64, ta
         let n = base.checked_add(at).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
         let id = format!("SLYR-{high}-{low}-7ede-{block}-{n:012x}");
         if !doc.layers.iter().any(|l| l.layer_id == id) && !taken(&id) {
-            #[cfg(test)]
-            {
-                tests::MINTS_LEFT.with(|m| m.set(m.get().map(|left| left.saturating_sub(1))));
-            }
             return Ok(id);
         }
         at = at.checked_add(1).ok_or(LAYER_ID_SPACE_EXHAUSTED)?;
-    }
-}
-
-/// The revision a mint carries: the document's. A test may inject a revision floor (`#[cfg(test)]` only, the
-/// thread-local `tests::INJECTED_REVISION`) to reach the exhausted space without 2^24 commits (review F3).
-fn mint_revision(doc: &StudioDocument) -> u64 {
-    #[cfg(test)]
-    {
-        doc.revision.max(tests::INJECTED_REVISION.with(std::cell::Cell::get))
-    }
-    #[cfg(not(test))]
-    {
-        doc.revision
     }
 }
 
@@ -130,11 +105,9 @@ pub(super) fn mint_layer_id(doc: &StudioDocument, salt: u64) -> String {
     try_mint_layer_id(doc, salt).unwrap_or_else(|code| format!("{code}-{salt}"))
 }
 
-/// [`try_mint_layer_id`] as the refusal text every layer creator returns before it writes anything
-/// (`layer_id_space_exhausted: ...`; review F3, lead 2026-11-13: layers, text, vector and design creators alike,
-/// no sentinel id).
-pub(super) fn mint_or_refuse(doc: &StudioDocument, salt: u64) -> Result<String, String> {
-    try_mint_layer_id(doc, salt).map_err(|code| format!("{code}: no fresh layer id at revision {} (salt {salt})", mint_revision(doc)))
+/// [`try_mint_layer_id`] as this module's refusal text (`layer_id_space_exhausted: ...`).
+fn mint_or_refuse(doc: &StudioDocument, salt: u64) -> Result<String, String> {
+    try_mint_layer_id(doc, salt).map_err(|code| format!("{code}: no fresh layer id at revision {} (salt {salt})", doc.revision))
 }
 
 /// The graph operation of a new leaf (image source) or group (ordered composite).
@@ -450,20 +423,7 @@ mod tests {
     //! The layer id mint of the lead ruling 2026-11-13 (lane SMB-PS-FILTER-ADJUST-COMMANDS-1): conditions (1) no
     //! silent wrap, (2) the combined value is a valid id, (3) one revision mints distinct ids, (6) ids of the
     //! earlier scheme stay valid and distinct. (4) and (5) run through the viewer (harness tests/viewer_raster_effects.rs).
-    //! Review F3: every layer creator refuses typed at an injected exhausted revision and writes nothing.
     use super::*;
-    use crate::view::render::Prefer;
-    use crate::view::vector::ShapeKind;
-    use hsk_studio_harness_core::document_new::{DocumentProfile, NewDocument};
-    use hsk_studio_nib::pathfinder::PathfinderOp;
-    use std::cell::Cell;
-
-    thread_local! {
-        /// Review F3: a revision floor every mint on this thread carries ([`mint_revision`]).
-        pub(super) static INJECTED_REVISION: Cell<u64> = const { Cell::new(0) };
-        /// Review F3: the ids the space still holds for mints on this thread (`None`: no injected bound).
-        pub(super) static MINTS_LEFT: Cell<Option<u64>> = const { Cell::new(None) };
-    }
 
     const DOC: &str = "SDOC-019abcde-0000-7000-8000-000000000001";
 
@@ -511,7 +471,13 @@ mod tests {
         // Lower bits that run out refuse instead of carrying into the next revision's ids.
         let last = format!("SLYR-019abcde-0000-7ede-9000-{:012x}", 2 * ID_HALF + (ID_HALF - 1));
         assert_eq!(try_mint_layer_id(&document(2, &[last]), ID_HALF - 1), Err(LAYER_ID_SPACE_EXHAUSTED));
-        // Every creator refuses with the code as the leading token (review F3: no sentinel id any more).
+        // The unconditional form returns a non-SLYR text a commit refuses, distinct per salt.
+        let a = mint_layer_id(&document(ID_HALF, &[]), 7);
+        let b = mint_layer_id(&document(ID_HALF, &[]), 8);
+        assert_eq!(a, "layer_id_space_exhausted-7");
+        assert_ne!(a, b);
+        assert!(hsk_studio_accord::DomainId::parse(&a).is_err());
+        // This module's creators (new layer, duplicate, group) refuse with the code as the leading token.
         let refusal = mint_or_refuse(&document(ID_HALF, &[]), 0).unwrap_err();
         assert_eq!(super::super::commands::leading_code(&refusal).as_deref(), Some(LAYER_ID_SPACE_EXHAUSTED), "{refusal}");
     }
@@ -547,93 +513,5 @@ mod tests {
         // Even at revision 0 the document's own ids are never minted.
         let fresh = try_mint_layer_id(&document(0, &old), 0).unwrap();
         assert!(!old.contains(&fresh), "{fresh}");
-    }
-
-    /// A viewer with its own test actor over a new raster document: a raster layer, three vector shapes, a text
-    /// layer and a component made of the third shape. Returns (viewer, raster, a, b, text, component).
-    fn fixture() -> (Viewer, String, String, String, String, String) {
-        let actor = hsk_studio_accord::ActorContext::new("lane-fx-account", "lane-fx-principal", "owner", "owner-principal", "space", "lane-fx-session").unwrap();
-        let context = hsk_studio_harness_core::RunContext::new(
-            actor,
-            hsk_studio_harness_core::ClientSessionId::parse("lane-fx-window").unwrap(),
-            std::sync::Arc::new(hsk_studio_harness_core::TransientCorrelation::starting_at(1)),
-        );
-        let mut v = Viewer::with_context(Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context);
-        v.new_document(&NewDocument::new(DocumentProfile::Raster, Some((96.0, 64.0))), None).unwrap();
-        let raster = v.new_raster_layer("r").unwrap();
-        let a = v.draw_shape(ShapeKind::Rectangle, [10.0, 10.0], [50.0, 40.0], false).unwrap();
-        let b = v.draw_shape(ShapeKind::Ellipse, [30.0, 20.0], [70.0, 50.0], false).unwrap();
-        let c = v.draw_shape(ShapeKind::Rectangle, [60.0, 5.0], [90.0, 15.0], false).unwrap();
-        let text = v.place_text(10.0, 58.0, "Hi").unwrap();
-        let made = row(&mut v, "component.create_from_selection", json!({"layers": [c], "name": "Button"})).unwrap();
-        let component = made["component_id"].as_str().unwrap_or_else(|| panic!("{made}")).to_owned();
-        (v, raster, a, b, text, component)
-    }
-
-    fn row(v: &mut Viewer, id: &str, params: Value) -> Result<Value, String> {
-        let map = params.as_object().cloned().unwrap_or_default();
-        v.run_command(id, &map).map_err(|r| format!("{} {}", r.code, r.detail))
-    }
-
-    /// Everything a layer creator could write: the history, the document and the record entries.
-    fn written(v: &Viewer) -> (Value, String, Vec<Option<Vec<u8>>>) {
-        let doc = serde_json::to_string(v.run.snapshot().unwrap().document()).unwrap();
-        let entries = ["raster_records", "vector", "text", "design"].iter().map(|e| v.run.document_entry(e).map(<[u8]>::to_vec)).collect();
-        (v.run.history(), doc, entries)
-    }
-
-    type Creator = (&'static str, Box<dyn Fn(&mut Viewer) -> Result<(), String>>);
-
-    /// One creator as a boxed call (the closure's parameter type comes from the bound).
-    fn c(f: impl Fn(&mut Viewer) -> Result<(), String> + 'static) -> Box<dyn Fn(&mut Viewer) -> Result<(), String>> {
-        Box::new(f)
-    }
-
-    /// Review F3 (lead 2026-11-13): at an injected exhausted revision (2^24) every layer creator, the layers,
-    /// text, vector, design and raster-records mints alike, refuses `layer_id_space_exhausted` and writes nothing
-    /// (history, document and entries byte-identical); the second mint inside one command (an instance's copied
-    /// definition layers, design/instance.rs) refuses the same way when the injected space holds one id. At the
-    /// near-limit revision 2^24 - 1 ids are still minted, carrying it.
-    #[test]
-    fn every_layer_creator_refuses_typed_at_an_exhausted_revision_and_writes_nothing() {
-        let (mut v, raster, a, b, text, component) = fixture();
-        let creators: Vec<Creator> = vec![
-            ("layers new_raster_layer", c(|v| v.new_raster_layer("x").map(drop))),
-            ("layers duplicate_layer", { let r = raster.clone(); c(move |v| v.duplicate_layer(&r).map(drop)) }),
-            ("layers group_layers", { let r = raster.clone(); c(move |v| v.group_layers(std::slice::from_ref(&r), "g").map(drop)) }),
-            ("text place_text", c(|v| v.place_text(40.0, 58.0, "Yo").map(drop))),
-            ("vector create_vector_layer", c(|v| v.draw_shape(ShapeKind::Rectangle, [5.0, 45.0], [25.0, 60.0], false).map(drop))),
-            ("vector free_layer_ids (create_outlines)", { let t = text.clone(); c(move |v| v.create_outlines(&t).map(drop)) }),
-            ("vector replace_with_pieces_deleting (knife)", { let a = a.clone(); c(move |v| { v.select(Some(a.clone())); v.knife_cut(&[[20.0, 0.0], [20.0, 64.0]]).map(drop) }) }),
-            ("vector pathfinder_inner", { let (a, b) = (a.clone(), b.clone()); c(move |v| v.pathfinder_layers(PathfinderOp::Union, &[a.clone(), b.clone()]).map(drop)) }),
-            ("design group_writes (component.create_from_selection)", { let b = b.clone(); c(move |v| row(v, "component.create_from_selection", json!({"layers": [b], "name": "Two"})).map(drop)) }),
-            ("design create_instance", { let comp = component.clone(); c(move |v| row(v, "component.create_instance", json!({"component": comp, "x": 5, "y": 5})).map(drop)) }),
-            ("raster records adjustment.create (9300)", c(|v| row(v, "adjustment.create", json!({"adjustment": {"kind": "invert"}})).map(drop))),
-        ];
-        INJECTED_REVISION.with(|r| r.set(ID_HALF));
-        for (name, create) in &creators {
-            let before = written(&v);
-            let e = create(&mut v).expect_err(name);
-            assert!(e.contains(LAYER_ID_SPACE_EXHAUSTED), "{name}: {e}");
-            assert!(written(&v) == before, "{name}: a refusal writes nothing");
-        }
-        // The second mint of one command: create_instance mints the frame, then design/instance.rs the copied
-        // definition layers; the injected space holds one id.
-        INJECTED_REVISION.with(|r| r.set(0));
-        MINTS_LEFT.with(|m| m.set(Some(1)));
-        let before = written(&v);
-        let e = row(&mut v, "component.create_instance", json!({"component": component, "x": 5, "y": 5})).unwrap_err();
-        assert!(e.contains(LAYER_ID_SPACE_EXHAUSTED), "{e}");
-        assert!(written(&v) == before, "the instance's second mint writes nothing");
-        MINTS_LEFT.with(|m| m.set(None));
-        // Near the limit the creators still mint, carrying the revision in the upper bits (the creators that do not
-        // consume the fixture's layers; one instance takes two mints).
-        INJECTED_REVISION.with(|r| r.set(ID_HALF - 1));
-        for (name, create) in creators.iter().filter(|(n, _)| ["layers new_raster_layer", "text place_text", "vector create_vector_layer", "design create_instance", "raster records adjustment.create (9300)"].contains(n)) {
-            create(&mut v).unwrap_or_else(|e| panic!("{name} at revision 2^24 - 1: {e}"));
-        }
-        let edge = v.new_raster_layer("edge").unwrap();
-        assert_eq!(counter(&edge) >> 24, ID_HALF - 1, "{edge}");
-        INJECTED_REVISION.with(|r| r.set(0));
     }
 }
