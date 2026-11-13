@@ -8,8 +8,12 @@
 #[doc(hidden)]
 pub mod charref;
 mod css;
+// Lane SMB-WEB-CODE-1: web code intelligence ([STU-WEB-011] to [STU-WEB-076]): document types, tag vocabulary, the
+// CSS property surface, regions and hints, validation and linting, formatting edits.
+pub mod doc_types;
 #[doc(hidden)]
 pub mod dom;
+pub mod vocabulary;
 mod entity;
 mod entity_table;
 #[doc(hidden)]
