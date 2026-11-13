@@ -36,8 +36,13 @@ context, the one harness-view's `Viewer::new` runs on, with the documented defau
 `caller_default: true`. Each frame is one
 `hsk.studio.native_host.observe@1` JSON line (class, bytes, outcome and failure wire codes, correlation, sequence,
 `caller_default`, `frame_hex`) appended to `--observe`, else written to stderr. `help` is not a run and sends none.
+Each studio-vk run mints its own correlation (start time and process id, through accord's `TransientCorrelation`).
+A non-Unicode argument is usage `argument_encoding`, with its failure frame on the fixed context. An `--observe`
+file that does not open sends the line to stderr after an `observe_unavailable <code>` note. A failed write to stderr
+is ignored: the exit code and the receipt stand.
 Library callers pass their own `diag::HostRun` (actor, resource, correlation, cancellation, sink) to
-`offscreen::run` and `window::run`; `HostRun::terminal()` tells what the delivery returned.
+`offscreen::run` and `window::run`; `HostRun::terminal()` tells what the delivery returned. A `HostRun` carries one
+run: a second run on it is refused with usage `host_run_reused` before any work.
 
 The `document` feature (`--features document`) links harness-view's `Viewer` (and through it egui, eframe and wgpu)
 and renders with `Prefer::Cpu`, so the viewer opens no GPU device. Any file `Viewer::open` accepts works (a PNG goes
@@ -148,7 +153,8 @@ and the reference), menus opening, docking and splitters, rename, reorder, lock,
   `frame_sha256`, focus counters, swapchain state, counters and transitions, DPI, chrome, document facts.
 - The same scene gives the same `frame_sha256` offscreen and in the window.
 - Observe line (`hsk.studio.native_host.observe@1`, `--observe` file or stderr): one per run, see Run. A sink that
-  could not take the frame leaves `observe_undelivered <code>` on stderr; the exit code stays the run's.
+  could not take the frame leaves `observe_undelivered <code>` on stderr; the exit code stays the run's. An
+  `--observe` file that does not open leaves `observe_unavailable <code>` and the line on stderr.
 
 ## Quiet rules (HBR-QUIET)
 
@@ -180,6 +186,8 @@ this process only (`VK_LOADER_LAYERS_DISABLE=~implicit~`) unless `--allow-overla
 |---|---|---|---|
 | 2 | usage | unknown flag, bad size, quiet without `--frames` | fix the arguments; no window was opened |
 | 2 | caller_incomplete, actor_invalid, resource_invalid, flag_repeated | the caller flags: not all three, an id outside accord's bounds (1..=128 bytes, no control character), not an accord domain id, a flag given twice | pass all three valid flags or none; the refusal's frame is on the fixed context |
+| 2 | argument_encoding | an argument that is not Unicode (for example a lone UTF-16 surrogate in a path) | pass Unicode arguments; the refusal's frame is on the fixed context |
+| 2 | host_run_reused | library: a `diag::HostRun` given to a second run | one `HostRun` per run |
 | 3 | vulkan_unavailable, api_below_baseline, no_suitable_device, ... | no Vulkan 1.3 device or a Vulkan refusal | install a Vulkan 1.3 driver; nothing falls back |
 | 3 | owner_already_open | a second device in one process | one owner per process |
 | 3 | device_lost, surface_unrecoverable | the device or surface did not come back | rerun; owner rebind is not built yet |
