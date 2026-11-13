@@ -248,10 +248,14 @@ impl Viewer {
             return Err(format!("delete: {layer_id} is not in a layer stack"));
         }
         let gone = Self::subtree(doc, layer_id);
+        // Lane SMB-PS-FILTER-ADJUST-COMMANDS-1 (lead decision 2026-11-13, records never outlive their layer): the
+        // raster records keyed to the deleted layers leave in the delete's own undo step.
+        let raster = self.raster_records_after_delete(&gone);
         if self.layout_bound(doc, &gone) {
             let entry = self.records_after_delete(&gone).map(|bytes| (super::vector::ENTRY, bytes));
             let ok = self.run.delete_layout_layers("delete_layer", "layer.delete_layout_layers", &[layer_id.to_string()], entry);
             let revision = self.after_edit(ok, format!("deleted {layer_id}"))?;
+            self.raster_records_into_delete_step(raster)?;
             if self.selected.as_ref().is_some_and(|s| gone.contains(s)) {
                 self.selected = None;
             }
@@ -283,6 +287,7 @@ impl Viewer {
             }
             None => self.structure("delete_layer", writes, format!("deleted {layer_id}"))?,
         };
+        self.raster_records_into_delete_step(raster)?;
         if self.selected.as_deref() == Some(layer_id) {
             self.selected = None;
         }

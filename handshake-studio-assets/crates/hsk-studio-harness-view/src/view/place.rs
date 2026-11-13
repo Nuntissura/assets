@@ -35,8 +35,11 @@
 //!   sources; the tiles are `rgb_f32le`).
 //!
 //! Placed layers take ids from their own block (`7ede-9200`), so a layer another tool creates after a
-//! placed layer is deleted never takes its id; the deleted layer's record stays in [`ENTRY`] (undo brings
-//! the layer back) and is ignored at render and in validation (pruned to the document's layers).
+//! placed layer is deleted never takes its id. A layer delete (`layers::delete_layer`) takes the deleted layers'
+//! rows and placed instances out of [`ENTRY`] in its own undo step (undo brings them back with the layers; lane
+//! SMB-PS-FILTER-ADJUST-COMMANDS-1, lead decision 2026-11-13); rows of absent layers a package still holds are
+//! dropped at open with a loss note ([`Viewer::place_opened`]) and are ignored at render and in validation
+//! (pruned to the document's layers).
 //! - [`Viewer::move_content`] (`transform.move`): a translation by `dx`, `dy`; on a pixel layer whole pixels
 //!   only (an exact copy, `move_not_whole_pixels` otherwise).
 //! - [`Viewer::reset_transform`] (`transform.reset`): a placed layer back to its transform as placed.
@@ -757,9 +760,70 @@ impl Viewer {
     pub(super) fn place_opened(&mut self, import: Option<StudioRasterRecords>) {
         let base = self.source.as_deref().and_then(Path::parent).map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p }).and_then(|p| std::fs::canonicalize(p).ok());
         self.place = PlaceState { import, links: BTreeMap::new(), base };
+        self.drop_absent_records();
         self.place_sync();
         if let Some(entry) = self.run.snapshot().map(|s| s.document().clone()).and_then(|doc| self.editable_entry(&doc).ok()) {
             self.check_links(&entry);
+        }
+    }
+
+    /// Lane SMB-PS-FILTER-ADJUST-COMMANDS-1 (lead decision 2026-11-13, records never outlive their layer): at open,
+    /// the rows and placed instances of [`ENTRY`] that name a layer the document does not hold (a package written
+    /// before the delete took them along, or by another writer) are dropped, written outside the history as the
+    /// design states of absent layers are, with one loss note per layer on the status log
+    /// (`raster_records_dropped: <layer id>`), so a layer that later takes such an id inherits nothing. An entry that
+    /// does not parse is left as it is (it is not applied at render).
+    fn drop_absent_records(&mut self) {
+        let Some(doc) = self.run.snapshot().map(|s| s.document().clone()) else { return };
+        let Ok(Some(mut entry)) = self.read_place_entry() else { return };
+        let present: BTreeSet<&str> = doc.layers.iter().map(|l| l.layer_id.as_str()).collect();
+        let mut gone: Vec<String> =
+            entry.records.layers.iter().map(|r| r.layer_id.clone()).chain(entry.instances.iter().map(|i| i.layer_id.clone())).filter(|id| !present.contains(id.as_str())).collect();
+        if gone.is_empty() {
+            return;
+        }
+        gone.sort();
+        gone.dedup();
+        entry.prune(&doc);
+        let written = entry.to_bytes().map_err(|e| e.to_string()).and_then(|b| self.run.set_document_entry(ENTRY, Some(b)).map_err(str::to_owned));
+        match written {
+            Ok(()) => {
+                for id in gone {
+                    self.say(format!("raster_records_dropped: {id} (a record of a layer the document does not hold)"));
+                }
+            }
+            Err(e) => self.say(format!("raster records of absent layers not dropped: {e}")),
+        }
+    }
+
+    /// Lead decision 2026-11-13 (records never outlive their layer): [`ENTRY`] without the rows and placed instances
+    /// of `gone` (the layers a delete removes, `layers::delete_layer`), for the delete's own undo step; `None` when
+    /// the entry holds none of them or cannot be read (an unreadable entry is not applied at render and never blocks
+    /// a delete).
+    pub(super) fn raster_records_after_delete(&self, gone: &[String]) -> Option<Vec<u8>> {
+        let doc = self.place_doc().ok()?;
+        let mut entry = self.editable_entry(&doc).ok()?;
+        let held = |id: &str| gone.iter().any(|g| g == id);
+        if !entry.records.layers.iter().any(|r| held(&r.layer_id)) && !entry.instances.iter().any(|i| held(&i.layer_id)) {
+            return None;
+        }
+        entry.records.layers.retain(|r| !held(&r.layer_id));
+        entry.instances.retain(|i| !held(&i.layer_id));
+        entry.to_bytes().ok()
+    }
+
+    /// Puts `bytes` ([`Self::raster_records_after_delete`]) into the delete's own undo step as one group step
+    /// (`Run::entries_into_newest_step`), so undo restores the layers and their records together; a refused write
+    /// rolls the delete back.
+    pub(super) fn raster_records_into_delete_step(&mut self, bytes: Option<Vec<u8>>) -> Result<(), String> {
+        let Some(bytes) = bytes else { return Ok(()) };
+        if self.run.entries_into_newest_step("delete_layer", vec![(ENTRY, bytes)]) {
+            self.place_sync();
+            Ok(())
+        } else {
+            let e = format!("delete_layer: raster records {}", self.op_error());
+            self.say(e.clone());
+            Err(e)
         }
     }
 
