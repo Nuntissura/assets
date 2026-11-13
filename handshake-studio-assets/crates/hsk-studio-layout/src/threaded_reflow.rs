@@ -24,10 +24,11 @@
 //! whatever its number, and the Adobe paragraph composer re-breaks only its last
 //! `PARA_TAIL_LINES + 1` lines); a negative value widens the last line at the set stage only. `space_after` is held and added with the next paragraph's `space_before` as one gap; a
 //! paragraph at a column top takes none (a push past the bottom lands at the next column's top);
-//! a negative gap lifts a paragraph at most to its column's first baseline and the rest of it is
-//! dropped, as at a column top (`floored`: also for a later line of smaller leading and where
-//! balancing re-adds the gap), so the lines that then do not fit are overset (lane
-//! SMB-FIX-NEGATIVE-SPACE-1; STU-TYP-185 states no bounds, so this floor is a Studio reading);
+//! a negative gap lifts a paragraph at most to its column's first baseline, and its line box at
+//! most to the column top (the inset top or the band top), and the rest of it is dropped, as at a
+//! column top (`floored`: also for a later line of smaller leading and where balancing re-adds the
+//! gap), so the lines that then do not fit are overset (lane SMB-FIX-NEGATIVE-SPACE-1; STU-TYP-185
+//! states no bounds, so this floor is a reading of STU-TYP-185);
 //! `space_between_same_style` zeroes the gap between paragraphs of one style; span and split
 //! paragraphs take the larger of the flow record's and the attribute space; a break sentinel drops
 //! the pending space; balancing re-adds the space between lines of one column. Every sum is
@@ -51,10 +52,12 @@
 //!
 //! Vertical justification (lane SMB-ID-PREPRESS, STU-LAY-121, STU-TYP-190; `reflow_flow` only): after
 //! composition each column of a frame is moved as a block. The block is the line boxes of the
-//! column, from the first line's top (baseline - ascent) to the last line's bottom (baseline +
-//! descent); the free space is the frame's inset height minus the block. `center` places the block
-//! with equal free space above and below, `bottom` puts the last line's bottom on the bottom inset.
-//! `justify` keeps the first line and puts the last line's bottom on the bottom inset: the slack
+//! column, from the highest line top (baseline - ascent) to the deepest line bottom (baseline +
+//! descent), not the first and last lines (a negative paragraph gap can set a later line above an
+//! earlier one; review F1, lane SMB-FIX-NEGATIVE-SPACE-1); the free space is the frame's inset
+//! height minus the block. `center` places the block with equal free space above and below,
+//! `bottom` puts the deepest line's bottom on the bottom inset. `justify` keeps the first line and
+//! moves the last line by the whole slack (onto the bottom inset when it is the deepest): the slack
 //! goes to the P gaps between paragraphs, each at most the frame's `vertical_threshold` (Folio
 //! layout-flow records; none stored = no limit), and what the limit holds back is shared equally
 //! by all line gaps of the column; one line is not moved. Frames with wrap obstacles are not
@@ -232,17 +235,31 @@ impl Cursor {
     }
 }
 
-/// `cur` with `extra` raised to `-(line * height)` when it lies below: line `cur.line` of a paragraph
-/// of line height `height` then sits on its column's first baseline (`baseline_of`), never above it.
-/// Only a negative paragraph gap takes `extra` that low; the part the floor stops is dropped, as a
-/// column top drops the whole gap (Studio reading, lane SMB-FIX-NEGATIVE-SPACE-1; InDesign parity
-/// UNVERIFIED, D5; tests/fix_negative_space.rs). Above the floor nothing changes (no float write).
-fn floored(mut cur: Cursor, height: f64) -> Cursor {
-    let floor = -(cur.line as f64 * height);
+/// `cur` with `extra` raised, when below, to `rise - line * height` (never above 0): line `cur.line`
+/// of a paragraph of line height `height` then sits on its column's first baseline (`baseline_of`),
+/// never above it, and `rise` lower still where its ascent would reach above the column top from
+/// there (fn `rise`; review F2: the floor bounds the line box). Only a negative paragraph gap takes `extra`
+/// that low; the part the floor stops is dropped, as a column top drops the whole gap (a reading of
+/// STU-TYP-185, lane SMB-FIX-NEGATIVE-SPACE-1; InDesign parity UNVERIFIED, D5;
+/// tests/fix_negative_space.rs). Above the floor nothing changes (no float write), and a floor at
+/// most 0 never moves a line below its place without the gap.
+fn floored(mut cur: Cursor, height: f64, rise: f64) -> Cursor {
+    let floor = (rise - cur.line as f64 * height).min(0.0);
     if cur.extra < floor {
         cur.extra = floor;
     }
     cur
+}
+
+/// How far a line of ascent `ascent` on the column's first baseline `first` reaches above the top of
+/// a frame-top column of `f` (its inset top), 0 when it does not. A band's first baseline is its top
+/// plus the line's own ascent, so in a band the box never reaches above (0).
+fn rise(f: &Frame<'_>, band: Option<f64>, first: f64, ascent: f64) -> f64 {
+    if band.is_some() {
+        return 0.0;
+    }
+    let r = f.inset_top_pt + ascent - first;
+    if r > 0.0 { r } else { 0.0 }
 }
 #[derive(Clone, Copy, Debug)]
 struct Slot {
@@ -453,9 +470,9 @@ fn next_slot(
                 }
             },
         };
-        // A negative paragraph gap lifts a line at most to the column's first baseline, and the
-        // lines after it step down from there (`floored`).
-        cur = floored(cur, height);
+        // A negative paragraph gap lifts a line at most to the column's first baseline (its box at
+        // most to the column top), and the lines after it step down from there (`floored`).
+        cur = floored(cur, height, rise(f, cur.band, first, ascent));
         let mut baseline = baseline_of(&cur, first, height, ascent);
         let mut delta = 0.0;
         if snap && let Some((o, step)) = verticals.get(cur.pos).and_then(|v| v.grid) {
@@ -896,23 +913,22 @@ fn balance_band(f: &Frame<'_>, band: Option<f64>, lines: &mut [Line], meta: &[Me
                 return false;
             }
         }
-        // A negative gap re-added here lifts the line at most to the column's first baseline.
-        let cur = floored(
-            Cursor {
-                pos: 0,
-                col,
-                line: row,
-                band,
-                extra,
-                first: None,
-            },
-            m.height,
-        );
-        extra = cur.extra;
         // The column's first line fixes its first baseline (known: that line was placed there).
         let Some(first) = meta[col * k].first else {
             return false;
         };
+        let cur = Cursor {
+            pos: 0,
+            col,
+            line: row,
+            band,
+            extra,
+            first: None,
+        };
+        // A negative gap re-added here lifts the line at most to the column's first baseline (its
+        // box at most to the column top), and the rows after it step down from there.
+        let cur = floored(cur, m.height, rise(f, band, first, m.ascent));
+        extra = cur.extra;
         let baseline = baseline_of(&cur, first, m.height, m.ascent);
         if baseline + (m.height - m.ascent) > bottom {
             return false;
@@ -943,9 +959,15 @@ fn vertical_justify(f: &Frame<'_>, v: FrameVertical, lines: &mut [Line], meta: &
     let (top, bottom) = (f.inset_top_pt, f.height_pt - f.inset_bottom_pt);
     for col in 0..f.column_count.max(1) {
         let idx: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].column == col).collect();
-        let (Some(&first), Some(&last)) = (idx.first(), idx.last()) else { continue };
-        let block_top = lines[first].baseline_y_pt - meta[first].ascent;
-        let block_bottom = lines[last].baseline_y_pt + (meta[last].height - meta[last].ascent);
+        if idx.is_empty() {
+            continue;
+        }
+        // The block runs from the highest line top to the deepest line bottom: a negative paragraph
+        // gap can set a later line above an earlier one, so index order does not give the extent
+        // (review F1, lane SMB-FIX-NEGATIVE-SPACE-1). With it, `center` and `bottom` keep every box
+        // inside the inset, and `justify` moves no line further than the slack.
+        let block_top = idx.iter().map(|&i| lines[i].baseline_y_pt - meta[i].ascent).fold(f64::INFINITY, f64::min);
+        let block_bottom = idx.iter().map(|&i| lines[i].baseline_y_pt + (meta[i].height - meta[i].ascent)).fold(f64::NEG_INFINITY, f64::max);
         let slack = bottom - block_bottom;
         if slack <= EPS {
             continue;
@@ -1174,10 +1196,12 @@ fn compose_flow(
             ParaFlow::Single => {
                 // The paragraph space; a paragraph at a column top takes none, and a push past the
                 // column bottom lands at the next column's top (`next_slot` resets `extra`). A
-                // negative gap lifts the paragraph at most to the column's first baseline, before an
-                // anchor's push below (`floored`).
+                // negative gap lifts the paragraph at most to the column's first baseline (its box at
+                // most to the column top), before an anchor's push below (`floored`; `first` is fixed
+                // once a column holds a line).
                 if cursor.line > 0 && gap != 0.0 {
-                    cursor = floored(Cursor { extra: sum(cursor.extra, gap)?, ..cursor }, p.line_height_pt);
+                    let r = thread.get(cursor.pos).zip(cursor.first).map_or(0.0, |(f, first)| rise(f, cursor.band, first, p.ascent_pt));
+                    cursor = floored(Cursor { extra: sum(cursor.extra, gap)?, ..cursor }, p.line_height_pt, r);
                 }
                 // Above-line anchored objects push the paragraph down (anchors module); a push that
                 // falls into the next column or frame is re-applied at that column's top.
