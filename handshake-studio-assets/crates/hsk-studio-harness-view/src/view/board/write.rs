@@ -9,8 +9,8 @@ use super::super::render::Prefer;
 use super::super::text::{self, TextEntry};
 use super::super::vector::{self, PathRecord, VectorEntry, VectorStyle};
 use super::{
-    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, SHAPE_TEXT_INSET, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, connector_route, details, finite_coordinate, fitted_size,
-    mint_path, outline, project, rect_json, rects_of, refused, route_points, text_baseline, text_ok, translated, uuid_parts,
+    CONNECTOR_COLOUR, CONNECTOR_WIDTH, Ctx, EXPORT_MARGIN, LABEL_PT, SHAPE_TEXT_INSET, TEXT_INSET, TEXT_PT, Unresolved, anchor_path, command_form, connector_route, details, finite_coordinate,
+    fitted_size, mint_path, outline, project, rect_json, rects_of, refused, route_points, story_form, text_baseline, text_ok, translated, uuid_parts,
 };
 use crate::PlacementWrite;
 use hsk_studio_composite::board::{self as geo, BoardRect};
@@ -61,22 +61,13 @@ impl Viewer {
             n = n.wrapping_add(1);
         };
         let profile = serde_json::to_value(&doc.working_space_rgb).unwrap_or(Value::Null);
-        let len = t.len();
-        // One paragraph per line: each `\n` ends its paragraph (review F12; the partition tiles the text).
-        let mut paragraphs = Vec::new();
-        let mut start = 0_usize;
-        for (at, _) in t.match_indices('\n') {
-            let end = at.saturating_add(1);
-            paragraphs.push(json!({"start": start, "end": end, "style_ref": paragraph, "paragraph_direction": null}));
-            start = end;
-        }
-        if start < len || paragraphs.is_empty() {
-            paragraphs.push(json!({"start": start, "end": len, "style_ref": paragraph, "paragraph_direction": null}));
-        }
+        // One paragraph; a line break is a forced line break (`story_form`, review F12).
+        let stored = story_form(t);
+        let len = stored.len();
         let story: folio::StudioTextStory = serde_json::from_value(json!({
             "schema_id": "hsk.studio.text_story@1", "story_id": story_id, "text_kind": "area", "story_direction": "left_to_right",
-            "content": {"content_kind": "inline", "text_utf8": t},
-            "paragraphs": paragraphs,
+            "content": {"content_kind": "inline", "text_utf8": stored},
+            "paragraphs": [{"start": 0, "end": len, "style_ref": paragraph, "paragraph_direction": null}],
             "character_ranges": [{"start": 0, "end": len, "style_ref": character, "applied_language": "en"}],
         }))
         .map_err(|e| refused("board_text_invalid", e))?;
@@ -383,7 +374,7 @@ impl Viewer {
         edit(&mut fields)?;
         let rect = c.rect(node).ok_or_else(|| refused("board_node_unknown", node))?;
         let text_entry_now = self.text_entry()?;
-        let current_text = c.text_id(node).and_then(|id| text_entry_now.stories.iter().find(|s| s.story_id == id).and_then(text::story_text).map(str::to_owned)).unwrap_or_default();
+        let current_text = c.text_id(node).and_then(|id| text_entry_now.stories.iter().find(|s| s.story_id == id).and_then(text::story_text).map(command_form)).unwrap_or_default();
         let t = new_text.map_or(current_text, str::to_owned);
         let (size_pt, align, _) = Self::text_setting(&fields);
         let new_rect = match &fields {
@@ -432,7 +423,7 @@ impl Viewer {
         let rect = c.rect(node).ok_or_else(|| refused("board_node_unknown", node))?;
         let mut style = c.style(node).ok_or_else(|| refused("board_node_unknown", node))?;
         style.fill = Some(fill);
-        let lines = c.text_id(node).and_then(|id| self.text_entry().ok()?.stories.iter().find(|s| s.story_id == id).and_then(text::story_text).map(line_count)).unwrap_or(1);
+        let lines = c.text_id(node).and_then(|id| self.text_entry().ok()?.stories.iter().find(|s| s.story_id == id).and_then(text::story_text).map(|s| line_count(&command_form(s)))).unwrap_or(1);
         let changes: Vec<(String, Vec<String>)> = Self::board_redraw(&mut c, node, &rec.node, &rect, Some(style), lines)?.into_iter().collect();
         let Ctx { doc, entry, .. } = c;
         let revision = self.board_commit(op, &doc, &entry, None, &[], &changes, node)?;

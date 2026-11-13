@@ -164,12 +164,26 @@ fn side_ok(v: f64) -> bool {
     v.is_finite() && v > 0.0 && v <= MAX_NODE_SIDE
 }
 
-/// 1..=4096 bytes of story text: one line, or with `lines` at most [`MAX_TEXT_LINES`] lines split at `\n`
-/// (a sticky's or a shape's text is an ordinary story, review F12); no other control character.
+/// The stored form of a board text: each `\n` becomes U+2028, Type's forced line break, which the live
+/// area-text path lays out as a new line of the same paragraph (a line feed is a paragraph separator there, which
+/// the viewer's shaping refuses; Studio reading of review F12). Commands and reads speak `\n`.
+pub(super) fn story_form(t: &str) -> String {
+    t.replace('\n', "\u{2028}")
+}
+
+/// The command form of a stored board text ([`story_form`] reversed).
+pub(super) fn command_form(s: &str) -> String {
+    s.replace('\u{2028}', "\n")
+}
+
+/// 1..=4096 stored bytes of story text: one line, or with `lines` at most [`MAX_TEXT_LINES`] lines split at
+/// `\n` (a sticky's or a shape's text, review F12); no other control character.
 fn text_ok(t: &str, lines: bool) -> Result<(), String> {
     let breaks = t.matches('\n').count();
     let other = t.chars().any(|c| c.is_control() && c != '\n') || t.contains(['\u{2028}', '\u{2029}']);
-    if t.is_empty() || t.len() > text::MAX_STORY_BYTES || other || (breaks > 0 && !lines) || breaks >= MAX_TEXT_LINES {
+    // U+2028 takes three bytes where `\n` takes one.
+    let stored = t.len().saturating_add(breaks.saturating_mul(2));
+    if t.is_empty() || stored > text::MAX_STORY_BYTES || other || (breaks > 0 && !lines) || breaks >= MAX_TEXT_LINES {
         let shape = if lines { format!("at most {MAX_TEXT_LINES} lines") } else { "one line".to_owned() };
         return Err(refused("board_text_invalid", format!("{shape} of 1..={} bytes", text::MAX_STORY_BYTES)));
     }
@@ -633,7 +647,7 @@ impl Viewer {
         let style = c.style(&n.layer_id);
         let connector = matches!(n.node, StudioBoardNodeFields::Connector { .. });
         let text_id = c.text_id(&n.layer_id);
-        let text = text_id.as_ref().and_then(|id| te?.stories.iter().find(|s| &s.story_id == id).and_then(text::story_text).map(str::to_owned));
+        let text = text_id.as_ref().and_then(|id| te?.stories.iter().find(|s| &s.story_id == id).and_then(text::story_text).map(command_form));
         let mut v = json!({
             "node_id": n.layer_id, "kind": n.node.kind(), "board_id": n.board_id, "name": layer.map(|l| l.name.clone()),
             "visible": layer.map(|l| l.visible), "bounds": rect.map(rect_json), "fill": if connector { Value::Null } else { rgb_json(style.and_then(|s| s.fill)) },
