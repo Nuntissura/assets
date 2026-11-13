@@ -13,7 +13,7 @@ import-tiff = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "
 import-pdf = ["import", "dep:hsk-studio-press", "hsk-studio-harness-core/import-pdf"]
 import-raster = ["import", "dep:hsk-studio-interop-psd", "dep:hsk-studio-prism", "dep:hsk-studio-interop-raster", "hsk-studio-harness-core/import-raster"]
 import-affinity = ["import-raster", "dep:hsk-studio-interop-affinity", "hsk-studio-harness-core/import-affinity"]
-viewer = ["layout-ui", "import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig", "dep:hsk-studio-interop-layout", "vector-interop"]
+viewer = ["layout-ui", "import-psd", "import-raw", "import-tiff", "import-raster", "import-pdf", "dep:egui", "dep:hsk-studio-composite", "dep:hsk-studio-pigment", "dep:hsk-studio-render-cpu", "dep:hsk-studio-render-gpu", "dep:hsk-studio-type", "dep:hsk-studio-pulse", "dep:hsk-studio-nib", "dep:hsk-studio-components", "dep:hsk-studio-interop-fig", "dep:hsk-studio-interop-layout", "dep:hsk-studio-interop-lrcat", "vector-interop"]
 vector-interop = ["import-pdf", "dep:hsk-studio-interop-vector"]
 layout-ui = ["dep:egui", "dep:hsk-studio-layout", "dep:hsk-studio-type"]
 desktop = ["viewer", "dep:eframe", "hsk-studio-render-gpu/shared-device"]
@@ -63,6 +63,9 @@ hsk-studio-score-plugin = { path = "../hsk-studio-score-plugin", version = "=0.1
 hsk-studio-layout = { path = "../hsk-studio-layout", version = "=0.1.0", default-features = false, optional = true }
 # Layout PDF and IDML export (lane SMB-LAYOUT-PDF-HOST-1; edge harness-view -> interop-layout, lead approval in the lane brief).
 hsk-studio-interop-layout = { path = "../hsk-studio-interop-layout", version = "=0.1.0", default-features = false, optional = true }
+# The develop DNG export writes the crop (and the recipe) as crs: keys through the lrcat XMP codec, the one owner of those
+# keys (lane SMB-PS-FILTER-ADJUST-COMMANDS-1; edge harness-view -> interop-lrcat, lead ruling 2026-11-13).
+hsk-studio-interop-lrcat = { path = "../hsk-studio-interop-lrcat", version = "=0.1.0", default-features = false, optional = true }
 serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
 egui = { version = "=0.33.3", default-features = false, features = ["default_fonts"], optional = true }
 eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "accesskit"], optional = true }

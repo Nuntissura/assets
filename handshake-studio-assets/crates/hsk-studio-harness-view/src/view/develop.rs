@@ -896,6 +896,25 @@ pub(super) fn crop_json(c: &NormalizedCrop) -> Value {
     json!({"left": c.left, "top": c.top, "right": c.right, "bottom": c.bottom, "angle": c.angle, "flip_horizontal": c.flip_horizontal, "flip_vertical": c.flip_vertical})
 }
 
+/// The XMP packet a develop DNG export embeds (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, STU-RAW-015; lead ruling
+/// 2026-11-13: one codec owns the crs: keys, no second writer here). Without a develop crop: the caller's packet
+/// as [`Viewer::set_develop_dng_xmp`] set it, byte for byte (or none). With a crop: the develop recipe written by
+/// the lrcat XMP codec (`write_sidecar`) into the caller's packet, or into a fresh one: the crop keys (`CropTop`,
+/// `CropLeft`, `CropBottom`, `CropRight`, `CropAngle`, `HasCrop`) and every other managed key whose value differs
+/// from the recipe's; every other byte of the caller's packet is kept (the codec's span edit). A packet over
+/// develop's `MAX_XMP_BYTES` is passed on unchanged, so develop's own `limit_xmp_bytes` refuses it as before; one
+/// the codec cannot read refuses `xmp_invalid` naming the codec's code. The flips have no crs: key (the export
+/// report notes `develop_crop_flip_not_in_dng_xmp`).
+fn dng_xmp_with_crop(packet: Option<&[u8]>, cropped: bool, recipe: &hsk_studio_develop::DevelopRecipe) -> Result<Option<Vec<u8>>, Refusal> {
+    if !cropped || packet.is_some_and(|p| p.len() > hsk_studio_develop::dng_write::MAX_XMP_BYTES) {
+        return Ok(packet.map(<[u8]>::to_vec));
+    }
+    let update = hsk_studio_interop_lrcat::SidecarUpdate { recipe: Some(recipe), library: None };
+    hsk_studio_interop_lrcat::write_sidecar(packet, &update, &hsk_studio_interop_lrcat::XmpLimits::default())
+        .map(Some)
+        .map_err(|e| Refusal::new("xmp_invalid", format!("the crs: codec refused the packet: {}", e.code())))
+}
+
 /// Default source of the panel's "Add linear gradient" button (normalised image coordinates).
 pub fn default_linear() -> MaskSource {
     MaskSource::LinearGradient(LinearGradient { zero: (0.5, 0.3), full: (0.5, 0.7), flipped: false })
@@ -1211,7 +1230,9 @@ impl Viewer {
 
     /// Sets (or clears) the XMP packet the DNG export embeds (tag 700). The packet is validated by develop at export time
     /// (UTF-8, `<x:xmpmeta`, at most `hsk_studio_develop::dng_write::MAX_XMP_BYTES`); the develop recipe is carried by
-    /// whatever the caller wrote into it (the lrcat XMP codec owns the `crs:` mapping).
+    /// whatever the caller wrote into it (the lrcat XMP codec owns the `crs:` mapping), except that with a develop crop
+    /// the export writes the recipe's `crs:` keys into it through that codec (lane SMB-PS-FILTER-ADJUST-COMMANDS-1,
+    /// `dng_xmp_with_crop`).
     pub fn set_develop_dng_xmp(&mut self, xmp: Option<Vec<u8>>) -> Result<(), Refusal> {
         let develop = self.develop.as_mut().ok_or_else(|| Refusal::new("not_a_raw_document", "open a camera raw or DNG first"))?;
         develop.dng_xmp = xmp;
@@ -1498,8 +1519,10 @@ impl Viewer {
                 unique_camera_model: None,
             };
             let exif = exif_subset(&d.original);
-            let (export, receipt) = develop_to_dng(&raw, &recipe, revision, &settings, d.dng_xmp.as_deref(), Some(&exif), SRGB_V4_ICC, d.threads, self.cancel)
+            let xmp = dng_xmp_with_crop(d.dng_xmp.as_deref(), crop.is_some(), &recipe)?;
+            let (export, receipt) = develop_to_dng(&raw, &recipe, revision, &settings, xmp.as_deref(), Some(&exif), SRGB_V4_ICC, d.threads, self.cancel)
                 .map_err(|e| Refusal::new(e.code(), if e.detail().is_empty() { format!("{e:?}") } else { e.detail().to_owned() }))?;
+            let flipped = recipe.crop.flip_horizontal || recipe.crop.flip_vertical;
             write_atomic(path, &export.bytes).map_err(|code| Refusal::new(code, path.display().to_string()))?;
             return Ok(json!({
                 "format": "dng", "path": path.to_string_lossy(), "width": export.width, "height": export.height,
@@ -1513,11 +1536,18 @@ impl Viewer {
                 "values": values_json(edit),
                 "export_stage": set.then(|| json!({"applied": false, "reason": "dng_preview_not_staged"})),
                 // The raw frame is written whole (crop is non-destructive) and the preview is cropped; the
-                // XMP packet is the caller's (the lrcat codec owns the crs: keys), so it does not carry it.
-                // Without a preview the crop is applied nowhere (review F3).
-                "develop_crop": crop.map(|c| match export.preview {
-                    Some(_) => json!({"crop": c, "applied_to": "preview", "notes": ["develop_crop_not_in_dng_xmp"]}),
-                    None => json!({"crop": c, "applied_to": "none", "notes": ["develop_crop_not_in_dng_xmp", "develop_crop_not_applied"]}),
+                // XMP packet carries the crop as crs: keys (lane SMB-PS-FILTER-ADJUST-COMMANDS-1,
+                // [`dng_xmp_with_crop`]). Without a preview the pixels apply it nowhere (review F3).
+                "develop_crop": crop.map(|c| {
+                    let mut notes: Vec<&str> = Vec::new();
+                    if export.preview.is_none() {
+                        notes.push("develop_crop_not_applied");
+                    }
+                    if flipped {
+                        notes.push("develop_crop_flip_not_in_dng_xmp");
+                    }
+                    let applied_to = if export.preview.is_some() { "preview" } else { "none" };
+                    json!({"crop": c, "applied_to": applied_to, "xmp": "crs_crop_keys", "notes": notes})
                 }),
             }));
         }
