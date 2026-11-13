@@ -14,6 +14,7 @@ pub mod css_properties;
 pub mod doc_types;
 #[doc(hidden)]
 pub mod dom;
+pub mod formatting;
 pub mod hints;
 pub mod validation;
 pub mod vocabulary;

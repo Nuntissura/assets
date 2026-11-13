@@ -9,6 +9,7 @@
 //! belong to STUDIO-MODULE-WEB; not a multi-engine facade.
 
 pub use hsk_studio_web_core::{responsive, source_dom_patch};
+pub use hsk_studio_web_core::{css_properties, doc_types, formatting, hints, validation, vocabulary};
 
 pub use hsk_studio_web_assets::{
     AssetDecision, AssetOutcome, AssetPort, AssetRef, AssetSource, DenyReason, MAX_DATA_NESTING,
