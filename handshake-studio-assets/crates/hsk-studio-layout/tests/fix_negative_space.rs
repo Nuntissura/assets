@@ -1,9 +1,10 @@
 //! Lane SMB-FIX-NEGATIVE-SPACE-1 (STU-TYP-185; R60 attempt 3 probe finding
 //! negative-space-places-lines-outside-the-frame, port of the validator probe
 //! probe_negative_space_before_places_lines_above_the_frame): a negative paragraph gap lifts a
-//! paragraph at most to its column's first baseline, on every composer, after column balancing,
-//! under a smaller leading and below an above-line anchor; the lines that then do not fit are
-//! overset. STU-TYP-185 states no bounds for space before/after (UNKNOWN): the floor at the column
+//! paragraph at most to its column's first baseline (and its line box at most to the inset top), on
+//! every composer, after column balancing, under a smaller leading, below an above-line anchor and
+//! across a thread; vertical justification keeps such a column inside the frame (review of
+//! a7de5fcd, F1-F3); the lines that then do not fit are overset. STU-TYP-185 states no bounds for space before/after (UNKNOWN): the floor at the column
 //! top is a Studio reading, InDesign parity UNVERIFIED (D5). Toy font as tests/indent_spacing.rs
 //! (6 pt glyphs, line height 12, ascent 10, first baseline 10 pt below the frame top).
 use hsk_studio_accord::CancellationToken;
@@ -244,5 +245,121 @@ fn an_above_line_anchor_pushes_from_the_lifted_position() {
         let p = run_with(&doc, &s, &lifting(), composer, &fl).unwrap();
         let got: Vec<f64> = lines(&p).iter().map(|l| l.baseline_y_pt).collect();
         assert_eq!(got, vec![10.0, 22.0, 40.0], "{composer:?}");
+    }
+}
+
+/// `doc` with its frame's vertical justification and first-baseline kind and minimum offset set.
+fn framed(mut doc: StudioDocument, vjust: VerticalJustification, kind: FirstBaseline, min_first: f64) -> StudioDocument {
+    let f = doc.layers[0].text_frame.as_mut().unwrap();
+    f.vertical_justification = vjust;
+    f.first_baseline_offset = kind;
+    f.minimum_first_baseline_offset = len(min_first);
+    doc
+}
+/// Two one-column `w` x `h` frames on page 1, threaded, the second 200 pt below the first.
+fn threaded(w: f64, h: f64) -> StudioDocument {
+    let mut doc = document(w, h, 1, 0.0);
+    let mut second = doc.layers[0].clone();
+    second.layer_id = id("SLYR", 2);
+    second.name = "frame 2".into();
+    let f = second.text_frame.as_mut().unwrap();
+    f.bounds.y = len(200.0);
+    f.previous_text_frame = Some(id("SLYR", 1));
+    doc.layers[0].text_frame.as_mut().unwrap().next_text_frame = Some(id("SLYR", 2));
+    doc.layers.push(second);
+    doc
+}
+fn baselines(p: &LayoutProposal) -> Vec<f64> {
+    lines(p).iter().map(|l| l.baseline_y_pt).collect()
+}
+
+/// Review F1 (a7de5fcd): vertical justification measures a column's block from its highest line top
+/// to its deepest line bottom, not from its first and last lines in index order (a lifted paragraph
+/// stacked on the column's first baseline is not the block's bottom). Bottom, Center and Justify
+/// then keep every line box (ascent 10, descent 2) inside the 100 pt frame, and nothing is overset.
+/// The column 10, 22, 34, 10 is the block [0, 36]: Bottom moves it by 64, not by 100 - 12 = 88.
+#[test]
+fn vertical_justification_keeps_every_line_of_a_lifted_column_inside_the_frame() {
+    let four = story(&[("aa\n", Some(1)), ("bb\n", Some(1)), ("cc\n", Some(1)), ("dd", Some(2))]);
+    let mut pieces: Vec<(&str, Option<u32>)> = vec![("aa\n", Some(1)); 8];
+    pieces.push(("zz", Some(2)));
+    let nine = story(&pieces);
+    for vjust in [VerticalJustification::Bottom, VerticalJustification::Center, VerticalJustification::Justify] {
+        let doc = framed(document(120.0, 100.0, 1, 0.0), vjust, FirstBaseline::Fixed, 10.0);
+        for s in [&four, &nine] {
+            for composer in composers() {
+                let p = run_with(&doc, s, &lifting(), composer, &flow()).unwrap();
+                let got = baselines(&p);
+                assert!(got.iter().all(|b| b - 10.0 >= -1e-9 && b + 2.0 <= 100.0 + 1e-9), "{vjust:?} {composer:?}: {got:?}");
+                assert_eq!(p.overset, None, "{vjust:?} {composer:?}");
+            }
+        }
+    }
+    let doc = framed(document(120.0, 100.0, 1, 0.0), VerticalJustification::Bottom, FirstBaseline::Fixed, 10.0);
+    for composer in composers() {
+        let p = run_with(&doc, &four, &lifting(), composer, &flow()).unwrap();
+        assert_eq!(baselines(&p), vec![74.0, 86.0, 98.0, 74.0], "{composer:?}");
+    }
+}
+
+/// Review F2: the floor bounds the line box, not only the baseline. Ascent first-baseline kind,
+/// minimum 0: the column's first baseline is P0's ascent, 10. P1 (line height 24, ascent 20) lifted
+/// by -1000 stops where its box top meets the inset top: baseline 20 (box [0, 24]), not 10 (box
+/// [-10, 14]).
+#[test]
+fn a_lifted_paragraph_with_a_larger_ascent_keeps_its_line_box_inside_the_inset_top() {
+    let s = story_led(&[("aa\n", Some(1), 12.0, 10.0), ("bb", Some(2), 24.0, 20.0)]);
+    let doc = framed(document(120.0, 100.0, 1, 0.0), VerticalJustification::Top, FirstBaseline::Ascent, 0.0);
+    for composer in composers() {
+        let p = run_with(&doc, &s, &lifting(), composer, &flow()).unwrap();
+        assert_eq!(baselines(&p), vec![10.0, 20.0], "{composer:?}");
+        assert_eq!(p.overset, None, "{composer:?}");
+    }
+}
+
+/// Review F3 (a), the next_slot floor on its own: the lines after a floored line step down from it.
+/// P2 ("cc cc", line height 4, ascent 3) breaks into two lines in a 20 pt frame; its first line would
+/// be 10 + 2 * 4 - 12 = 6 and is floored to 10, its second follows at 14. Without the next_slot
+/// floor (the baseline_of guard alone) both would sit at 10.
+#[test]
+fn the_lines_after_a_floored_line_step_down_from_it() {
+    let s = story_led(&[("aa\n", Some(1), 12.0, 10.0), ("bb\n", Some(2), 12.0, 10.0), ("cc cc", Some(1), 4.0, 3.0)]);
+    let doc = document(20.0, 100.0, 1, 0.0);
+    for composer in composers() {
+        let p = run_with(&doc, &s, &lifting(), composer, &flow()).unwrap();
+        assert_eq!(baselines(&p), vec![10.0, 10.0, 10.0, 14.0], "{composer:?}");
+        assert_eq!(p.overset, None, "{composer:?}");
+    }
+}
+
+/// Review F3 (b), the balance_band floor on its own: balanced over two 60 pt columns three lines
+/// deep, column 1 holds A's fourth line, B (space before -1000) floored to 10, and C, which steps
+/// down to 22. Without the balance_band floor (the baseline_of guard alone) C would sit at 10.
+#[test]
+fn balancing_steps_the_row_after_a_floored_row_down_from_it() {
+    let s = story(&[("aaaaaaaa bbbbbbbb cccccccc dddddddd\n", Some(1)), ("bb\n", Some(2)), ("ee", Some(1))]);
+    let doc = document(130.0, 36.0, 2, 10.0);
+    let mut balanced = flow();
+    balanced.frame_options.push(StudioFrameFlowOptions { layer_id: id("SLYR", 1), vertical_balance_columns: true });
+    for composer in composers() {
+        let p = run_with(&doc, &s, &lifting(), composer, &balanced).unwrap();
+        let got: Vec<(usize, f64)> = lines(&p).iter().map(|l| (l.column, l.baseline_y_pt)).collect();
+        assert_eq!(got, vec![(0, 10.0), (0, 22.0), (0, 34.0), (1, 10.0), (1, 10.0), (1, 22.0)], "{composer:?}");
+        assert_eq!(p.overset, None, "{composer:?}");
+    }
+}
+
+/// Review F3 (c), a thread of two 20 x 36 pt frames: P3 ("bb bb bb bb", space before -1000) rises to
+/// frame 1's first baseline, steps down to its bottom and continues at the top of frame 2; P4 and P5
+/// follow there and P6 (byte 27 on) is overset.
+#[test]
+fn a_lifted_paragraph_continues_into_the_next_frame_and_the_rest_is_overset() {
+    let s = story(&[("aa\n", Some(1)), ("aa\n", Some(1)), ("aa\n", Some(1)), ("bb bb bb bb\n", Some(2)), ("cc\n", Some(1)), ("dd\n", Some(1)), ("ee", Some(1))]);
+    let doc = threaded(20.0, 36.0);
+    for composer in composers() {
+        let p = run_with(&doc, &s, &lifting(), composer, &flow()).unwrap();
+        let per_frame: Vec<Vec<f64>> = p.frames.iter().map(|f| f.lines.iter().map(|l| l.baseline_y_pt).collect()).collect();
+        assert_eq!(per_frame, vec![vec![10.0, 22.0, 34.0, 10.0, 22.0, 34.0], vec![10.0, 22.0, 34.0]], "{composer:?}");
+        assert_eq!(p.overset.map(|o| (o.start, o.end)), Some((27, 29)), "{composer:?}");
     }
 }
