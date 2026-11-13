@@ -750,7 +750,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("stale.handshake");
         v.save(&path, true).unwrap();
-        let mut w = Viewer::new(super::super::render::Prefer::Cpu);
+        let mut w = {
+            use hsk_studio_accord::{ActorContext, ClientSessionId, TransientCorrelation};
+            let actor = ActorContext::new("board-unit", "principal", "owner", "owner-principal", "space", "session").unwrap();
+            let context = hsk_studio_harness_core::RunContext::new(actor, ClientSessionId::parse("board-unit").unwrap(), std::sync::Arc::new(TransientCorrelation::new()));
+            Viewer::with_context(super::super::render::Prefer::Cpu, hsk_studio_render_gpu::DeviceOptions::default(), context)
+        };
         w.open(&path).unwrap();
         let records = w.vector_entry().unwrap().records.board_nodes;
         assert_eq!(records.len(), 3, "{records:?}");
