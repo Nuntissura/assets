@@ -171,6 +171,31 @@ fn a_layer_delete_drops_the_board_record_in_the_same_step_and_the_board_stays_re
     assert_eq!(snapshot(&v), before, "undo of the delete brings the record back");
 }
 
+/// Review F1 (lead ruling, with PS-FILTER-ADJUST-COMMANDS-1's revision mint): a layer made after a board node's
+/// delete takes a fresh id, never the deleted node's; the vector entry decodes, the board reads, renders, saves and
+/// reopens.
+#[test]
+fn a_layer_made_after_a_board_node_delete_takes_a_fresh_id() {
+    let scratch = Scratch::new("board-fresh-id");
+    let mut v = board_doc();
+    let s = text(&ok(&mut v, "board.sticky.create", json!({"x": 0, "y": 0, "text": "A"})), "node_id");
+    v.delete_layer(&s).unwrap();
+    let shape = v.draw_shape(hsk_studio_harness::view::vector::ShapeKind::Rectangle, [0.0, 0.0], [50.0, 50.0], false).unwrap();
+    assert_ne!(shape, s, "the shape takes a fresh id");
+    let t = text(&ok(&mut v, "board.sticky.create", json!({"x": 300, "y": 0, "text": "B"})), "node_id");
+    assert!(t != s && t != shape, "the sticky takes a fresh id: {s} {shape} {t}");
+    assert_eq!(records_naming(&v, &s), 0);
+    assert!(vector_entry(&v)["paths"].is_array(), "the vector entry decodes");
+    assert_eq!(ok(&mut v, "board.read", json!({}))["nodes"].as_array().unwrap().len(), 1);
+    v.render_if_dirty();
+    assert!(v.render_error().is_none(), "{:?}", v.render_error());
+    let path = scratch.0.join("fresh.handshake");
+    v.save(&path, false).unwrap();
+    let mut w = Viewer::new(Prefer::Cpu);
+    w.open(&path).unwrap();
+    assert_eq!(ok(&mut w, "board.read", json!({}))["nodes"].as_array().unwrap().len(), 1);
+}
+
 /// Review F2 (lead ruling): a move replaces the node's path records in place; nothing grows with moves, and
 /// one undo returns the state before the last move exactly.
 #[test]
