@@ -350,6 +350,35 @@ fn the_develop_dng_xmp_carries_the_crop_keys() {
     assert!(!never.exists());
 }
 
+/// Lead ruling 2026-11-13 (layers.rs mint_layer_id): a layer created after a delete never takes the deleted layer's
+/// id, so it never inherits the deleted layer's `raster_records` row (its smart filter stack) the entry still holds;
+/// in the session and after save and reopen.
+#[test]
+fn a_new_layer_after_a_delete_gets_a_fresh_id_and_no_inherited_smart_filters() {
+    let scratch = Scratch::new("raster-effects-reused-id");
+    let src = scratch.0.join("art.psd");
+    std::fs::write(&src, art_psd()).unwrap();
+    let mut v = open(&src);
+    let gone = v.new_raster_layer("filtered").unwrap();
+    ok(&mut v, "effect.apply", json!({"layer": gone, "filter_kind": "gaussian_blur", "params": {"radius_px": 2}}));
+    v.delete_layer(&gone).unwrap();
+    let fresh = v.new_raster_layer("fresh").unwrap();
+    assert_ne!(fresh, gone, "a deleted layer's id is not minted again");
+    assert_eq!(filters(&mut v, &fresh)["filters"], json!([]), "the new layer inherits no smart filter stack");
+
+    // The deleted layer's row is still in the saved entry; a layer created after reopening gets another id too.
+    let mut w = open(&src);
+    let gone = w.new_raster_layer("filtered").unwrap();
+    ok(&mut w, "effect.apply", json!({"layer": gone, "filter_kind": "box_blur"}));
+    w.delete_layer(&gone).unwrap();
+    let saved = scratch.0.join("deleted.handshake");
+    w.save(&saved, false).unwrap();
+    let mut r = open(&saved);
+    let fresh = r.new_raster_layer("fresh").unwrap();
+    assert_ne!(fresh, gone, "a deleted layer's id is not minted again after reopen");
+    assert_eq!(filters(&mut r, &fresh)["filters"], json!([]), "the new layer inherits no smart filter stack after reopen");
+}
+
 // ---- the rows through the process (`command --stdin`) -----------------------------------------------------------
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/demo.handshake");
