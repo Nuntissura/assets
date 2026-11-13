@@ -628,6 +628,8 @@ impl Viewer {
         self.source = Some(path.to_path_buf());
         self.place_opened(import_records);
         self.design_opened();
+        // Lane SMB-BOARD-1 (review F1): board records of absent layers are dropped with a loss note.
+        self.board_opened();
         self.selected = None;
         self.frame = None;
         self.render_error = None;

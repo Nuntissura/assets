@@ -580,6 +580,36 @@ impl Viewer {
 
     // ----- generic operations on board nodes (review F1, F6) -------------------------------------
 
+    /// Review F1 (lead ruling 2026-11-13, revised: layer ids may be reused until SMB-LAYER-ID-STABILITY-1): at
+    /// open, before any edit, a board record naming a layer the document does not hold (and its node's text
+    /// binding) is dropped from the vector entry, with one loss note `board_record_dropped` per record, so a layer
+    /// that later takes that id never inherits it. Not a history step (the opened state is the base).
+    pub(in crate::view) fn board_opened(&mut self) {
+        let history = self.run.history();
+        let empty = |k: &str| history[k].as_array().is_some_and(Vec::is_empty);
+        if !(empty("undo") && empty("redo")) || !vector::entry_persistable() {
+            return;
+        }
+        let Some(doc) = self.run.snapshot().map(|s| s.document().clone()) else { return };
+        let Ok(mut entry) = self.vector_entry() else { return };
+        let present: BTreeSet<&str> = doc.layers.iter().map(|l| l.layer_id.as_str()).collect();
+        let gone: Vec<String> = entry.records.board_nodes.iter().filter(|n| !present.contains(n.layer_id.as_str())).map(|n| n.layer_id.clone()).collect();
+        if gone.is_empty() {
+            return;
+        }
+        entry.records.board_nodes.retain(|n| present.contains(n.layer_id.as_str()));
+        entry.records.area_texts.retain(|a| !gone.contains(&a.container_layer_id));
+        let written = entry.to_bytes(&doc.document_id).and_then(|b| self.run.set_document_entry(vector::ENTRY, Some(b)).map_err(str::to_owned));
+        match written {
+            Ok(()) => {
+                for id in gone {
+                    self.say(format!("board: board_record_dropped ({id}: its layer is not in the document)"));
+                }
+            }
+            Err(e) => self.say(format!("board: records of absent layers not dropped ({e})")),
+        }
+    }
+
     /// The vector entry a layer delete of `deleted` leaves (review F1): `candidate` (the entry the delete
     /// already writes, else the current one) without the board records and text bindings of deleted board
     /// nodes, so the delete's own undo step carries them. `candidate` unchanged when no board node goes.
