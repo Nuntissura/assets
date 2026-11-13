@@ -32,6 +32,14 @@ const ADD_MASK: &[ParamSpec] = mask_params!(i("correction"), b("subtract").opt()
 /// The twelve STU-RAW-105 group enables.
 const GROUPS: &str = "calibration|colour_adjustments|detail|effects|grayscale_mix|lens_corrections|mask_group_based_corrections|red_eye|retouch|tone_curve|transform|distraction_removal";
 
+/// The 25 Folio `StudioSmartFilterKind` tags (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, `view::raster_effects`).
+const FILTER_KINDS: &str = "gaussian_blur|unsharp_mask|high_pass|median|add_noise|liquify|box_blur|motion_blur|radial_blur|find_edges|custom_convolution|sharpen|sharpen_more|basic_blur|blur_more|sharpen_edges|despeckle|emboss|solarize|mosaic|maximum|minimum|dust_and_scratches|surface_blur|bilateral_blur";
+const FILTER_PARAMS: &str = "{<parameter>: value, ...} as effect.parameters lists them for the kind";
+const EFFECT: &str = "Viewer::effect_command";
+/// A Folio `StudioAdjustment` record, tag `kind`.
+const ADJUSTMENT: &str = "{kind: levels|curves|hue_saturation|brightness_contrast|exposure|invert|threshold|posterize|vibrance|colour_balance|photo_filter|black_and_white|channel_mixer|selective_colour|gradient_map|colour_lookup|shadows_highlights|tone_compression|match_colour|replace_colour, ...}";
+const ADJUST: &str = "Viewer::adjustment_command";
+
 pub(super) const ROWS: &[CommandEntry] = &[
     typed("photo.liquify", "Viewer::liquify", "Liquify", true, &[t("layer"), r("tool", "{kind: forward_warp|push_left|twirl|pucker|bloat|reconstruct|smooth|turbulence|mesh_clone, ...}"), samples("samples"), r("brush", "{size, density, pressure, rate}")]),
     typed("photo.select_quick", "Viewer::select_quick_merged", "Quick selection", false, &[t("layer"), samples("samples"), n("diameter_px"), o("mode", "add|subtract").opt(), b("sample_merged").opt()]),
@@ -91,4 +99,17 @@ pub(super) const ROWS: &[CommandEntry] = &[
     typed("photo.develop.snapshot.apply", DEVELOP, "Apply develop snapshot", true, &[t("name")]),
     typed("photo.develop.snapshot.delete", DEVELOP, "Delete develop snapshot", true, &[t("name")]),
     typed("photo.develop.save_preset", "Viewer::save_develop_preset", "Save develop preset", false, &[out("path"), t("name"), l("keys"), b("overwrite").opt()]),
+    // Lane SMB-PS-FILTER-ADJUST-COMMANDS-1: the STU-FX-007 effect commands over a raster layer's smart filter stack
+    // (one entry-only undo step each), the parameter specs a model plans with (STU-RAS-110), and the STU-RAS-035
+    // adjustment layer (create, edit) and its destructive apply-in-place form. Module `view::raster_effects`.
+    typed("effect.apply", EFFECT, "Apply smart filter", true, &[t("layer"), o("filter_kind", FILTER_KINDS), r("params", FILTER_PARAMS).opt(), n("opacity").opt(), b("enabled").opt(), i("at").opt()]),
+    typed("effect.update", EFFECT, "Update smart filter", true, &[t("layer"), t("instance"), r("params", FILTER_PARAMS).opt(), n("opacity").opt()]),
+    typed("effect.reorder", EFFECT, "Reorder smart filter", true, &[t("layer"), t("instance"), i("to")]),
+    typed("effect.toggle", EFFECT, "Enable or disable smart filter", true, &[t("layer"), t("instance").opt(), b("enabled")]),
+    typed("effect.remove", EFFECT, "Remove smart filter", true, &[t("layer"), t("instance")]),
+    typed("effect.read", EFFECT, "Read smart filters", false, &[t("layer")]),
+    typed("effect.parameters", EFFECT, "Smart filter parameter specs", false, &[o("filter_kind", FILTER_KINDS).opt()]),
+    typed("adjustment.create", ADJUST, "New adjustment layer", true, &[r("adjustment", ADJUSTMENT), t("name").opt(), b("clipped").opt()]),
+    typed("adjustment.edit", ADJUST, "Edit adjustment layer", true, &[t("layer"), r("adjustment", ADJUSTMENT)]),
+    typed("adjustment.apply", ADJUST, "Apply adjustment in place", true, &[t("layer"), r("adjustment", ADJUSTMENT)]),
 ];

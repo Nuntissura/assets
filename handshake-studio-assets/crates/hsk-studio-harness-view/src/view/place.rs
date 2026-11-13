@@ -113,6 +113,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use super::Viewer;
+use super::commands::CommandRefusal;
 use super::edit;
 use super::layers::{new_layer, operation_for};
 use super::render::{self, Assets};
@@ -186,6 +187,11 @@ fn folio_refusal(d: &folio::Diagnostic) -> PlaceRefusal {
         code.push(ch.to_ascii_lowercase());
     }
     PlaceRefusal::new(&code, d.target.clone())
+}
+
+/// A refusal of this module as a command refusal (code kept, detail as `message`).
+fn command_refusal(r: PlaceRefusal) -> CommandRefusal {
+    CommandRefusal::new(&r.code, json!({"message": r.detail}))
 }
 
 /// Embedded or linked ([STU-ASSET-006] `placement_kind`).
@@ -490,6 +496,140 @@ impl Viewer {
         };
         entry.prune(doc);
         Ok(entry)
+    }
+
+    /// The raster record of `layer_id` in the editable entry (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, the reads of
+    /// `view::raster_effects`); `None` when the layer has none.
+    pub(super) fn editable_raster_record(&self, layer_id: &str) -> Result<Option<StudioRasterLayerRecord>, CommandRefusal> {
+        let doc = self.place_doc().map_err(command_refusal)?;
+        let entry = self.editable_entry(&doc).map_err(command_refusal)?;
+        Ok(entry.records.layer(layer_id).cloned())
+    }
+
+    /// ONE entry-only undo step named `op` (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, the entry-edit helper of
+    /// `view::raster_effects`): `edit` changes the records of the editable entry (it refuses an edit that changes
+    /// nothing), Folio validates the result against the document, and the entry is committed with
+    /// `Run::set_tiles_and_entry` (no tile change), attributed to the viewer's run context. A refusal changes nothing.
+    /// The result is `edit`'s value plus `revision`.
+    pub(super) fn edit_raster_records(
+        &mut self,
+        op: &str,
+        layer_id: &str,
+        edit: impl FnOnce(&mut StudioRasterRecords, &StudioDocument) -> Result<Value, CommandRefusal>,
+    ) -> Result<Value, CommandRefusal> {
+        let result = (|| -> Result<Value, CommandRefusal> {
+            let doc = self.place_doc().map_err(command_refusal)?;
+            let mut entry = self.editable_entry(&doc).map_err(command_refusal)?;
+            let mut out = edit(&mut entry.records, &doc)?;
+            folio::validate_raster_records(&entry.records, &doc, folio::Budget::default(), self.cancel, &crate::harness::TrustAll).map_err(|d| command_refusal(folio_refusal(&d)))?;
+            let body = entry.to_bytes().map_err(command_refusal)?;
+            if !self.run.set_tiles_and_entry(op, layer_id, None, ENTRY, body) {
+                return Err(command_refusal(self.run_refusal(op)));
+            }
+            out["revision"] = json!(self.revision_now());
+            Ok(out)
+        })();
+        self.reported(op, result)
+    }
+
+    /// ONE undo step creating a layer and its raster record together (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, the
+    /// adjustment layer of `view::raster_effects`): `make` gets a fresh layer id from this module's own block
+    /// (`7ede-9300`, never one the document or the entry's records hold, so a deleted layer's record is never
+    /// inherited; the review F1 rule of [`mint_placed_layer_id`]) and returns the layer's kind, payload,
+    /// appearance and record. The layer goes above the selected layer (`layers` insertion point), Folio validates
+    /// the records against the document with the layer, and layer and entry commit as one step
+    /// (`Run::restructure_and_entry`). The new layer is selected. Result: `{layer_id, revision}`.
+    pub(super) fn create_layer_with_record(
+        &mut self,
+        op: &str,
+        name: &str,
+        make: impl FnOnce(&str) -> Result<(&'static str, Value, Option<LayerAppearance>, StudioRasterLayerRecord), CommandRefusal>,
+    ) -> Result<Value, CommandRefusal> {
+        let result = (|| -> Result<Value, CommandRefusal> {
+            let doc = self.place_doc().map_err(command_refusal)?;
+            self.canvas().map_err(|e| CommandRefusal::new("canvas_unavailable", json!({"message": e})))?;
+            let mut entry = self.editable_entry(&doc).map_err(command_refusal)?;
+            let layer_id = mint_entry_layer_id(&doc, &entry, "9300");
+            let (kind, payload, appearance, record) = make(&layer_id)?;
+            let (parent, place) = self.insertion_point().map_err(|e| CommandRefusal::new("not_open", json!({"message": e})))?;
+            let mut layer = new_layer(&layer_id, name, &parent, kind, payload).map_err(|e| CommandRefusal::new("layer_invalid", json!({"message": e})))?;
+            layer.appearance = appearance;
+            entry.records.layers.push(record);
+            let mut successor = doc.clone();
+            successor.layers.push(layer.clone());
+            folio::validate_raster_records(&entry.records, &successor, folio::Budget::default(), self.cancel, &crate::harness::TrustAll).map_err(|d| command_refusal(folio_refusal(&d)))?;
+            let body = entry.to_bytes().map_err(command_refusal)?;
+            let operation = operation_for(&layer_id, false).map_err(|e| CommandRefusal::new("layer_invalid", json!({"message": e})))?;
+            let write = PlacementWrite { layer_id: layer_id.clone(), to: Some(place), create: Some((layer, operation)) };
+            if !self.run.restructure_and_entry(op, &[write], ENTRY, body) {
+                return Err(command_refusal(self.run_refusal(op)));
+            }
+            self.selected = Some(layer_id.clone());
+            Ok(json!({"layer_id": layer_id, "revision": self.revision_now()}))
+        })();
+        self.reported(op, result)
+    }
+
+    /// ONE tile step rewriting a pixel layer's colour in place (lane SMB-PS-FILTER-ADJUST-COMMANDS-1, the
+    /// destructive apply of `view::raster_effects`): `map` gets each texel's straight linear colour (alpha > 0
+    /// only; alpha is kept) and whether the layer holds values outside 0..=1 (`extended`). The tiles are
+    /// written again on the 256-pixel grid at the same pixels (identity, nearest neighbour: an exact copy of
+    /// what `map` returns) and committed with `Run::set_tiles`. Refused: `layer_unknown`, `layer_not_pixel`
+    /// (not a raster layer, or a placed asset layer: its tiles are the source rendered, V4-06 sibling of
+    /// [`Viewer::refuse_placed_pixels`]), `layer_empty`, `tile_format_unsupported`, `budget_exceeded`, `canceled`,
+    /// and `map`'s own refusal. Result: `{layer_id, tiles, pixels, extended, revision}`.
+    pub(super) fn map_layer_pixels(&mut self, op: &str, layer_id: &str, mut map: impl FnMut(bool, [f32; 3]) -> Result<[f32; 3], CommandRefusal>) -> Result<Value, CommandRefusal> {
+        let result = (|| -> Result<Value, CommandRefusal> {
+            let doc = self.place_doc().map_err(command_refusal)?;
+            let layer = doc.layers.iter().find(|l| l.layer_id == layer_id).ok_or_else(|| CommandRefusal::new("layer_unknown", json!({"layer": layer_id})))?;
+            let Payload::Raster { tiles } = &layer.payload else {
+                return Err(CommandRefusal::new("layer_not_pixel", json!({"layer": layer_id, "kind": layer.kind})));
+            };
+            let entry = self.editable_entry(&doc).map_err(command_refusal)?;
+            if entry.placed(layer_id).is_some() || self.is_graphic_frame(layer_id) {
+                return Err(CommandRefusal::new("layer_not_pixel", json!({"layer": layer_id, "message": "a placed asset layer: rasterize it first (STU-RAS-117)"})));
+            }
+            if tiles.is_empty() {
+                return Err(CommandRefusal::new("layer_empty", json!({"layer": layer_id})));
+            }
+            if tiles.iter().any(|t| t.format != "rgb_f32le") {
+                return Err(CommandRefusal::new("tile_format_unsupported", json!({"layer": layer_id, "expected": "rgb_f32le"})));
+            }
+            let (bounds, mut pixels) = self.layer_rgba(layer_id).map_err(command_refusal)?;
+            let extended = sample_range(&pixels) == SampleRange::Extended;
+            let mut count: u64 = 0;
+            for (k, p) in pixels.iter_mut().enumerate() {
+                if k.trailing_zeros() >= 16 {
+                    self.cancel.check().map_err(|_| CommandRefusal::new("canceled", json!({})))?;
+                }
+                // NaN alpha compares false: not content, as everywhere in this module.
+                if p[3] > 0.0 {
+                    let [r, g, b] = map(extended, [p[0], p[1], p[2]])?;
+                    *p = [r, g, b, p[3]];
+                    count = count.saturating_add(1);
+                }
+            }
+            let new_tiles = self.resampled_tiles(layer_id, bounds, &pixels, Affine2::IDENTITY, ResampleFilter::NearestNeighbour, None).map_err(command_refusal)?;
+            let n = new_tiles.len();
+            if !self.run.set_tiles(op, layer_id, new_tiles) {
+                return Err(command_refusal(self.run_refusal(op)));
+            }
+            Ok(json!({"layer_id": layer_id, "tiles": n, "pixels": count, "extended": extended, "revision": self.revision_now()}))
+        })();
+        self.reported(op, result)
+    }
+
+    /// `result` reported like [`Self::place_reported`]: a success marks the document dirty and re-reads the
+    /// records; a refusal goes to the status line.
+    fn reported(&mut self, op: &str, result: Result<Value, CommandRefusal>) -> Result<Value, CommandRefusal> {
+        match &result {
+            Ok(_) => {
+                self.dirty = true;
+                self.place_sync();
+            }
+            Err(e) => self.say(format!("{op}: {} {}", e.code, e.detail)),
+        }
+        result
     }
 
     /// The records the viewer renders: the entry's when the session holds one, else the import records,
@@ -1173,6 +1313,12 @@ fn time_fields(doc: &StudioDocument) -> (String, String) {
 /// freed its id on delete, the next new layer of any tool took that id and inherited the stale record. A
 /// later place may take a pruned placed id again (the prune runs before the push; the history is linear).
 fn mint_placed_layer_id(doc: &StudioDocument, entry: &Entry) -> String {
+    mint_entry_layer_id(doc, entry, "9200")
+}
+
+/// [`mint_placed_layer_id`] over the id block `7ede-<block>` (lane SMB-PS-FILTER-ADJUST-COMMANDS-1: adjustment
+/// layers mint from `9300`).
+fn mint_entry_layer_id(doc: &StudioDocument, entry: &Entry, block: &str) -> String {
     let (high, low) = time_fields(doc);
     let taken: BTreeSet<&str> = doc
         .layers
@@ -1183,7 +1329,7 @@ fn mint_placed_layer_id(doc: &StudioDocument, entry: &Entry) -> String {
         .collect();
     let mut n: u64 = 1;
     loop {
-        let id = format!("SLYR-{high}-{low}-7ede-9200-{n:012x}");
+        let id = format!("SLYR-{high}-{low}-7ede-{block}-{n:012x}");
         if !taken.contains(id.as_str()) {
             return id;
         }
