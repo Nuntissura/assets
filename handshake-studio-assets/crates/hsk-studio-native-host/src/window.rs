@@ -12,7 +12,8 @@
 //! only when something changed.
 //!
 //! Host clock (SMB-GUI-GESTURE-GATE-1): every loop pass feeds the elapsed wall-clock time to `GuiFrame::advance` (dwell
-//! tips, the 400 ms wheel idle of a field). Scripted steps are instantaneous, so the clock stops while steps remain and
+//! tips, the 400 ms wheel idle of a field), and so does every event before it reaches the frame (time waited before an
+//! input never counts toward a timer that input starts). Scripted steps are instantaneous, so the clock stops while steps remain and
 //! starts after the last one; a run does not end, and does not capture, while a gesture timer is pending (bounded by
 //! its deadline). A quiet window is agent-driven: no dwell tip (STU-SHL-235 rule 5). Modifiers and focus changes reach
 //! the frame (continuous modifier sampling STU-SHL-106; focus loss finalizes a gesture STU-SHL-194). Only the
@@ -425,6 +426,27 @@ impl App {
         }
     }
 
+    /// The host clock: feeds the GUI frame the wall-clock time that passed since the last feed. It runs BEFORE any input
+    /// reaches the frame (each loop pass and each forwarded event), so the time the window waited before an event never
+    /// counts toward a timer that event starts: after a long wait the first wheel notch does not close its own idle
+    /// window and a pointer arriving on a control does not show its tip at once. Stopped while scripted steps remain
+    /// (they are instantaneous) and until the window is live; it starts on the first pass after the last step.
+    fn feed_clock(&mut self) {
+        let Some(g) = self.gui.as_mut().filter(|_| self.live.is_some()) else { return };
+        let now = Instant::now();
+        if !self.steps.is_empty() {
+            self.clock = None;
+        } else if let Some(at) = self.clock {
+            let ms = u64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(u64::MAX);
+            if ms > 0 {
+                g.advance(ms);
+                self.clock = Some(at + Duration::from_millis(ms));
+            }
+        } else {
+            self.clock = Some(now);
+        }
+    }
+
     /// No gesture timer of the GUI frame is pending: a run may capture and end (a quiet frame is agent-driven, so only
     /// gesture timers count there).
     fn gui_settled(&self) -> bool {
@@ -604,6 +626,7 @@ impl App {
     /// Scene `gui`: the coalesced pointer move, one scripted step, the pane following the client size, then paint and
     /// upload only what changed.
     fn gui_tick(&mut self) -> Result<(), HostError> {
+        self.feed_clock();
         let (Some(g), Some(live)) = (self.gui.as_mut(), self.live.as_mut()) else { return Ok(()) };
         if let Some((x, y)) = self.pending_move.take() {
             let _ = g.apply(HostEvent::PointerMoved { x, y });
@@ -639,19 +662,6 @@ impl App {
             && let Some(step) = self.steps.pop_front()
         {
             g.step(&step)?;
-        }
-        // The host clock: stopped while scripted steps remain (they are instantaneous), then the elapsed time.
-        let now = Instant::now();
-        if !self.steps.is_empty() {
-            self.clock = None;
-        } else if let Some(at) = self.clock {
-            let ms = u64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(u64::MAX);
-            if ms > 0 {
-                g.advance(ms);
-                self.clock = Some(at + Duration::from_millis(ms));
-            }
-        } else {
-            self.clock = Some(now);
         }
         // The Operator's window shows the field's column-resize cursor (STU-SHL-186); a quiet run never touches the
         // Operator's pointer. Hide and show-at-press are not applied (no grab, no warp).
@@ -939,6 +949,7 @@ impl ApplicationHandler for App {
                     self.focus.focus_gained_events = self.focus.focus_gained_events.saturating_add(1);
                 }
                 // Focus loss finalizes a gesture of the frame (STU-SHL-194).
+                self.feed_clock();
                 if let Some(g) = self.gui.as_mut() {
                     if let Some((x, y)) = self.pending_move.take() {
                         let _ = g.apply(HostEvent::PointerMoved { x, y });
@@ -957,6 +968,7 @@ impl ApplicationHandler for App {
                 self.mods = m;
                 // Modifiers are sampled continuously during a drag (STU-SHL-106): the frame sees each change, after
                 // the pending move so a drag sample keeps its order.
+                self.feed_clock();
                 if let Some(g) = self.gui.as_mut() {
                     if let Some((x, y)) = self.pending_move.take() {
                         let _ = g.apply(HostEvent::PointerMoved { x, y });
@@ -967,6 +979,7 @@ impl ApplicationHandler for App {
             HostEvent::CloseRequested => el.exit(),
             HostEvent::RedrawRequested | HostEvent::Occluded { hidden: false } => self.needs_present = true,
             HostEvent::PointerLeft | HostEvent::Button { .. } | HostEvent::Wheel { .. } | HostEvent::Key { .. } => {
+                self.feed_clock();
                 if let Some(g) = self.gui.as_mut() {
                     // A pending move lands first, so a press sees the newest position.
                     if let Some((x, y)) = self.pending_move.take() {
