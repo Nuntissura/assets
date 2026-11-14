@@ -1954,19 +1954,37 @@ impl GuiFrame {
         }
     }
 
+    /// The time to the next dwell level of the hovered control, under the conditions [`GuiFrame::advance`] runs the
+    /// dwell on (review F1). The dwell counts only for the control it started on (`menu.dwell_target`): while the
+    /// pointer is on a shown tip, over whatever lies under it, [`GuiFrame::dwell_reset`] keeps the old target and the
+    /// dwell stands still, so nothing is pending there (the old answer repeated one passed deadline for ever, a wake
+    /// loop in the Operator's window). A hovered control the dwell has not started on yet starts at 0 on the next
+    /// advance. A level whose time has passed is never offered again.
     fn dwell_pending_ms(&self) -> Option<u64> {
         let target = self.ui.hovered.as_deref()?;
         if self.press.is_some() || self.menu.tips_off || self.menu.operated.as_deref() == Some(target) || self.panels[TIP].tree().find(target).is_some() {
             return None;
         }
+        let started = self.menu.dwell_target.as_deref() == Some(target);
+        if !started && self.pointer_on_tip() {
+            return None;
+        }
+        let dwell = if started { self.menu.dwell_ms } else { 0 };
         let shown = self.menu.tip.as_ref().filter(|t| t.target == target).map(|t| t.level);
         let want = match shown {
-            None if self.menu.dwell_ms < L0_DWELL_MS => L0_DWELL_MS,
-            None | Some(0) if self.menu.dwell_ms < L1_DWELL_MS && self.menu.tip_cap != Some(0) => L1_DWELL_MS,
+            None if dwell < L0_DWELL_MS => L0_DWELL_MS,
+            None | Some(0) if dwell < L1_DWELL_MS && self.menu.tip_cap != Some(0) => L1_DWELL_MS,
             _ => return None,
         };
         let quiet = self.menu.quiet_until.saturating_sub(self.menu.clock_ms);
-        Some(want.saturating_sub(self.menu.dwell_ms).max(quiet).max(1))
+        Some(want.saturating_sub(dwell).max(quiet).max(1))
+    }
+
+    /// The pointer is on the shown tip: on a control of the tip itself, or inside the tip's rect over what lies under
+    /// it. There the dwell neither restarts nor runs (STU-SHL-235: a tip stays while the pointer is on it).
+    fn pointer_on_tip(&self) -> bool {
+        self.ui.hovered.as_deref().is_some_and(|h| self.panels[TIP].tree().find(h).is_some())
+            || self.pointer.is_some_and(|p| self.menu.tip_facts.as_ref().is_some_and(|(_, t)| t.rect.contains(p)) && self.menu.tip.is_some())
     }
 
     /// Closes every pending gesture timer as if its time had passed: the end of a script, where no clock runs
@@ -2900,9 +2918,7 @@ impl GuiFrame {
     /// dismissed (STU-SHL-235: a tip never stays over a moved pointer).
     fn dwell_reset(&mut self) {
         let hovered = self.ui.hovered.clone();
-        let on_tip = hovered.as_deref().is_some_and(|h| self.panels[TIP].tree().find(h).is_some())
-            || self.pointer.is_some_and(|p| self.menu.tip_facts.as_ref().is_some_and(|(_, t)| t.rect.contains(p)) && self.menu.tip.is_some());
-        if on_tip {
+        if self.pointer_on_tip() {
             return;
         }
         if self.menu.tip.as_ref().is_some_and(|t| hovered.as_deref() != Some(t.target.as_str())) {
