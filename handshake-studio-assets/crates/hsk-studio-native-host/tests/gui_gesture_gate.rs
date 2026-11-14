@@ -10,6 +10,8 @@ mod common;
 
 use common::{Scratch, fixture};
 use hsk_studio_accord::{ActorContext, CancellationToken};
+use hsk_studio_harness_view::view::Viewer;
+use hsk_studio_harness_view::view::render::Prefer;
 use hsk_studio_native_host::cli::Caller;
 use hsk_studio_native_host::diag::HostRun;
 use hsk_studio_native_host::event::{CursorRequest, HostEvent, Key, Mods};
@@ -501,4 +503,198 @@ fn a_quiet_window_run_feeds_the_clock_so_the_wheel_idle_commits_once() {
     let g = win.receipt.get("gui").expect("gui member").render();
     assert!(g.contains(r#""commits":1"#), "{g}");
     assert!(g.contains(&format!(r#""revision":{}"#, rev + 1)), "{g}");
+}
+
+// ---- Lead review of dcf949a9 (research/review-smb-gui-gesture-gate-1-dcf949a9.json): F1, F3, F4, F5, F7, F8 ----
+
+/// One pointer sample without a paint: the arbiter is state only, so a sample needs no frame.
+fn sample(f: &mut GuiFrame, x: i32, y: i32) {
+    let _ = f.apply(HostEvent::PointerMoved { x, y });
+}
+
+/// Runs the frame's clock from timer to timer. The timers must come to rest: a deadline that has passed with nothing
+/// to show is never offered again (the Operator's window waits on `next_timer_ms`, so a deadline that repeats is a
+/// wake loop, and a framed run would never settle).
+fn rest(f: &mut GuiFrame, what: &str) {
+    for _ in 0..4 {
+        let Some(ms) = f.next_timer_ms() else { return };
+        assert!(ms > 0, "{what}: a timer of 0 ms");
+        f.advance(ms);
+        f.frame().unwrap();
+    }
+    assert_eq!(f.next_timer_ms(), None, "{what}: the frame's timers never come to rest");
+}
+
+/// Review F1: `next_timer_ms` comes to rest wherever the pointer rests: on a control with a tip, on the field, in the
+/// Viewport, and inside a shown tip's rect over whatever lies under it (there the dwell does not run, so no dwell
+/// deadline is pending).
+#[test]
+fn the_frames_timers_come_to_rest_wherever_the_pointer_rests() {
+    let s = Scratch::new("gate-rest");
+    let mut f = open(&s.0);
+    let (tx, ty) = f.centre("studio.tab.swatches").unwrap();
+    to(&mut f, tx, ty);
+    f.advance(400);
+    f.frame().unwrap();
+    assert_eq!(f.tip().map(|t| t.level), Some(0), "the dwell showed the tab's L0 tip");
+    // Inside the L0 tip's rect, over whatever lies under it, with the dwell stopped between L0 and L1.
+    let b = f.node(gui::chrome::TIP_ID).expect("the tip is drawn").bounds;
+    for iy in 1..=3 {
+        for ix in 1..=5 {
+            let (x, y) = ((b.x0 + (b.x1 - b.x0) * ix as f32 / 6.0) as i32, (b.y0 + (b.y1 - b.y0) * iy as f32 / 4.0) as i32);
+            to(&mut f, x, y);
+            rest(&mut f, &format!("inside the tip rect at ({x}, {y})"));
+        }
+    }
+    to(&mut f, tx, ty);
+    rest(&mut f, "a control with a tip");
+    to(&mut f, 400, 400);
+    rest(&mut f, "the Viewport");
+    select(&mut f, "Green");
+    let (fx, fy) = field(&f);
+    to(&mut f, fx, fy);
+    rest(&mut f, "the field");
+    notch(&mut f, true);
+    rest(&mut f, "the field with an open wheel transaction");
+}
+
+/// Review F3: the committed value depends on the gesture's start value and its net displacement only, never on how many
+/// samples carried it. Ctrl steps 0.05 per px, which lands on half quanta: from 50, 323 px left is 33.85, and one sample
+/// and 323 samples must round it the same way. The 500-sample paths pin their committed values (Ctrl: net dx -98,
+/// dy +2 is -5; plain, the path of test 4: net dx -49, dy +2 is -25.5).
+#[test]
+fn a_scrub_commits_the_same_value_whatever_the_sample_count() {
+    let s = Scratch::new("gate-samples");
+    let mut f = open(&s.0);
+    let green = select(&mut f, "Green");
+    let (fx, fy) = field(&f);
+    assert_eq!(f.set_value(OPACITY_ID, 50.0).map(|o| o.is_some()), Ok(true));
+    f.frame().unwrap();
+    let drag = |f: &mut GuiFrame, m: Mods, path: &[(i32, i32)]| -> f64 {
+        to(f, fx, fy);
+        press(f);
+        mods(f, m);
+        for &(x, y) in path {
+            sample(f, x, y);
+        }
+        release(f);
+        mods(f, PLAIN);
+        let v = opacity(f, &green);
+        key(f, Key::Char('z'), CTRL);
+        assert_eq!(opacity(f, &green), 50.0, "undo restores the start value");
+        v
+    };
+    let one = drag(&mut f, CTRL, &[(fx - 323, fy)]);
+    let many: Vec<(i32, i32)> = (1..=323).map(|i| (fx - i, fy)).collect();
+    assert_eq!(drag(&mut f, CTRL, &many), one, "323 samples of 1 px equal one sample of 323 px");
+    assert_eq!(drag(&mut f, CTRL, &[(fx - 100, fy), (fx + 7, fy), (fx - 323, fy)]), one, "a detour ends at the same value");
+    let ctrl: Vec<(i32, i32)> = (0..500).map(|i| (fx - 2 * (i % 50), fy + (i % 7))).collect();
+    assert_eq!(drag(&mut f, CTRL, &ctrl), 45.0, "Ctrl, 500 samples: 50 - 100 px x 0.05");
+    let plain: Vec<(i32, i32)> = (0..500).map(|i| (fx - (i % 50), fy + (i % 7))).collect();
+    assert_eq!(drag(&mut f, PLAIN, &plain), 24.5, "plain, the 500 samples of test 4: 50 - 51 px x 0.5");
+}
+
+/// Review F4: the field's cited constant (`gesture::OPACITY`) against the layer panel's opacity control, as far as this
+/// crate can see it. native-host has no path to the ControlSpec itself (no harness-core or controls edge; harness-view
+/// keeps `panel` private), so this reads the control's behaviour through `Viewer::panel_set`: the hard bounds refuse
+/// just outside them and accept at them, the unit is the one the control strips, and the control renders a value at
+/// the precision the field renders it. The soft range (and so the step) is not observable here: NOT_PROVEN, it waits
+/// for the harness-view accessor of the selected layer's NumberSpec.
+#[test]
+fn the_fields_cited_spec_matches_the_panels_opacity_control() {
+    // harness-core panel.rs:17 `pub const OPACITY: &str = "appearance.opacity"`.
+    const CONTROL: &str = "appearance.opacity";
+    let o = gui::gesture::OPACITY;
+    let s = Scratch::new("gate-spec");
+    let mut v = Viewer::new(Prefer::Cpu);
+    v.open(&fixture(&s.0)).unwrap_or_else(|e| panic!("open: {e}"));
+    let state = v.state_json();
+    let green = state["layers"].as_array().and_then(|a| a.iter().find(|l| l["name"] == "Green")).and_then(|l| l["id"].as_str()).expect("Green").to_owned();
+    assert!(v.panel_set(&green, CONTROL, &format!("{}", o.hard.1 + 0.1)).is_err(), "just above the hard maximum is refused");
+    assert!(v.panel_set(&green, CONTROL, &format!("{}", o.hard.0 - 0.1)).is_err(), "just below the hard minimum is refused");
+    v.panel_set(&green, CONTROL, &format!("{}", o.hard.0)).unwrap_or_else(|e| panic!("the hard minimum is accepted: {e}"));
+    v.panel_set(&green, CONTROL, &format!("{}", o.hard.1)).unwrap_or_else(|e| panic!("the hard maximum is accepted: {e}"));
+    v.panel_set(&green, CONTROL, &format!("81.54{}", o.unit)).unwrap_or_else(|e| panic!("a value with the unit is accepted: {e}"));
+    let rendered = v.run().ops().iter().rev().find_map(|r| r["store_value_after"].as_str().map(str::to_owned)).expect("the control's rendered value");
+    assert_eq!(rendered, o.text(o.settle(81.54).expect("finite")), "the control and the field render at the same precision");
+}
+
+/// Review F5, the frame half of 57f9d8d0: time that passed before an input is fed to the frame BEFORE the input, so it
+/// never counts toward the timer the input starts. After 5 s of rest a pointer arriving on a control waits its full
+/// dwell and the first wheel notch waits its full idle window. The window half (window.rs feeds its clock before it
+/// forwards an event) is UNVERIFIED by run: only the Operator's window shows it, and an agent cannot run that.
+#[test]
+fn time_waited_before_an_input_does_not_count_toward_the_timer_it_starts() {
+    let s = Scratch::new("gate-order");
+    let mut f = open(&s.0);
+    f.advance(5000);
+    let (tx, ty) = f.centre("studio.tab.swatches").unwrap();
+    to(&mut f, tx, ty);
+    assert_eq!(f.tip(), None, "no tip at once after a rest");
+    assert_eq!(f.next_timer_ms(), Some(400), "the full L0 dwell is ahead");
+    f.advance(399);
+    assert_eq!(f.tip(), None);
+    f.advance(1);
+    assert_eq!(f.tip().map(|t| t.level), Some(0));
+
+    let green = select(&mut f, "Green");
+    let n = entries(&f);
+    let (fx, fy) = field(&f);
+    to(&mut f, fx, fy);
+    f.advance(5000);
+    notch(&mut f, true);
+    assert_eq!(f.next_timer_ms(), Some(IDLE_MS), "the full idle window is ahead of the first notch");
+    f.advance(IDLE_MS - 1);
+    assert_eq!(entries(&f), n, "the first notch after a rest does not close its own idle window");
+    notch(&mut f, true);
+    f.advance(IDLE_MS);
+    assert_eq!(entries(&f), n + 1, "both notches are one entry");
+    assert_eq!(opacity(&f, &green), 99.0);
+}
+
+/// Review F7: the field's Increment and Decrement accessibility actions step it once each (0.5) through the one
+/// SetValue commit path: one entry per action, clamped, none for an unchanged value, typed refusals.
+#[test]
+fn increment_and_decrement_step_the_field_once_each() {
+    let s = Scratch::new("gate-step");
+    let mut f = open(&s.0);
+    let green = select(&mut f, "Green");
+    let n = entries(&f);
+    let ok = Ok(Some(Outcome { command: "layer.set_opacity", code: "ok".into() }));
+    assert_eq!(f.step_value(OPACITY_ID, -1), ok, "Decrement");
+    assert_eq!((opacity(&f, &green), entries(&f)), (99.5, n + 1));
+    assert_eq!(f.step_value(OPACITY_ID, -3), ok);
+    assert_eq!((opacity(&f, &green), entries(&f)), (98.0, n + 2));
+    assert_eq!(f.step_value(OPACITY_ID, 1), ok, "Increment");
+    assert_eq!((opacity(&f, &green), entries(&f)), (98.5, n + 3));
+    assert_eq!(f.step_value(OPACITY_ID, i32::MAX), ok, "clamped at the hard maximum");
+    assert_eq!((opacity(&f, &green), entries(&f)), (100.0, n + 4));
+    assert_eq!(f.step_value(OPACITY_ID, 1), Ok(None), "an unchanged value writes nothing");
+    assert_eq!(f.step_value("studio.panel.properties.bogus", 1), Err("unknown_author_id"));
+    assert_eq!(entries(&f), n + 4);
+    let (fx, fy) = field(&f);
+    to(&mut f, fx, fy);
+    press(&mut f);
+    assert_eq!(f.step_value(OPACITY_ID, -1), Err("pointer_owned"));
+    release(&mut f);
+}
+
+/// Review F8 (c): a right-button release is the next action (it opens a context menu, a modal): an open wheel
+/// transaction closes with its one commit first (STU-SHL-107).
+#[test]
+fn a_right_click_closes_an_open_wheel_transaction() {
+    let s = Scratch::new("gate-right");
+    let mut f = open(&s.0);
+    let green = select(&mut f, "Green");
+    let n = entries(&f);
+    let (fx, fy) = field(&f);
+    to(&mut f, fx, fy);
+    notch(&mut f, true);
+    notch(&mut f, true);
+    assert_eq!(entries(&f), n);
+    ev(&mut f, HostEvent::Button { button: hsk_studio_native_host::event::Button::Right, pressed: true });
+    ev(&mut f, HostEvent::Button { button: hsk_studio_native_host::event::Button::Right, pressed: false });
+    assert_eq!(entries(&f), n + 1, "the right click closed the transaction with its commit");
+    assert_eq!(opacity(&f, &green), 99.0);
+    assert!(counters(&f).contains(r#""commits":1"#), "{}", counters(&f));
 }

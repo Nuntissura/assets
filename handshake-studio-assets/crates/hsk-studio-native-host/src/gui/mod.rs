@@ -1921,6 +1921,12 @@ impl GuiFrame {
         Ok(self.commit(Commit { owner: OPACITY_ID.to_owned(), target: layer, before, after }))
     }
 
+    /// The accessibility Increment (`steps` > 0) and Decrement (`steps` < 0) actions on the field `author_id`.
+    pub fn step_value(&mut self, author_id: &str, steps: i32) -> Result<Option<Outcome>, &'static str> {
+        let _ = (author_id, steps);
+        Err("unknown_author_id")
+    }
+
     /// What the frame asks the host to do with the OS cursor (STU-SHL-104, STU-SHL-186): column-resize over the field,
     /// hidden while a drag that moved owns the pointer, shown at the press point after it. No request moves the pointer
     /// during a drag.
