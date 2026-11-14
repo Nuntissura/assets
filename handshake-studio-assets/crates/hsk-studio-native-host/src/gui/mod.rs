@@ -938,6 +938,18 @@ impl GuiFrame {
         kumihimo_ui::hit::hit_test(t, p).filter(|&n| t.effectively_disabled(n)).map(|n| t.get(n).author_id.clone())
     }
 
+    /// The context menu of the row under the pointer (STU-SHL-014): a right-button release in the Inspect Dock.
+    fn context_click(&mut self) -> Option<Outcome> {
+        let p = self.pointer?;
+        let i = self.panel_at(p).filter(|&i| i == INSPECT)?;
+        let t = self.panels[i].tree();
+        let id = kumihimo_ui::hit::hit_test(t, p).map(|n| t.get(n).author_id.clone())?;
+        match self.context_at(&id, Some((p.x, p.y))) {
+            Ok(o) => Some(o),
+            Err(code) => Some(self.frame_outcome("frame.pointer", code, &[STATUS])),
+        }
+    }
+
     /// Applies one host event; returns the command a release or chord ran.
     pub fn apply(&mut self, ev: HostEvent) -> Option<Outcome> {
         self.stats.events = self.stats.events.saturating_add(1);
@@ -1040,16 +1052,11 @@ impl GuiFrame {
                 }
             }
             HostEvent::Button { button: Button::Right, pressed: false } => {
-                // The context menu of the row under the pointer (STU-SHL-014).
+                // A right click is the next action and may open a modal: an open wheel transaction commits first
+                // (STU-SHL-107; review F8).
+                let closed = self.close_wheel();
                 self.hide_tip();
-                let p = self.pointer?;
-                let i = self.panel_at(p).filter(|&i| i == INSPECT)?;
-                let t = self.panels[i].tree();
-                let id = kumihimo_ui::hit::hit_test(t, p).map(|n| t.get(n).author_id.clone())?;
-                match self.context_at(&id, Some((p.x, p.y))) {
-                    Ok(o) => Some(o),
-                    Err(code) => Some(self.frame_outcome("frame.pointer", code, &[STATUS])),
-                }
+                self.context_click().or(closed)
             }
             // The owner of the pointer consumes the wheel: nothing scrolls under a drag (STU-SHL-104).
             HostEvent::Wheel { .. } if self.gesture.owns_pointer() => None,
