@@ -26,8 +26,11 @@ pub fn draw(
 ) {
     let theme = crate::chrome::ThemeTokens::resolve(ctx, &host.policy());
     let now = controller.inspect().now;
-    let mut events = crate::input::pointer_events(ctx, surface.epoch);
-    events.extend(state.injected.iter().copied());
+    let events = state.remaining_pointer_events.clone().unwrap_or_else(|| {
+        let mut events = crate::input::pointer_events(ctx, surface.epoch);
+        events.extend(state.injected.iter().copied());
+        events
+    });
     if let Some(capture) = state.navigation_capture.clone() {
         let reason = if capture.epoch != surface.epoch
             || capture.generation != controller.snapshot().generation

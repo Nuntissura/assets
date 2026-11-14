@@ -135,6 +135,29 @@ pub fn project_with_chrome(
     host: &mut impl DesktopHost,
     chrome: &chrome::ChromeState,
 ) -> Result<Projection> {
+    project_layout(controller, surface, host, chrome, None).map(|(projection, _)| projection)
+}
+
+pub(crate) fn project_resize_preview(
+    controller: &mut Controller,
+    surface: SurfaceBinding,
+    host: &mut impl DesktopHost,
+    chrome: &chrome::ChromeState,
+    workspace: WorkspaceId,
+    plan: &kumihimo_core::LayoutPlan,
+) -> Result<(Projection, Option<kumihimo_core::Snapshot>)> {
+    let mut snapshot = controller.snapshot().clone();
+    snapshot.layouts.insert(workspace, plan.clone());
+    project_layout(controller, surface, host, chrome, Some(snapshot))
+}
+
+fn project_layout(
+    controller: &mut Controller,
+    surface: SurfaceBinding,
+    host: &mut impl DesktopHost,
+    chrome: &chrome::ChromeState,
+    mut preview: Option<kumihimo_core::Snapshot>,
+) -> Result<(Projection, Option<kumihimo_core::Snapshot>)> {
     surface.validate()?;
     let policy = host.policy();
     if policy.max_regions == 0 || policy.tab_page_size == 0 || policy.max_pending == 0 {
@@ -160,14 +183,17 @@ pub fn project_with_chrome(
         if !seen.insert(workspace) {
             return Err(AdapterError::Invalid("workspace containment cycle"));
         }
-        let mut context = controller
-            .snapshot()
+        let mut context = preview
+            .as_ref()
+            .unwrap_or_else(|| controller.snapshot())
             .contexts
             .get(&workspace)
             .cloned()
             .unwrap_or_else(|| GeometryContext::new(bounds));
         context.viewport = bounds;
-        if controller.snapshot().contexts.get(&workspace) != Some(&context) {
+        if let Some(snapshot) = preview.as_mut() {
+            snapshot.contexts.insert(workspace, context);
+        } else if controller.snapshot().contexts.get(&workspace) != Some(&context) {
             if let Err(error) =
                 transition_context(controller, workspace, context, host, policy.max_pending)
             {
@@ -180,8 +206,10 @@ pub fn project_with_chrome(
                 continue;
             }
         }
-        let geometry = match controller.snapshot().geometry(workspace) {
+        let snapshot = preview.as_ref().unwrap_or_else(|| controller.snapshot());
+        let geometry = match snapshot.geometry(workspace) {
             Ok(g) => g,
+            Err(e) if preview.is_some() => return Err(e.into()),
             Err(e) => {
                 output.rejected.push(format!(
                     "workspace {}: {e}; use pane list or resize",
@@ -207,7 +235,7 @@ pub fn project_with_chrome(
             }
         }
         // Core omits maximized siblings from geometry; never traverse their children.
-        let ids = controller.snapshot().workspaces[&workspace].frames.clone();
+        let ids = snapshot.workspaces[&workspace].frames.clone();
         for frame in ids {
             let Some(&rect) = geometry.frames.get(&frame) else {
                 continue;
@@ -225,9 +253,9 @@ pub fn project_with_chrome(
                 geometry.clips.get(&frame).copied().unwrap_or(rect),
                 ancestor_clip,
             )?;
-            let record = &controller.snapshot().frames[&frame];
+            let record = &snapshot.frames[&frame];
             let child = record.child_workspace;
-            let floating = controller.snapshot().floats.contains_key(&frame);
+            let floating = snapshot.floats.contains_key(&frame);
             let z_root = if floating { Some(frame) } else { inherited_z };
             output.frames.push(FrameProjection {
                 frame,
@@ -272,5 +300,5 @@ pub fn project_with_chrome(
         )
     });
     output.generation = controller.snapshot().generation;
-    Ok(output)
+    Ok((output, preview))
 }

@@ -229,6 +229,11 @@ impl RenderSlot {
 }
 /// The host owns operation allocation, permission, providers and native policy.
 pub trait DesktopHost {
+    /// Optional limits for the cumulative divider fraction within its split or grid axis.
+    fn live_divider_range(&self, _divider: &input::DividerId) -> Option<input::DividerRange> {
+        None
+    }
+
     fn policy(&self) -> HostPolicy {
         HostPolicy::default()
     }
@@ -340,6 +345,28 @@ impl DesktopAdapter {
         surface: SurfaceBinding,
         host: &mut impl DesktopHost,
     ) -> Result<FrameReport> {
+        self.show_with_resize(ctx, controller, surface, host, false)
+    }
+
+    /// Draw with live divider projection while keeping layout commits release-only.
+    pub fn show_with_live_resize(
+        &mut self,
+        ctx: &egui::Context,
+        controller: &mut Controller,
+        surface: SurfaceBinding,
+        host: &mut impl DesktopHost,
+    ) -> Result<FrameReport> {
+        self.show_with_resize(ctx, controller, surface, host, true)
+    }
+
+    fn show_with_resize(
+        &mut self,
+        ctx: &egui::Context,
+        controller: &mut Controller,
+        surface: SurfaceBinding,
+        host: &mut impl DesktopHost,
+        live_resize: bool,
+    ) -> Result<FrameReport> {
         surface.validate()?;
         let policy = host.policy();
         policy.settings.validate()?;
@@ -367,24 +394,26 @@ impl DesktopAdapter {
             control_limit,
             ..Default::default()
         };
+        let frame = if live_resize {
+            input::prepare_live_resize(
+                ctx, controller, projection, surface, host, &self.chrome, &mut self.input, &mut report,
+            )?
+        } else {
+            input::LiveResizeFrame { projection, preview: None }
+        };
+        let projection = &frame.projection;
+        report.generation = projection.generation;
+        report.regions = projection.frames.len();
         for failure in &projection.rejected {
             report.reject(failure);
         }
-        chrome::draw(
-            ctx,
-            controller,
-            &projection,
-            surface,
-            host,
-            &mut self.chrome,
-            &mut report,
-        );
-        content::draw(ctx, controller, &projection, surface, host, &mut report);
+        chrome::draw_live_resize(ctx, controller, &frame, surface, host, &mut self.chrome, &mut report);
+        content::draw(ctx, controller, projection, surface, host, &mut report);
         #[cfg(feature = "navigation")]
         navigation::draw(
             ctx,
             controller,
-            &projection,
+            projection,
             surface,
             host,
             &mut self.input,
@@ -393,7 +422,7 @@ impl DesktopAdapter {
         input::process(
             ctx,
             controller,
-            &projection,
+            projection,
             surface,
             host,
             &mut self.input,

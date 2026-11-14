@@ -50,6 +50,29 @@ enum DragTarget {
         bounds: Rect,
     },
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DividerId {
+    pub workspace: WorkspaceId,
+    pub node: NodeId,
+    pub axis: Axis,
+    pub index: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DividerRange {
+    min: Scalar,
+    max: Scalar,
+}
+
+impl DividerRange {
+    pub fn new(min: Scalar, max: Scalar) -> Result<Self> {
+        if min.get() < 0.0 || max.get() > 1.0 || min.get() > max.get() {
+            return Err(AdapterError::Invalid("divider range"));
+        }
+        Ok(Self { min, max })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Capture {
     pub pointer: u64,
@@ -60,6 +83,8 @@ pub struct Capture {
     pub epoch: u64,
     pub pressed_at: f64,
     pub activated: bool,
+    surface: SurfaceBinding,
+    divider_range: Option<DividerRange>,
     hit_size: f32,
     long_press_seconds: f64,
     target: DragTarget,
@@ -70,6 +95,7 @@ pub struct Capture {
 #[derive(Default)]
 pub struct InputState {
     capture: Option<Capture>,
+    pub(crate) remaining_pointer_events: Option<Vec<HostPointerEvent>>,
     pub(crate) injected: VecDeque<HostPointerEvent>,
     pub last_settlement: Option<&'static str>,
     pub focused_view: Option<ViewId>,
@@ -82,6 +108,42 @@ impl InputState {
     pub fn active_capture(&self) -> Option<&Capture> {
         self.capture.as_ref()
     }
+    /// Project the current divider candidate without changing committed layout or contexts.
+    ///
+    /// Callers must process the current divider events before using the result for paint.
+    pub fn project_resize_preview(
+        &self,
+        controller: &mut Controller,
+        surface: SurfaceBinding,
+        host: &mut impl DesktopHost,
+        chrome: &crate::chrome::ChromeState,
+    ) -> Result<Option<workspace::Projection>> {
+        self.project_resize_frame(controller, surface, host, chrome)
+            .map(|frame| frame.map(|frame| frame.projection))
+    }
+
+    fn project_resize_frame(
+        &self,
+        controller: &mut Controller,
+        surface: SurfaceBinding,
+        host: &mut impl DesktopHost,
+        chrome: &crate::chrome::ChromeState,
+    ) -> Result<Option<LiveResizeFrame>> {
+        let Some(capture) = &self.capture else {
+            return Ok(None);
+        };
+        if capture.surface != surface || capture.generation != controller.snapshot().generation {
+            return Ok(None);
+        }
+        let (DragTarget::Resize { workspace, .. }, Some(plan)) =
+            (&capture.target, &capture.resize_plan)
+        else {
+            return Ok(None);
+        };
+        workspace::project_resize_preview(controller, surface, host, chrome, *workspace, plan)
+            .map(|(projection, preview)| Some(LiveResizeFrame { projection, preview }))
+    }
+
     /// Host classification is explicit. Pressure never implies pen.
     pub fn feed_pointer(&mut self, event: HostPointerEvent) -> Result<()> {
         if event.pointer == 0
@@ -413,38 +475,68 @@ fn update_preview(
                 return;
             }
             let sum: f64 = weights.iter().sum();
-            // Keep all other tracks fixed; no canonical writes before release.
-            let change = delta / extent * sum;
-            let a = weights[*index] + change;
-            let b = weights[*index + 1] - change;
-            if !a.is_finite() || !b.is_finite() || a <= 0.0 || b <= 0.0 {
-                report.reject(AdapterError::Invalid("resize impossible proportions"));
+            let before: f64 = weights[..*index].iter().sum();
+            let start = before + weights[*index];
+            let end = start + weights[*index + 1];
+            let desired = start + delta / extent * sum;
+            if !sum.is_finite() || !desired.is_finite() {
+                report.reject(AdapterError::Invalid("resize weight arithmetic overflow"));
                 return;
             }
-            match candidate.nodes.get_mut(node) {
-                Some(LayoutNode::Split { children, .. }) => {
-                    children[*index].weight = Scalar::new(a).unwrap();
-                    children[*index + 1].weight = Scalar::new(b).unwrap();
-                }
-                Some(LayoutNode::Grid { rows, columns, .. }) => {
-                    let tracks = if *axis == Axis::Horizontal {
-                        columns
-                    } else {
-                        rows
-                    };
-                    tracks[*index] = Scalar::new(a).unwrap();
-                    tracks[*index + 1] = Scalar::new(b).unwrap();
-                }
-                _ => return,
-            }
             let mut diagnostic = controller.snapshot().clone();
-            diagnostic.layouts.insert(*workspace, candidate.clone());
-            match diagnostic.geometry(*workspace) {
-                Ok(geometry) => {
-                    capture.resize_plan = Some(candidate);
+            let mut solve = |position: f64| -> Result<_> {
+                let a = position - before;
+                let b = end - position;
+                if !a.is_finite() || !b.is_finite() || a <= 0.0 || b <= 0.0 {
+                    return Err(AdapterError::Invalid("resize impossible proportions"));
+                }
+                let a = Scalar::new(a)?;
+                let b = Scalar::new(b)?;
+                match candidate.nodes.get_mut(node) {
+                    Some(LayoutNode::Split { children, .. }) => {
+                        children[*index].weight = a;
+                        children[*index + 1].weight = b;
+                    }
+                    Some(LayoutNode::Grid { rows, columns, .. }) => {
+                        let tracks = if *axis == Axis::Horizontal { columns } else { rows };
+                        tracks[*index] = a;
+                        tracks[*index + 1] = b;
+                    }
+                    _ => return Err(AdapterError::Invalid("resize node")),
+                }
+                diagnostic.layouts.insert(*workspace, candidate.clone());
+                Ok((candidate.clone(), diagnostic.geometry(*workspace)?))
+            };
+            let result = if let Some(range) = capture.divider_range {
+                let low = range.min.get() * sum;
+                let high = range.max.get() * sum;
+                let requested = desired.clamp(low, high);
+                solve(requested).or_else(|error| {
+                    let mut valid = start.clamp(low, high);
+                    let mut best = solve(valid).map_err(|_| error)?;
+                    let mut invalid = requested;
+                    // Core validates minimums. Keep the closest accepted point on
+                    // the segment from the committed divider toward the request.
+                    for _ in 0..32 {
+                        let middle = valid + (invalid - valid) / 2.0;
+                        if let Ok(candidate) = solve(middle) {
+                            valid = middle;
+                            best = candidate;
+                        } else {
+                            invalid = middle;
+                        }
+                    }
+                    Ok(best)
+                })
+            } else {
+                solve(desired)
+            };
+            match result {
+                Ok((plan, geometry)) => {
+                    capture.resize_plan = Some(plan);
                     capture.resize_geometry = Some(geometry);
                 }
-                Err(e) => report.reject(e),
+                Err(error) => report.reject(error),
             }
             return;
         }
@@ -454,6 +546,125 @@ fn update_preview(
         Err(error) => report.reject(error),
     }
 }
+/// Effective pane projection and its matching divider geometry for one paint.
+pub struct LiveResizeFrame {
+    pub projection: workspace::Projection,
+    pub(crate) preview: Option<kumihimo_core::Snapshot>,
+}
+
+/// Opt in to live divider geometry. Call once before drawing, and pass the returned
+/// frame to `chrome::draw_live_resize` and its projection to content and `process`.
+pub fn prepare_live_resize(
+    ctx: &egui::Context,
+    controller: &mut Controller,
+    committed: workspace::Projection,
+    surface: SurfaceBinding,
+    host: &mut impl DesktopHost,
+    chrome: &crate::chrome::ChromeState,
+    state: &mut InputState,
+    report: &mut FrameReport,
+) -> Result<LiveResizeFrame> {
+    let mut events = pointer_events(ctx, surface.epoch);
+    events.extend(state.injected.drain(..));
+    let policy = host.policy();
+    let mut divider_report = FrameReport::default();
+    let captured = state.capture.as_ref().and_then(|capture| {
+        matches!(capture.target, DragTarget::Resize { .. })
+            .then_some((capture.pointer, capture.source))
+    });
+    #[cfg(feature = "navigation")]
+    let navigation_active = state.navigation_capture.is_some();
+    #[cfg(not(feature = "navigation"))]
+    let navigation_active = false;
+    let divider_input_cancelled = ctx.input(|input| {
+        !input.focused || input.key_pressed(egui::Key::Escape)
+            || input.events.iter().any(|event| matches!(event, egui::Event::WindowFocused(false)))
+    });
+    let identity = if state.capture.is_none() && !navigation_active && !divider_input_cancelled {
+        let press = events.iter().find(|event| {
+            event.phase == PointerPhase::Press
+                && event.epoch == surface.epoch
+                && event.pointer != 0 && event.pointer != u64::MAX
+                && !state.consumed_pointers.contains(&(event.pointer, event.source))
+        });
+        if let Some(press) = press {
+            for_each_divider(controller.snapshot(), &committed, surface, &policy, |_, viewport, clip, key, rect, _, _, _| {
+                let rect = rect.intersect(to_egui(viewport)).intersect(to_egui(clip));
+                if rect.contains(press.position) {
+                    if let Ok(bounds) = from_egui(rect) {
+                        divider_report.controls.push(ControlRecord {
+                            id: key, label: String::new(), bounds, target: None, enabled: true,
+                        });
+                    }
+                }
+                true
+            });
+            matches!(hit_drag(controller, &committed, press.position, &divider_report), Some(DragTarget::Resize { .. }))
+                .then_some((press.pointer, press.source))
+        } else {
+            None
+        }
+    } else {
+        captured
+    };
+
+    let mut divider_events = Vec::new();
+    let mut ordinary_events = Vec::new();
+    let mut identity = identity;
+    let mut divider_started = captured.is_some();
+    for event in events {
+        if identity == Some((event.pointer, event.source))
+            && (divider_started || event.phase == PointerPhase::Press)
+        {
+            divider_started = true;
+            if event.epoch == surface.epoch && event.position.x.is_finite() && event.position.y.is_finite()
+                && matches!(event.phase, PointerPhase::Release | PointerPhase::Cancel)
+            {
+                identity = None;
+            }
+            divider_events.push(event);
+        } else {
+            ordinary_events.push(event);
+        }
+    }
+    state.remaining_pointer_events = Some(ordinary_events);
+    let generation = controller.snapshot().generation;
+    if captured.is_some() || !divider_events.is_empty() {
+        process_pointer_events(ctx, controller, &committed, surface, host, state, &mut divider_report, divider_events, true, Some(chrome), divider_input_cancelled);
+        for error in divider_report.rejected {
+            report.reject(error);
+        }
+    }
+    if let Some(capture) = state.capture.as_mut().filter(|capture| {
+        matches!(capture.target, DragTarget::Resize { .. })
+            && capture.source == PointerSource::Touch && !capture.activated
+    }) {
+        let remaining = capture.long_press_seconds - (ctx.input(|i| i.time) - capture.pressed_at);
+        if remaining <= 0.0 {
+            capture.activated = true;
+            update_preview(capture, controller, &committed, report);
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+        }
+    }
+    if controller.snapshot().generation != generation {
+        return workspace::project_with_chrome(controller, surface, host, chrome)
+            .map(|projection| LiveResizeFrame { projection, preview: None });
+    }
+    match state.project_resize_frame(controller, surface, host, chrome) {
+        Ok(Some(preview)) => Ok(preview),
+        Ok(None) => Ok(LiveResizeFrame { projection: committed, preview: None }),
+        Err(error) => {
+            if let Some(capture) = state.capture.as_mut() {
+                capture.resize_plan = None;
+                capture.resize_geometry = None;
+            }
+            report.reject(error);
+            Ok(LiveResizeFrame { projection: committed, preview: None })
+        }
+    }
+}
+
 pub fn process(
     ctx: &egui::Context,
     controller: &mut Controller,
@@ -463,199 +674,19 @@ pub fn process(
     state: &mut InputState,
     report: &mut FrameReport,
 ) {
-    let policy = host.policy();
+    let live = state.remaining_pointer_events.is_some();
+    let events = state.remaining_pointer_events.take().unwrap_or_else(|| {
+        let mut events = pointer_events(ctx, surface.epoch);
+        events.extend(state.injected.drain(..));
+        events
+    });
+    let check_capture = !live || !state.capture.as_ref().is_some_and(|c| matches!(c.target, DragTarget::Resize { .. }));
+    process_pointer_events(ctx, controller, projection, surface, host, state, report, events, check_capture, None, live);
     let now = ctx.input(|i| i.time);
-    if state.focused_view.is_some_and(|id| {
-        controller
-            .snapshot()
-            .views
-            .get(&id)
-            .is_none_or(|v| v.closed.is_some())
-    }) {
-        state.focused_view = None;
-    }
-    if state.capture.as_ref().is_some_and(|c| {
-        c.epoch != surface.epoch || c.generation != controller.snapshot().generation
-    }) {
-        state.cancel("invalidated");
-        report.reject(AdapterError::Stale("gesture generation/surface"));
-    }
-    if ctx.input(|i| {
-        !i.focused
-            || i.key_pressed(egui::Key::Escape)
-            || i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::WindowFocused(false)))
-    }) {
-        state.cancel("focus/capture lost or Escape");
-    }
-    let mut events = pointer_events(ctx, surface.epoch);
-    events.extend(state.injected.drain(..));
-    if state.capture.is_some()
-        && ctx.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::PointerGone))
-        })
-        && !events.iter().any(|e| e.phase == PointerPhase::Release)
-    {
-        state.cancel("capture lost");
-    }
-    for event in events {
-        if event.pointer == 0
-            || event.pointer == u64::MAX
-            || !event.position.x.is_finite()
-            || !event.position.y.is_finite()
-        {
-            report.reject(AdapterError::Invalid("pointer identity/position"));
-            continue;
-        }
-        if event.epoch != surface.epoch {
-            report.reject(AdapterError::Stale("host pointer epoch"));
-            continue;
-        }
-        if state
-            .consumed_pointers
-            .contains(&(event.pointer, event.source))
-        {
-            continue;
-        }
-        match event.phase {
-            PointerPhase::Press if state.capture.is_none() => {
-                let tab = (event.source != PointerSource::Mouse)
-                    .then(|| {
-                        report.controls.iter().rev().find_map(|control| {
-                            let view = control.target?;
-                            (control.enabled
-                                && control.id == format!("view/{}/tab", view.raw())
-                                && to_egui(control.bounds).contains(event.position)
-                                && controller.snapshot().views.get(&view).is_some_and(|v| {
-                                    v.closed.is_none()
-                                        && pick_frame(projection, event.position) == Some(v.frame)
-                                }))
-                            .then_some(DragTarget::TabSelect {
-                                view,
-                                bounds: control.bounds,
-                            })
-                        })
-                    })
-                    .flatten();
-                if let Some(target) =
-                    tab.or_else(|| hit_drag(controller, projection, event.position, report))
-                {
-                    let settings = projection
-                        .frames
-                        .iter()
-                        .find(|f| Some(f.frame) == pick_frame(projection, event.position))
-                        .map(|f| &f.settings)
-                        .unwrap_or(&policy.settings);
-                    state.capture = Some(Capture {
-                        pointer: event.pointer,
-                        source: event.source,
-                        press: event.position,
-                        position: event.position,
-                        generation: controller.snapshot().generation,
-                        epoch: surface.epoch,
-                        pressed_at: now,
-                        activated: event.source != PointerSource::Touch,
-                        hit_size: settings.hit_size,
-                        long_press_seconds: settings.long_press_seconds,
-                        target,
-                        preview: None,
-                        resize_plan: None,
-                        resize_geometry: None,
-                    });
-                    state.last_settlement = None;
-                } else {
-                    route_pointer(controller, projection, host, state, report, event);
-                }
-            }
-            PointerPhase::Move => {
-                if let Some(capture) = state
-                    .capture
-                    .as_mut()
-                    .filter(|c| c.pointer == event.pointer && c.source == event.source)
-                {
-                    capture.position = event.position;
-                    if matches!(capture.target, DragTarget::TabSelect { .. }) {
-                        if capture.position.distance(capture.press) > capture.hit_size {
-                            state.cancel("tab tap moved into scrolling");
-                        }
-                        continue;
-                    }
-                    if capture.source == PointerSource::Touch && !capture.activated {
-                        if capture.position.distance(capture.press) > capture.hit_size {
-                            state.cancel("touch scrolling before long press");
-                            continue;
-                        }
-                        capture.activated = now - capture.pressed_at >= capture.long_press_seconds;
-                    }
-                    if capture.activated {
-                        update_preview(capture, controller, projection, report);
-                    }
-                } else {
-                    route_pointer(controller, projection, host, state, report, event);
-                }
-            }
-            PointerPhase::Release => {
-                if state
-                    .capture
-                    .as_ref()
-                    .is_some_and(|c| c.pointer == event.pointer && c.source == event.source)
-                {
-                    let mut capture = state.capture.take().unwrap();
-                    capture.position = event.position;
-                    if let DragTarget::TabSelect { view, bounds } = &capture.target {
-                        if to_egui(*bounds).contains(capture.position)
-                            && capture.position.distance(capture.press) <= capture.hit_size
-                        {
-                            crate::chrome::command(
-                                controller,
-                                host,
-                                Command::SelectView { view: *view },
-                                report,
-                            );
-                            state.focused_view = Some(*view);
-                        }
-                    } else if capture.activated && capture.position.distance(capture.press) > 2.0 {
-                        update_preview(&mut capture, controller, projection, report);
-                        if let Some(preview) = capture.preview {
-                            crate::chrome::command(
-                                controller,
-                                host,
-                                Command::CommitPreview(preview),
-                                report,
-                            );
-                        } else if let (DragTarget::Resize { workspace, .. }, Some(plan)) =
-                            (capture.target, capture.resize_plan)
-                        {
-                            crate::chrome::command(
-                                controller,
-                                host,
-                                Command::SetLayout { workspace, plan },
-                                report,
-                            );
-                        }
-                    }
-                    state.last_settlement = Some("release");
-                } else {
-                    route_pointer(controller, projection, host, state, report, event);
-                }
-            }
-            PointerPhase::Cancel => {
-                if state
-                    .capture
-                    .as_ref()
-                    .is_some_and(|c| c.pointer == event.pointer && c.source == event.source)
-                {
-                    state.cancel("pointer cancelled");
-                }
-            }
-            _ => {}
-        }
-    }
+    let policy = host.policy();
     if let Some(capture) = &mut state.capture {
-        if capture.source == PointerSource::Touch
+        if !(live && matches!(capture.target, DragTarget::Resize { .. }))
+            && capture.source == PointerSource::Touch
             && !capture.activated
             && !matches!(capture.target, DragTarget::TabSelect { .. })
         {
@@ -672,8 +703,10 @@ pub fn process(
         if let Some(preview) = &capture.preview {
             paint_preview(ctx, preview, theme);
         }
-        if let Some(geometry) = &capture.resize_geometry {
-            paint_geometry(ctx, geometry, theme);
+        if !live {
+            if let Some(geometry) = &capture.resize_geometry {
+                paint_geometry(ctx, geometry, theme);
+            }
         }
     }
     // Frame shortcuts are explicit chords. Plain text, wheel and editor shortcuts retain content ownership.
@@ -776,6 +809,248 @@ pub fn process(
     }
     state.consumed_pointer = false;
     state.consumed_pointers.clear();
+}
+fn process_pointer_events(
+    ctx: &egui::Context,
+    controller: &mut Controller,
+    projection: &workspace::Projection,
+    surface: SurfaceBinding,
+    host: &mut impl DesktopHost,
+    state: &mut InputState,
+    report: &mut FrameReport,
+    events: Vec<HostPointerEvent>,
+    check_capture: bool,
+    live_chrome: Option<&crate::chrome::ChromeState>,
+    skip_divider_press: bool,
+) {
+    let policy = host.policy();
+    let now = ctx.input(|i| i.time);
+    if state.focused_view.is_some_and(|id| {
+        controller
+            .snapshot()
+            .views
+            .get(&id)
+            .is_none_or(|v| v.closed.is_some())
+    }) {
+        state.focused_view = None;
+    }
+    if state.capture.as_ref().is_some_and(|c| {
+        c.surface != surface || c.generation != controller.snapshot().generation
+    }) {
+        state.cancel("invalidated");
+        report.reject(AdapterError::Stale("gesture generation/surface"));
+    }
+    if ctx.input(|i| {
+        !i.focused
+            || i.key_pressed(egui::Key::Escape)
+            || i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::WindowFocused(false)))
+    }) {
+        state.cancel("focus/capture lost or Escape");
+    }
+    if check_capture && state.capture.is_some()
+        && ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::PointerGone))
+        })
+        && !events.iter().any(|event| {
+            event.phase == PointerPhase::Release
+                && (live_chrome.is_none() || state.capture.as_ref().is_some_and(|capture| {
+                    event.pointer == capture.pointer && event.source == capture.source
+                        && event.epoch == surface.epoch
+                        && event.position.x.is_finite() && event.position.y.is_finite()
+                }))
+        })
+    {
+        state.cancel("capture lost");
+    }
+    for event in events {
+        if event.pointer == 0
+            || event.pointer == u64::MAX
+            || !event.position.x.is_finite()
+            || !event.position.y.is_finite()
+        {
+            report.reject(AdapterError::Invalid("pointer identity/position"));
+            continue;
+        }
+        if event.epoch != surface.epoch {
+            report.reject(AdapterError::Stale("host pointer epoch"));
+            continue;
+        }
+        if state
+            .consumed_pointers
+            .contains(&(event.pointer, event.source))
+        {
+            continue;
+        }
+        // Events already assigned to the divider cannot be routed into unpainted slots
+        // if validation or capture cancellation removed the divider earlier in this batch.
+        if live_chrome.is_some() && event.phase != PointerPhase::Press
+            && state.capture.is_none()
+        {
+            continue;
+        }
+        match event.phase {
+            PointerPhase::Press if state.capture.is_none() => {
+                let tab = (event.source != PointerSource::Mouse)
+                    .then(|| {
+                        report.controls.iter().rev().find_map(|control| {
+                            let view = control.target?;
+                            (control.enabled
+                                && control.id == format!("view/{}/tab", view.raw())
+                                && to_egui(control.bounds).contains(event.position)
+                                && controller.snapshot().views.get(&view).is_some_and(|v| {
+                                    v.closed.is_none()
+                                        && pick_frame(projection, event.position) == Some(v.frame)
+                                }))
+                            .then_some(DragTarget::TabSelect {
+                                view,
+                                bounds: control.bounds,
+                            })
+                        })
+                    })
+                    .flatten();
+                if let Some(target) =
+                    tab.or_else(|| hit_drag(controller, projection, event.position, report))
+                {
+                    if skip_divider_press && matches!(target, DragTarget::Resize { .. }) {
+                        continue;
+                    }
+                    let settings = projection
+                        .frames
+                        .iter()
+                        .find(|f| Some(f.frame) == pick_frame(projection, event.position))
+                        .map(|f| &f.settings)
+                        .unwrap_or(&policy.settings);
+                    state.capture = Some(Capture {
+                        pointer: event.pointer,
+                        source: event.source,
+                        press: event.position,
+                        position: event.position,
+                        generation: controller.snapshot().generation,
+                        epoch: surface.epoch,
+                        surface,
+                        pressed_at: now,
+                        activated: event.source != PointerSource::Touch,
+                        divider_range: live_chrome.and_then(|_| match &target {
+                            DragTarget::Resize { workspace, node, axis, index, .. } => {
+                                host.live_divider_range(&DividerId {
+                                    workspace: *workspace, node: *node, axis: *axis, index: *index,
+                                })
+                            }
+                            _ => None,
+                        }),
+                        hit_size: settings.hit_size,
+                        long_press_seconds: settings.long_press_seconds,
+                        target,
+                        preview: None,
+                        resize_plan: None,
+                        resize_geometry: None,
+                    });
+                    state.last_settlement = None;
+                } else {
+                    route_pointer(controller, projection, host, state, report, event);
+                }
+            }
+            PointerPhase::Move => {
+                if let Some(capture) = state
+                    .capture
+                    .as_mut()
+                    .filter(|c| c.pointer == event.pointer && c.source == event.source)
+                {
+                    capture.position = event.position;
+                    if matches!(capture.target, DragTarget::TabSelect { .. }) {
+                        if capture.position.distance(capture.press) > capture.hit_size {
+                            state.cancel("tab tap moved into scrolling");
+                        }
+                        continue;
+                    }
+                    if capture.source == PointerSource::Touch && !capture.activated {
+                        if capture.position.distance(capture.press) > capture.hit_size {
+                            state.cancel("touch scrolling before long press");
+                            continue;
+                        }
+                        capture.activated = now - capture.pressed_at >= capture.long_press_seconds;
+                    }
+                    if capture.activated {
+                        update_preview(capture, controller, projection, report);
+                    }
+                } else {
+                    route_pointer(controller, projection, host, state, report, event);
+                }
+            }
+            PointerPhase::Release => {
+                if state
+                    .capture
+                    .as_ref()
+                    .is_some_and(|c| c.pointer == event.pointer && c.source == event.source)
+                {
+                    let mut capture = state.capture.take().unwrap();
+                    capture.position = event.position;
+                    if let DragTarget::TabSelect { view, bounds } = &capture.target {
+                        if to_egui(*bounds).contains(capture.position)
+                            && capture.position.distance(capture.press) <= capture.hit_size
+                        {
+                            crate::chrome::command(
+                                controller,
+                                host,
+                                Command::SelectView { view: *view },
+                                report,
+                            );
+                            state.focused_view = Some(*view);
+                        }
+                    } else if capture.activated && capture.position.distance(capture.press) > 2.0 {
+                        update_preview(&mut capture, controller, projection, report);
+                        if let Some(preview) = capture.preview {
+                            crate::chrome::command(
+                                controller,
+                                host,
+                                Command::CommitPreview(preview),
+                                report,
+                            );
+                        } else if let (DragTarget::Resize { workspace, .. }, Some(plan)) =
+                            (capture.target, capture.resize_plan)
+                        {
+                            if let Some(chrome) = live_chrome {
+                                if controller.snapshot().layouts.get(&workspace) == Some(&plan) {
+                                    state.last_settlement = Some("release");
+                                    continue;
+                                }
+                                if let Err(error) = workspace::project_resize_preview(
+                                    controller, surface, host, chrome, workspace, &plan,
+                                ) {
+                                    report.reject(error);
+                                    state.last_settlement = Some("invalid resize");
+                                    continue;
+                                }
+                            }
+                            crate::chrome::command(
+                                controller,
+                                host,
+                                Command::SetLayout { workspace, plan },
+                                report,
+                            );
+                        }
+                    }
+                    state.last_settlement = Some("release");
+                } else {
+                    route_pointer(controller, projection, host, state, report, event);
+                }
+            }
+            PointerPhase::Cancel => {
+                if state
+                    .capture
+                    .as_ref()
+                    .is_some_and(|c| c.pointer == event.pointer && c.source == event.source)
+                {
+                    state.cancel("pointer cancelled");
+                }
+            }
+            _ => {}
+        }
+    }
 }
 fn route_pointer(
     controller: &mut Controller,
@@ -982,8 +1257,10 @@ fn keyboard_resize(
             position,
             generation: controller.snapshot().generation,
             epoch: surface.epoch,
+            surface,
             pressed_at: now,
             activated: true,
+            divider_range: None,
             hit_size: settings.hit_size,
             long_press_seconds: settings.long_press_seconds,
             target,
@@ -1029,6 +1306,7 @@ pub(crate) fn draw_resize_handles(
     surface: SurfaceBinding,
     policy: &HostPolicy,
     report: &mut FrameReport,
+    preview: Option<&kumihimo_core::Snapshot>,
 ) {
     let theme = crate::chrome::ThemeTokens::resolve(ctx, policy);
     for frame in projection.frames.iter().filter(|f| f.floating) {
@@ -1064,28 +1342,77 @@ pub(crate) fn draw_resize_handles(
             None,
         );
     }
+    let mut workspace_ui = None;
+    for_each_divider(preview.unwrap_or_else(|| controller.snapshot()), projection, surface, policy, |owner, viewport, clip, key, rect, fraction, index, axis| {
+        if report.controls.len() >= policy.max_regions.saturating_mul(policy.tab_page_size.max(1)) {
+            report.reject(AdapterError::Budget("resize controls"));
+            return false;
+        }
+        if workspace_ui.as_ref().is_none_or(|(workspace, _)| *workspace != owner.workspace) {
+            let mut ui = egui::Ui::new(
+                ctx.clone(),
+                egui::Id::new((surface.viewport, owner.workspace.raw(), "resize-ui")),
+                egui::UiBuilder::new().layer_id(owner.layer()).max_rect(to_egui(viewport)),
+            );
+            ui.set_clip_rect(to_egui(viewport).intersect(to_egui(clip)));
+            workspace_ui = Some((owner.workspace, ui));
+        }
+        let (_, ui) = workspace_ui.as_mut().expect("divider workspace");
+        let hit = rect.intersect(to_egui(viewport)).intersect(to_egui(clip));
+        let response = ui.interact(hit, egui::Id::new(&key), egui::Sense::click_and_drag());
+        response.widget_info(|| {
+            egui::WidgetInfo::slider(
+                true,
+                fraction,
+                format!("Resize {} tracks {} and {}", owner.workspace.raw(), index + 1, index + 2),
+            )
+        });
+        ctx.accesskit_node_builder(response.id, |node| {
+            node.set_min_numeric_value(0.0);
+            node.set_max_numeric_value(1.0);
+            node.add_action(egui::accesskit::Action::Increment);
+            node.add_action(egui::accesskit::Action::Decrement);
+            node.add_action(egui::accesskit::Action::SetValue);
+        });
+        crate::chrome::record(
+            report, &response, key, "Resize adjacent tracks; drag; keyboard arrows".into(), None,
+        );
+        let line = if axis == Axis::Horizontal {
+            [rect.center_top(), rect.center_bottom()]
+        } else {
+            [rect.left_center(), rect.right_center()]
+        };
+        ui.painter().line_segment(
+            line,
+            egui::Stroke::new(if response.hovered() { 3.0 } else { 1.0 }, theme.divider_stroke),
+        );
+        true
+    });
+}
+
+fn for_each_divider(
+    snapshot: &kumihimo_core::Snapshot,
+    projection: &workspace::Projection,
+    surface: SurfaceBinding,
+    policy: &HostPolicy,
+    mut visit: impl FnMut(&workspace::FrameProjection, Rect, Rect, String, egui::Rect, f64, usize, Axis) -> bool,
+) {
+    let mut remaining = policy.max_regions.saturating_mul(policy.tab_page_size.max(1));
     let workspaces: BTreeSet<_> = projection.frames.iter().map(|f| f.workspace).collect();
     for workspace in workspaces {
-        if controller.snapshot().maximized.contains_key(&workspace) {
+        if snapshot.maximized.contains_key(&workspace) {
             continue;
         }
-        let Some(plan) = controller.snapshot().layouts.get(&workspace) else {
+        let Some(plan) = snapshot.layouts.get(&workspace) else {
             continue;
         };
-        let Ok(geometry) = controller.snapshot().geometry(workspace) else {
+        let Ok(geometry) = snapshot.geometry(workspace) else {
             continue;
         };
         let Some(owner) = projection.frames.iter().find(|f| f.workspace == workspace) else {
             continue;
         };
-        let mut ui = egui::Ui::new(
-            ctx.clone(),
-            egui::Id::new((surface.viewport, workspace.raw(), "resize-ui")),
-            egui::UiBuilder::new()
-                .layer_id(owner.layer())
-                .max_rect(to_egui(geometry.viewport)),
-        );
-        let ancestor_clip = controller.snapshot().workspaces[&workspace]
+        let ancestor_clip = snapshot.workspaces[&workspace]
             .owner
             .and_then(|id| {
                 projection
@@ -1095,7 +1422,6 @@ pub(crate) fn draw_resize_handles(
                     .map(|f| f.clip)
             })
             .unwrap_or(surface.bounds);
-        ui.set_clip_rect(to_egui(geometry.viewport).intersect(to_egui(ancestor_clip)));
         for (node, entry) in &plan.nodes {
             let Some(bounds) = geometry.nodes.get(node).copied() else {
                 continue;
@@ -1114,19 +1440,13 @@ pub(crate) fn draw_resize_handles(
                 let total: f64 = weights.iter().sum();
                 let mut cumulative = 0.0;
                 for index in 0..weights.len().saturating_sub(1) {
-                    if report.controls.len()
-                        >= policy
-                            .max_regions
-                            .saturating_mul(policy.tab_page_size.max(1))
-                    {
-                        report.reject(AdapterError::Budget("resize controls"));
+                    if remaining == 0 {
                         return;
                     }
+                    remaining -= 1;
                     cumulative += weights[index];
                     let fraction = cumulative / total;
-                    let gap = controller
-                        .snapshot()
-                        .contexts
+                    let gap = snapshot.contexts
                         .get(&workspace)
                         .map_or(0.0, |c| c.gap.get());
                     let coordinate = match entry {
@@ -1192,46 +1512,9 @@ pub(crate) fn draw_resize_handles(
                         if axis == Axis::Horizontal { "x" } else { "y" },
                         index
                     );
-                    let response =
-                        ui.interact(rect, egui::Id::new(&key), egui::Sense::click_and_drag());
-                    response.widget_info(|| {
-                        egui::WidgetInfo::slider(
-                            true,
-                            fraction,
-                            format!(
-                                "Resize {} tracks {} and {}",
-                                workspace.raw(),
-                                index + 1,
-                                index + 2
-                            ),
-                        )
-                    });
-                    ctx.accesskit_node_builder(response.id, |node| {
-                        node.set_min_numeric_value(0.0);
-                        node.set_max_numeric_value(1.0);
-                        node.add_action(egui::accesskit::Action::Increment);
-                        node.add_action(egui::accesskit::Action::Decrement);
-                        node.add_action(egui::accesskit::Action::SetValue);
-                    });
-                    crate::chrome::record(
-                        report,
-                        &response,
-                        key,
-                        "Resize adjacent tracks; drag; keyboard arrows".into(),
-                        None,
-                    );
-                    let line = if axis == Axis::Horizontal {
-                        [rect.center_top(), rect.center_bottom()]
-                    } else {
-                        [rect.left_center(), rect.right_center()]
-                    };
-                    ui.painter().line_segment(
-                        line,
-                        egui::Stroke::new(
-                            if response.hovered() { 3.0 } else { 1.0 },
-                            theme.divider_stroke,
-                        ),
-                    );
+                    if !visit(owner, geometry.viewport, ancestor_clip, key, rect, fraction, index, axis) {
+                        return;
+                    }
                 }
             }
         }

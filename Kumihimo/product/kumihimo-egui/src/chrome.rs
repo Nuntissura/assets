@@ -859,6 +859,34 @@ pub fn draw(
     state: &mut ChromeState,
     report: &mut FrameReport,
 ) {
+    draw_with_preview(ctx, controller, projection, surface, host, state, report, None);
+}
+
+/// Draw chrome from the same effective geometry used for live divider content.
+pub fn draw_live_resize(
+    ctx: &egui::Context,
+    controller: &mut Controller,
+    frame: &crate::input::LiveResizeFrame,
+    surface: SurfaceBinding,
+    host: &mut impl DesktopHost,
+    state: &mut ChromeState,
+    report: &mut FrameReport,
+) {
+    draw_with_preview(
+        ctx, controller, &frame.projection, surface, host, state, report, frame.preview.as_ref(),
+    );
+}
+
+fn draw_with_preview(
+    ctx: &egui::Context,
+    controller: &mut Controller,
+    projection: &workspace::Projection,
+    surface: SurfaceBinding,
+    host: &mut impl DesktopHost,
+    state: &mut ChromeState,
+    report: &mut FrameReport,
+    resize_snapshot: Option<&kumihimo_core::Snapshot>,
+) {
     let policy = host.policy();
     let size = page_size(controller, &policy);
     while state.pages.len() > policy.max_pending {
@@ -1521,7 +1549,7 @@ pub fn draw(
                 });
             });
     }
-    crate::input::draw_resize_handles(ctx, controller, projection, surface, &policy, report);
+    crate::input::draw_resize_handles(ctx, controller, projection, surface, &policy, report, resize_snapshot);
     if let Some(preview) = &state.preview {
         crate::input::paint_preview(ctx, preview, ThemeTokens::resolve(ctx, &policy));
     }

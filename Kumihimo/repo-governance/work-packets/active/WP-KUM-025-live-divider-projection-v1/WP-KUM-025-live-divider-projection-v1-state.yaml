@@ -1,10 +1,21 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-025-live-divider-projection-v1
-generation: 1
-phase: planned
+generation: 2
+phase: active
 owner: 01a17374-1d96-7e02-9aea-77b0f62f20dc
-changed_files: []
-proof: []
-blockers:
-- Publish the bounded predecessor and record dependency readiness before implementation.
-next_action: Review and publish the exact WP predecessor, then confirm dependency readiness for the named adapter files.
+changed_files:
+- product/kumihimo-egui/src/chrome.rs
+- product/kumihimo-egui/src/input.rs
+- product/kumihimo-egui/src/lib.rs
+- product/kumihimo-egui/src/navigation.rs
+- product/kumihimo-egui/src/workspace.rs
+- product/kumihimo-egui/tests/adapter_contracts.rs
+proof:
+- kind: independent_focused_test_evaluation
+  reviewer: redraw_review
+  base: c017cc1f067f8f0d14dd60c2662af0374b7e8c5d
+  stdout_sha256: ec2a7183cffff5472203dfd0aa7511a742d9d3e65af57828f1af917ff5bff46c
+  executable_sha256: 543e9f84ce501ffbdc9de6ac1652a83fcf2ffe0cdffc899e5f1e8eae196322e8
+  observation: Exact locked offline all-features adapter_contracts retry exited 0 with eight selected cases passing.
+blockers: []
+next_action: Independently reread canonical asset publication before separate Handshake pin adoption and MT212 host proof.

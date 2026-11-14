@@ -1060,10 +1060,18 @@ struct UiProof {
     binding: SurfaceBinding,
     report: FrameReport,
     native_enabled: bool,
+    live_resize: bool,
+    layout_attempts: usize,
+    accepted_layouts: usize,
+    divider_range: Option<input::DividerRange>,
     trace: Vec<serde_json::Value>,
 }
-struct NoNative<'a>(&'a mut demo::DemoHost);
+struct NoNative<'a>(&'a mut demo::DemoHost, Option<input::DividerRange>, &'a mut usize, &'a mut usize);
 impl DesktopHost for NoNative<'_> {
+    fn live_divider_range(&self, _: &input::DividerId) -> Option<input::DividerRange> {
+        self.1
+    }
+
     fn policy(&self) -> HostPolicy {
         self.0.policy()
     }
@@ -1077,7 +1085,15 @@ impl DesktopHost for NoNative<'_> {
         controller: &mut kumihimo_content::Controller,
         command: Command,
     ) -> Result<core::Response> {
-        self.0.dispatch(controller, command)
+        let is_layout = matches!(&command, Command::SetLayout { .. });
+        if is_layout {
+            *self.2 += 1;
+        }
+        let response = self.0.dispatch(controller, command)?;
+        if is_layout && response.outcome.result.is_ok() {
+            *self.3 += 1;
+        }
+        Ok(response)
     }
     fn paint_content(
         &mut self,
@@ -1086,6 +1102,20 @@ impl DesktopHost for NoNative<'_> {
         controller: &mut kumihimo_content::Controller,
     ) -> Result<()> {
         self.0.paint_content(ui, slot, controller)
+    }
+
+    #[cfg(feature = "navigation")]
+    fn navigation_permission(
+        &self,
+        controller: &kumihimo_content::Controller,
+        scope: &kumihimo_content::Scope,
+    ) -> kumihimo_content::HostPermission {
+        self.0.navigation_permission(controller, scope)
+    }
+
+    #[cfg(feature = "navigation")]
+    fn navigation_pending(&mut self, controller: &mut kumihimo_content::Controller) -> Result<()> {
+        self.0.navigation_pending(controller)
     }
 }
 fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiProof> {
@@ -1099,7 +1129,12 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
         .with_size(egui::vec2(960.0, 640.0))
         .build_state(
             |ctx, state: &mut UiProof| {
-                state.report = if state.native_enabled {
+                state.report = if state.live_resize {
+                    state.adapter.show_with_live_resize(
+                        ctx, &mut state.demo.controller, state.binding,
+                        &mut NoNative(&mut state.demo.host, state.divider_range, &mut state.layout_attempts, &mut state.accepted_layouts),
+                    ).unwrap()
+                } else if state.native_enabled {
                     state
                         .adapter
                         .show(
@@ -1116,7 +1151,7 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
                             ctx,
                             &mut state.demo.controller,
                             state.binding,
-                            &mut NoNative(&mut state.demo.host),
+                            &mut NoNative(&mut state.demo.host, None, &mut state.layout_attempts, &mut state.accepted_layouts),
                         )
                         .unwrap()
                 };
@@ -1152,6 +1187,10 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
                 binding,
                 report: FrameReport::default(),
                 native_enabled: true,
+                live_resize: false,
+                layout_attempts: 0,
+                accepted_layouts: 0,
+                divider_range: None,
                 trace: Vec::new(),
             },
         )
@@ -2414,6 +2453,27 @@ fn e006_all_modes_rail_wheel_ack_is_distinct_from_content_wheel() {
                 .count()
                 > inputs
         );
+
+        h.state_mut().live_resize = true;
+        h.run_steps(1);
+        let (scope, gesture) = {
+            let snapshot = h.state().demo.controller.inspect();
+            (snapshot.mounts[&mount].scope.clone(), snapshot.navigation[&mount].last_gesture)
+        };
+        let nav = h.state().demo.controller.navigation_projection(&scope).unwrap();
+        let thumb = if mode == NavigationMode::MinimapAlways {
+            nav.viewport_rectangle
+        } else {
+            nav.thumb
+        }.unwrap();
+        let thumb_point = egui::pos2(point.x, (thumb.start.get() + thumb.length.get() / 2.0) as f32);
+        ui_pointer(&mut h, 92, input::PointerSource::HostPen, input::PointerPhase::Press, thumb_point);
+        assert_eq!(h.state().demo.controller.inspect().navigation[&mount].last_gesture, gesture + 1);
+        assert!(h.state().adapter.input.active_capture().is_none());
+        ui_pointer(&mut h, 92, input::PointerSource::HostPen, input::PointerPhase::Release, thumb_point);
+        assert_eq!(h.state().layout_attempts, 0);
+        assert_eq!(h.state().accepted_layouts, 0);
+
     }
 }
 
@@ -2832,4 +2892,165 @@ fn e008_actual_tab_enter_group_float_redock_and_close_routes() {
     assert!(h.state().demo.controller.snapshot().views[&view]
         .closed
         .is_some());
+}
+
+#[test]
+fn live_divider_preview_projects_both_edges_without_committing() {
+    let mut h = ui_proof(3, false);
+    let control = h
+        .state()
+        .report
+        .controls
+        .iter()
+        .find(|c| c.id.starts_with("resize/"))
+        .unwrap()
+        .clone();
+    let point = to_egui(control.bounds).center();
+    let horizontal = control.id.split('/').nth(3) == Some("x");
+    let delta = if horizontal {
+        egui::vec2(16.0, 0.0)
+    } else {
+        egui::vec2(0.0, 16.0)
+    };
+    let before = h.state().demo.controller.snapshot().clone();
+    ui_pointer(&mut h, 77, input::PointerSource::Mouse, input::PointerPhase::Press, point);
+    ui_pointer(&mut h, 77, input::PointerSource::Mouse, input::PointerPhase::Move, point + delta);
+
+    let state = h.state_mut();
+    let preview = state.adapter.input.project_resize_preview(
+        &mut state.demo.controller,
+        state.binding,
+        &mut state.demo.host,
+        &state.adapter.chrome,
+    ).unwrap().unwrap();
+    let after = state.demo.controller.snapshot();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.layouts, before.layouts);
+    assert_eq!(after.contexts, before.contexts);
+    let geometry = before.geometry(state.binding.root).unwrap();
+    let changed = preview.frames.iter().filter(|frame| {
+        geometry.frames.get(&frame.frame).is_some_and(|bounds| *bounds != frame.bounds)
+    }).count();
+    assert!(changed >= 2);
+    let other_viewport = SurfaceBinding {
+        viewport: egui::ViewportId::from_hash_of("foreign divider viewport"),
+        ..state.binding
+    };
+    assert!(state.adapter.input.project_resize_preview(
+        &mut state.demo.controller, other_viewport, &mut state.demo.host, &state.adapter.chrome,
+    ).unwrap().is_none());
+    state.adapter.input.cancel("test cancellation");
+    assert!(state.adapter.input.project_resize_preview(
+        &mut state.demo.controller, state.binding, &mut state.demo.host, &state.adapter.chrome,
+    ).unwrap().is_none());
+
+    for terminal in [
+        egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        },
+        egui::Event::PointerGone,
+    ] {
+        let mut h = ui_proof(3, false);
+        h.state_mut().live_resize = true;
+        let initial = h.state().report.slots.iter().map(|slot| slot.bounds).collect::<Vec<_>>();
+        let committed = h.state().demo.controller.snapshot().layouts.clone();
+        ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Press, point);
+        ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Move, point + delta);
+        assert_ne!(h.state().report.slots.iter().map(|slot| slot.bounds).collect::<Vec<_>>(), initial);
+        h.event(terminal);
+        h.run_steps(1);
+        let state = h.state();
+        assert!(state.adapter.input.active_capture().is_none());
+        assert_eq!(state.layout_attempts, 0);
+        assert_eq!(state.accepted_layouts, 0);
+        assert_eq!(state.demo.controller.snapshot().layouts, committed);
+        assert_eq!(state.report.slots.iter().map(|slot| slot.bounds).collect::<Vec<_>>(), initial);
+    }
+
+}
+
+
+#[test]
+fn live_divider_uses_preview_slots_and_hit_bounds_on_first_draw() {
+    for axis in ["x", "y"] {
+        let mut h = ui_proof(3, false);
+        if axis == "y" {
+            let state = h.state_mut();
+            let workspace = state.demo.root;
+            let mut plan = state.demo.controller.snapshot().layouts[&workspace].clone();
+            let core::LayoutNode::Grid { rows, columns, cells } =
+                plan.nodes.get_mut(&plan.root.unwrap()).unwrap()
+            else {
+                panic!("expected two-pane grid");
+            };
+            std::mem::swap(rows, columns);
+            for cell in cells {
+                std::mem::swap(&mut cell.row, &mut cell.column);
+            }
+            command(&mut state.demo, Command::SetLayout { workspace, plan });
+            h.run_steps(1);
+        }
+        h.state_mut().live_resize = true;
+        let control = h.state().report.controls.iter()
+            .find(|control| control.id.starts_with("resize/") && control.id.split('/').nth(3) == Some(axis)).unwrap().clone();
+        let point = to_egui(control.bounds).center();
+        let horizontal = control.id.split('/').nth(3) == Some("x");
+        let delta = if horizontal { egui::vec2(16.0, 0.0) } else { egui::vec2(0.0, 16.0) };
+        let before = h.state().demo.controller.snapshot().clone();
+        let initial_slots: std::collections::BTreeMap<_, _> = h.state().report.slots.iter()
+            .map(|slot| (slot.frame, slot.bounds)).collect();
+        ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Press, point);
+        for position in [point + delta, point - delta] {
+            ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Move, position);
+            let state = h.state();
+            assert_eq!(state.layout_attempts, 0);
+            assert_eq!(state.accepted_layouts, 0);
+            assert_eq!(state.demo.controller.snapshot().layouts, before.layouts);
+            assert_eq!(state.demo.controller.snapshot().contexts, before.contexts);
+            let moved = state.report.controls.iter().find(|item| item.id == control.id).unwrap();
+            let hit_delta = to_egui(moved.bounds).center() - point;
+            assert!(hit_delta.dot(position - point) > 0.0);
+            let resized = state.report.slots.iter().filter(|slot| {
+                initial_slots.get(&slot.frame).is_some_and(|bounds| *bounds != slot.bounds)
+            }).count();
+            assert!(resized >= 2);
+        }
+        ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Release, point - delta);
+        assert_eq!(h.state().layout_attempts, 1);
+        assert_eq!(h.state().accepted_layouts, 1);
+        assert_ne!(h.state().demo.controller.snapshot().layouts, before.layouts);
+        assert_eq!(h.state().adapter.input.last_settlement, Some("release"));
+    }
+}
+
+#[test]
+fn live_divider_range_clamps_overdrag_and_commits_preview() {
+    let mut h = ui_proof(3, false);
+    let scalar = |value| core::Scalar::new(value).unwrap();
+    assert!(input::DividerRange::new(scalar(0.8), scalar(0.2)).is_err());
+    assert!(input::DividerRange::new(scalar(-0.1), scalar(0.8)).is_err());
+    h.state_mut().live_resize = true;
+    h.state_mut().divider_range = Some(input::DividerRange::new(scalar(0.4), scalar(0.6)).unwrap());
+    let control = h.state().report.controls.iter()
+        .find(|control| control.id.starts_with("resize/")).unwrap().clone();
+    let point = to_egui(control.bounds).center();
+    let horizontal = control.id.split('/').nth(3) == Some("x");
+    let delta = if horizontal { egui::vec2(5000.0, 0.0) } else { egui::vec2(0.0, 5000.0) };
+    let before = h.state().demo.controller.snapshot().layouts.clone();
+    let bounds = |state: &UiProof| state.report.controls.iter()
+        .find(|item| item.id == control.id).unwrap().bounds;
+    ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Press, point);
+    ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Move, point + delta);
+    let high = bounds(h.state());
+    ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Move, point - delta);
+    let low = bounds(h.state());
+    assert!((to_egui(high).center() - to_egui(low).center()).dot(delta) > 0.0);
+    assert_eq!(h.state().demo.controller.snapshot().layouts, before);
+    ui_pointer(&mut h, 91, input::PointerSource::Mouse, input::PointerPhase::Release, point - delta);
+    assert_ne!(h.state().demo.controller.snapshot().layouts, before);
+    assert_eq!(bounds(h.state()), low);
 }
