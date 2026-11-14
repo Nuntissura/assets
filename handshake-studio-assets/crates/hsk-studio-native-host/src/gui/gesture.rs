@@ -6,6 +6,10 @@
 //! [`WHEEL_IDLE_MS`] of idle, the pointer leaving, focus loss, a new action or Escape (STU-SHL-107). Every gesture
 //! closes into at most ONE commit intent; Escape and an unchanged value close into none.
 //!
+//! A gesture keeps its START value and its net displacement, never a running value: the value is computed once from
+//! both, so what it commits depends on where the gesture ended and not on how many samples carried it there (review
+//! F3: a running sum of 0.05 steps rounded a half quantum differently by sample count).
+//!
 //! Pure state: positions and modifiers in, the observability value (STU-SHL-108), the cursor request (STU-SHL-104) and
 //! commit intents out. No winit, Viewer or window type, so a later move into kumihimo-ui (decision O4) is a file move.
 //! The caller (the GUI frame) runs the commit through the Viewer and counts its outcome.
@@ -78,11 +82,47 @@ impl FieldSpec {
 
 /// STU-SHL-106: Shift x10, Ctrl /10, Shift+Ctrl x100; Alt is never a magnitude.
 pub fn magnitude(m: Mods) -> f64 {
+    tenths(m) / 10.0
+}
+
+/// The magnitude of `m` in tenths of a step, the unit a gesture's displacement is summed in: a whole number for every
+/// modifier, so whole pixels and notches sum exactly.
+fn tenths(m: Mods) -> f64 {
     match (m.shift, m.ctrl) {
-        (true, true) => 100.0,
-        (true, false) => 10.0,
-        (false, true) => 0.1,
-        (false, false) => 1.0,
+        (true, true) => 1000.0,
+        (true, false) => 100.0,
+        (false, true) => 1.0,
+        (false, false) => 10.0,
+    }
+}
+
+/// A gesture's value as its start plus its net displacement in tenths of a step. The displacement is clamped at every
+/// sample to what the hard bounds leave, so the value holds at a bound and dragging back returns at once (STU-SHL-192);
+/// fractional displacement is kept (STU-SHL-191).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Travel {
+    /// The value at the gesture's start, inside the hard bounds.
+    start: f64,
+    /// Net displacement in tenths of a step.
+    units: f64,
+}
+
+impl Travel {
+    fn new(spec: &FieldSpec, before: f64) -> Self {
+        Self { start: spec.clamp(if before.is_finite() { before } else { spec.hard.0 }), units: 0.0 }
+    }
+    /// Adds `units` tenths of a step. A sum that is not finite is ignored (the displacement stays where it was).
+    fn add(&mut self, spec: &FieldSpec, units: f64) {
+        let unit = spec.step() / 10.0;
+        let next = self.units + units;
+        let (lo, hi) = ((spec.hard.0 - self.start) / unit, (spec.hard.1 - self.start) / unit);
+        if next.is_finite() && lo <= hi {
+            self.units = next.clamp(lo, hi);
+        }
+    }
+    /// The value now: computed once from the start and the net displacement, inside the hard bounds, not quantized.
+    fn value(&self, spec: &FieldSpec) -> f64 {
+        spec.clamp(self.start + self.units * spec.step() / 10.0)
     }
 }
 
@@ -118,8 +158,7 @@ struct Scrub {
     press: (i32, i32),
     last: (i32, i32),
     before: f64,
-    /// Clamped, not quantized: fractional accumulation is kept (STU-SHL-191).
-    value: f64,
+    travel: Travel,
     moved: bool,
     aborted: bool,
 }
@@ -130,7 +169,7 @@ struct Wheel {
     target: String,
     spec: FieldSpec,
     before: f64,
-    value: f64,
+    travel: Travel,
     idle_ms: u64,
 }
 
@@ -166,17 +205,17 @@ impl Arbiter {
     /// The settled in-gesture value `owner` shows for `target`, while a gesture holds one (never a history entry).
     pub fn live(&self, owner: &str, target: &str) -> Option<f64> {
         if let Some(s) = self.scrub.as_ref().filter(|s| s.owner == owner && s.target == target) {
-            return s.spec.settle(s.value);
+            return s.spec.settle(s.travel.value(&s.spec));
         }
-        self.wheel.as_ref().filter(|w| w.owner == owner && w.target == target).and_then(|w| w.spec.settle(w.value))
+        self.wheel.as_ref().filter(|w| w.owner == owner && w.target == target).and_then(|w| w.spec.settle(w.travel.value(&w.spec)))
     }
 
     /// Press on a field: the field claims the pointer for the whole gesture (STU-SHL-101).
     pub fn press(&mut self, owner: &str, target: &str, spec: FieldSpec, before: f64, at: (i32, i32)) {
         self.restore = None;
         self.counters.gestures = self.counters.gestures.saturating_add(1);
-        let value = spec.clamp(if before.is_finite() { before } else { spec.hard.0 });
-        self.scrub = Some(Scrub { owner: owner.to_owned(), target: target.to_owned(), spec, press: at, last: at, before, value, moved: false, aborted: false });
+        let travel = Travel::new(&spec, before);
+        self.scrub = Some(Scrub { owner: owner.to_owned(), target: target.to_owned(), spec, press: at, last: at, before, travel, moved: false, aborted: false });
     }
 
     /// One pointer sample at physical `at`: the value moves by `(dx - dy) / scale` logical px times the step and the
@@ -194,18 +233,11 @@ impl Arbiter {
         if s.aborted {
             return false;
         }
-        let shown = s.spec.settle(s.value);
-        let px = (dx - dy) as f64 / f64::from(scale.max(0.01));
-        let next = s.value + px * s.spec.step() * magnitude(mods);
-        // A non-finite step leaves the value where it was (never NaN into a clamp).
-        if next.is_finite() {
-            s.value = s.spec.clamp(next);
-        } else if next.is_sign_negative() {
-            s.value = s.spec.hard.0;
-        } else {
-            s.value = s.spec.hard.1;
-        }
-        s.spec.settle(s.value) != shown
+        let shown = s.spec.settle(s.travel.value(&s.spec));
+        // Logical px times the magnitude, in tenths of a step: whole numbers at scale 1, so the sum is exact.
+        let spec = s.spec;
+        s.travel.add(&spec, (dx - dy) as f64 * tenths(mods) / f64::from(scale.max(0.01)));
+        s.spec.settle(s.travel.value(&s.spec)) != shown
     }
 
     /// Escape: a drag is aborted (its value back to the pre-press value; the pointer stays claimed until release), an
@@ -213,7 +245,7 @@ impl Arbiter {
     pub fn escape(&mut self) -> bool {
         if let Some(s) = self.scrub.as_mut().filter(|s| !s.aborted) {
             s.aborted = true;
-            s.value = s.spec.clamp(if s.before.is_finite() { s.before } else { s.spec.hard.0 });
+            s.travel.units = 0.0;
             self.counters.aborts = self.counters.aborts.saturating_add(1);
             return true;
         }
@@ -234,7 +266,8 @@ impl Arbiter {
         if s.aborted {
             return None;
         }
-        self.close(s.owner, s.target, s.spec, s.before, s.value)
+        let value = s.travel.value(&s.spec);
+        self.close(s.owner, s.target, s.spec, s.before, value)
     }
 
     /// Wheel `notches` over a field (positive: up, the value grows): opens or extends the transaction; True when the
@@ -245,17 +278,15 @@ impl Arbiter {
         }
         if self.wheel.is_none() {
             self.counters.gestures = self.counters.gestures.saturating_add(1);
-            let value = spec.clamp(if before.is_finite() { before } else { spec.hard.0 });
-            self.wheel = Some(Wheel { owner: owner.to_owned(), target: target.to_owned(), spec, before, value, idle_ms: 0 });
+            let travel = Travel::new(&spec, before);
+            self.wheel = Some(Wheel { owner: owner.to_owned(), target: target.to_owned(), spec, before, travel, idle_ms: 0 });
         }
         let Some(w) = self.wheel.as_mut() else { return false };
         w.idle_ms = 0;
-        let shown = w.spec.settle(w.value);
-        let next = w.value + notches * w.spec.step() * magnitude(mods);
-        if next.is_finite() {
-            w.value = w.spec.clamp(next);
-        }
-        w.spec.settle(w.value) != shown
+        let shown = w.spec.settle(w.travel.value(&w.spec));
+        let spec = w.spec;
+        w.travel.add(&spec, notches * tenths(mods));
+        w.spec.settle(w.travel.value(&w.spec)) != shown
     }
     /// Whether an open wheel transaction belongs to another field or target than these.
     pub fn wheel_elsewhere(&self, owner: &str, target: &str) -> bool {
@@ -266,7 +297,8 @@ impl Arbiter {
     /// commit intent, or none.
     pub fn close_wheel(&mut self) -> Option<Commit> {
         let w = self.wheel.take()?;
-        self.close(w.owner, w.target, w.spec, w.before, w.value)
+        let value = w.travel.value(&w.spec);
+        self.close(w.owner, w.target, w.spec, w.before, value)
     }
 
     /// The host clock advanced `ms`: the wheel transaction closes after [`WHEEL_IDLE_MS`] of idle.
@@ -288,7 +320,8 @@ impl Arbiter {
     /// wheel transaction closes.
     pub fn finalize(&mut self) -> Option<Commit> {
         if let Some(s) = self.scrub.take() {
-            return if s.aborted { None } else { self.close(s.owner, s.target, s.spec, s.before, s.value) };
+            let value = s.travel.value(&s.spec);
+            return if s.aborted { None } else { self.close(s.owner, s.target, s.spec, s.before, value) };
         }
         self.close_wheel()
     }
