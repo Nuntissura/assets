@@ -1921,10 +1921,20 @@ impl GuiFrame {
         Ok(self.commit(Commit { owner: OPACITY_ID.to_owned(), target: layer, before, after }))
     }
 
-    /// The accessibility Increment (`steps` > 0) and Decrement (`steps` < 0) actions on the field `author_id`.
+    /// The accessibility Increment (`steps` > 0) and Decrement (`steps` < 0) actions on the field `author_id` (review
+    /// F7): the document value moves by `steps` plain steps (STU-SHL-191) through [`GuiFrame::set_value`], so one action
+    /// is ONE entry through the same clamp and commit, `Ok(None)` at a bound, with the same typed refusals. An open
+    /// wheel transaction commits first (the action is the next action), and the step starts from what it committed.
     pub fn step_value(&mut self, author_id: &str, steps: i32) -> Result<Option<Outcome>, &'static str> {
-        let _ = (author_id, steps);
-        Err("unknown_author_id")
+        if author_id != OPACITY_ID || self.node(OPACITY_ID).is_none() {
+            return Err("unknown_author_id");
+        }
+        if self.gesture.owns_pointer() {
+            return Err("pointer_owned");
+        }
+        let closed = self.close_wheel();
+        let (_, before) = self.field_target().ok_or("unknown_author_id")?;
+        Ok(self.set_value(author_id, before + f64::from(steps) * OPACITY.step())?.or(closed))
     }
 
     /// What the frame asks the host to do with the OS cursor (STU-SHL-104, STU-SHL-186): column-resize over the field,
