@@ -1969,12 +1969,15 @@ impl GuiFrame {
         let _ = self.close_wheel();
     }
 
-    /// The receipt's `frame.gesture` member: the kind owning the pointer and the counters (codes and counters only).
+    /// The receipt's `frame.gesture` member: the kind owning the pointer, when the canvas shows a gesture's value, and
+    /// the counters (codes and counters only).
     fn gesture_receipt(&self) -> Json {
         let n = |v: u64| Json::Num(v);
         let c = self.gesture.counters;
         Json::obj(vec![
             ("active", Json::str(self.gesture.kind().word())),
+            // The canvas shows a gesture's value at its commit only (STU-SHL-194 private draft NOT_PROVEN).
+            ("canvas_preview", Json::str("release_only")),
             ("gestures", n(c.gestures)),
             ("commits", n(c.commits)),
             ("aborts", n(c.aborts)),
