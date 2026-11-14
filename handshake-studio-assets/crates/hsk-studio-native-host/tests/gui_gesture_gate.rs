@@ -444,7 +444,7 @@ fn the_gesture_entry_carries_the_host_runs_actor() {
     assert_eq!(newest(&f), ("layer.set_opacity".to_owned(), "gate-actor".to_owned(), "gate-session".to_owned()));
     assert_ne!(Caller::asset_local().actor.account_id(), "gate-actor");
     f.invoke(&format!("{}.visibility", row_id(&green))).unwrap();
-    assert_eq!(newest(&f), ("layer.set_visible".to_owned(), "gate-actor".to_owned(), "gate-session".to_owned()));
+    assert_eq!(newest(&f), ("layer.panel_set".to_owned(), "gate-actor".to_owned(), "gate-session".to_owned()));
 }
 
 /// The frames a host run sent.
